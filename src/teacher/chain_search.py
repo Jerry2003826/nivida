@@ -5,16 +5,17 @@ from difflib import SequenceMatcher
 import re
 from typing import Any
 
-from src.competition.metrics import numeric_match
+from src.competition.metrics import competition_numeric_match
 from src.competition.schema import PuzzleExample
 from src.teacher.atomic_ops import AtomicOp
 from src.teacher.op_catalog import build_default_catalog
+from src.teacher.program_signature import normalize_family_alias
 
 
 def _similarity(prediction: str, target: str) -> float:
     if prediction == target:
         return 1.0
-    if numeric_match(prediction, target):
+    if competition_numeric_match(prediction, target):
         return 0.98
     return SequenceMatcher(None, prediction, target).ratio()
 
@@ -89,14 +90,15 @@ class ChainSearchEngine:
     def _equation_mode(
         self,
         examples: list[tuple[str, str]],
-        query_input: str | None,
+        query: str | None,
         family_hints: list[str] | None,
     ) -> str | None:
-        if not family_hints or not any(hint in {"equation", "arithmetic_equation"} for hint in family_hints):
+        normalized_hints = {normalize_family_alias(hint) for hint in family_hints or []}
+        if "equation" not in normalized_hints:
             return None
         inputs = [input_text for input_text, _ in examples]
-        if query_input is not None:
-            inputs.append(query_input)
+        if query is not None:
+            inputs.append(query)
         if inputs and all(_EQUATION_PATTERN.match(text.strip()) for text in inputs):
             return "numeric"
         return "symbolic"
@@ -105,22 +107,60 @@ class ChainSearchEngine:
         if not family_hints:
             return set()
         alias_map = {
-            "bit_manipulation": {"bit_manipulation", "bit_operations"},
+            "bit": {"bit_manipulation", "bit_operations"},
             "gravity": {"gravity"},
-            "unit_conversion": {"unit_conversion"},
+            "unit": {"unit_conversion"},
             "cipher": {"cipher", "substitution_cipher"},
             "numeral": {"numeral", "base_conversion"},
             "equation": {"equation"} if equation_mode == "symbolic" else {"equation", "arithmetic_equation"},
         }
         expanded_hints: set[str] = set()
         for hint in list(dict.fromkeys(family_hints)):
-            if equation_mode == "symbolic" and hint == "arithmetic_equation":
-                continue
-            expanded_hints.add(hint)
-            expanded_hints.update(alias_map.get(hint, set()))
+            normalized = normalize_family_alias(hint)
+            expanded_hints.update(alias_map.get(normalized, {normalized}))
         return expanded_hints
 
-    def _ordered_ops(self, family_hints: list[str] | None = None, *, equation_mode: str | None = None) -> list[AtomicOp]:
+    def _prioritized_op_names(self, family: str | None, subtype: str | None, equation_mode: str | None) -> list[str]:
+        family = normalize_family_alias(family)
+        if family == "bit":
+            if subtype == "rotate":
+                return ["binary_rotate_left", "binary_rotate_right"]
+            if subtype == "mask_logic":
+                return ["binary_xor_mask", "binary_and_mask", "binary_or_mask", "bitwise_xor_constant", "bitwise_and_constant", "bitwise_or_constant"]
+            if subtype == "nibble_permute":
+                return ["swap_nibbles", "binary_permutation", "binary_nibble_map", "reverse_bits"]
+            if subtype == "binary_affine":
+                return ["binary_affine_transform"]
+        if family == "cipher":
+            if subtype == "token_substitution":
+                return ["vocabulary_cipher"]
+            if subtype in {"char_substitution", "caesar_affine"}:
+                return ["caesar_shift", "fixed_substitution"]
+            if subtype == "substitution_permutation":
+                return ["fixed_substitution", "reverse_tokens", "sort_tokens"]
+            if subtype == "whitespace_preserving":
+                return ["fixed_substitution", "vocabulary_cipher"]
+            if subtype == "partial_map_completion":
+                return ["vocabulary_cipher", "fixed_substitution"]
+        if family == "equation":
+            if equation_mode == "numeric":
+                return ["binary_equation_rule", "add_constant", "multiply_constant", "affine_transform", "evaluate_expression"]
+            return ["position_transducer", "operator_template", "delete_characters"]
+        if family == "unit":
+            return ["unit_convert", "scale_measurement"] if subtype == "convert" else ["scale_measurement", "unit_convert"]
+        if family == "numeral":
+            return ["decimal_to_roman"] if subtype == "roman" else ["decimal_to_binary", "decimal_to_hex", "binary_to_decimal"]
+        if family == "gravity":
+            return ["gravity_distance"]
+        return []
+
+    def _ordered_ops(
+        self,
+        family_hints: list[str] | None = None,
+        *,
+        equation_mode: str | None = None,
+        subtype: str | None = None,
+    ) -> list[AtomicOp]:
         expanded_hints = self._expand_family_hints(family_hints, equation_mode=equation_mode)
         if not expanded_hints:
             return self.ops
@@ -131,8 +171,14 @@ class ChainSearchEngine:
                 for op in prioritized
                 if op.name not in {"position_transducer", "operator_template", "delete_characters"}
             ]
-        strict_hints = {"bit_manipulation", "gravity", "unit_conversion", "numeral", "cipher", "equation"}
-        if family_hints and any(hint in strict_hints for hint in family_hints) and prioritized:
+        family = normalize_family_alias((family_hints or [None])[0])
+        prioritized_names = self._prioritized_op_names(family, subtype, equation_mode)
+        if prioritized_names:
+            ordered = [op for name in prioritized_names for op in prioritized if op.name == name]
+            ordered.extend(op for op in prioritized if op.name not in prioritized_names)
+            prioritized = ordered
+        strict_hints = {"bit", "gravity", "unit", "numeral", "cipher", "equation"}
+        if family_hints and any(normalize_family_alias(hint) in strict_hints for hint in family_hints) and prioritized:
             return prioritized
         remaining = [op for op in self.ops if op not in prioritized]
         return prioritized + remaining
@@ -154,7 +200,8 @@ class ChainSearchEngine:
     ) -> bool:
         if not family_hints:
             return False
-        if "bit_manipulation" in family_hints:
+        normalized_hints = {normalize_family_alias(hint) for hint in family_hints}
+        if "bit" in normalized_hints:
             if any(not _is_binary_string(prediction) for prediction in predictions):
                 return True
             if query_value is not None and not _is_binary_string(query_value):
@@ -203,21 +250,29 @@ class ChainSearchEngine:
         self,
         examples: list[tuple[str, str]],
         *,
+        query: str | None = None,
         query_input: str | None = None,
         top_k: int = 5,
         family_hints: list[str] | None = None,
+        subtype: str | None = None,
     ) -> list[CandidateChain]:
         if not examples:
             return []
+        if query is None:
+            query = query_input
 
         targets = [output for _, output in examples]
         initial_inputs = [input_text for input_text, _ in examples]
-        equation_mode = self._equation_mode(examples, query_input, family_hints)
-        ops = self._ordered_ops(family_hints, equation_mode=equation_mode)
+        equation_mode = self._equation_mode(examples, query, family_hints)
+        ops = self._ordered_ops(family_hints, equation_mode=equation_mode, subtype=subtype)
+        max_depth = self.max_depth
+        normalized_hints = {normalize_family_alias(hint) for hint in family_hints or []}
+        if normalized_hints & {"bit", "cipher"}:
+            max_depth = max(max_depth, 3)
         beam = [
             _SearchState(
                 transformed_inputs=initial_inputs,
-                query_value=query_input,
+                query_value=query,
                 steps=[],
                 score=0.0,
                 exact_ratio=0.0,
@@ -229,7 +284,7 @@ class ChainSearchEngine:
         ]
         completed: list[_SearchState] = []
 
-        for depth in range(1, self.max_depth + 1):
+        for depth in range(1, max_depth + 1):
             expanded: list[_SearchState] = []
             for state in beam:
                 current_examples = list(zip(state.transformed_inputs, targets))
@@ -332,10 +387,11 @@ class ChainSearchEngine:
         return top_candidates
 
     def solve_example(self, example: PuzzleExample, *, top_k: int = 5) -> list[CandidateChain]:
-        pairs = [(pair.input, pair.output) for pair in example.train_pairs]
+        pairs = [(pair.input, pair.output) for pair in example.parsed_examples]
         return self.search(
             pairs,
-            query_input=example.query_input,
+            query=example.query,
             top_k=top_k,
-            family_hints=example.metadata.family_tags,
+            family_hints=[example.metadata.official_family] if example.metadata.official_family else None,
+            subtype=example.metadata.subtype,
         )

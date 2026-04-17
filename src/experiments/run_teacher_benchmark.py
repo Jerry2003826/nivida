@@ -6,11 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from src.common.io import load_jsonl, write_json
-from src.competition.metrics import numeric_match
+from src.competition.metrics import competition_numeric_match, exact_match
 from src.competition.parser import parse_competition_file
 from src.competition.schema import PuzzleExample
 from src.teacher.chain_search import ChainSearchEngine
 from src.teacher.family_tagger import apply_family_tags
+from src.teacher.program_signature import annotate_example_from_candidates
 
 
 def _load_examples(input_path: str) -> list[PuzzleExample]:
@@ -21,11 +22,16 @@ def _load_examples(input_path: str) -> list[PuzzleExample]:
 
 
 def _ensure_family_tags(examples: list[PuzzleExample]) -> list[PuzzleExample]:
-    missing = [example for example in examples if not example.metadata.family_tags]
+    missing = [example for example in examples if not example.metadata.official_family or not example.metadata.subtype]
     if not missing:
         return examples
     resolved: dict[str, PuzzleExample] = {example.id: example for example in apply_family_tags(missing)}
-    return [resolved.get(example.id, example) if not example.metadata.family_tags else example for example in examples]
+    return [
+        resolved.get(example.id, example)
+        if not example.metadata.official_family or not example.metadata.subtype
+        else example
+        for example in examples
+    ]
 
 
 def _failure_type(record: dict[str, Any]) -> str:
@@ -35,6 +41,8 @@ def _failure_type(record: dict[str, Any]) -> str:
         return "exact_match"
     if record.get("numeric"):
         return "numeric_only"
+    if record.get("official_family") in {"bit", "cipher", "equation"}:
+        return "hard_triad_failure"
     return "wrong_answer"
 
 
@@ -50,7 +58,7 @@ def benchmark_examples(
 ) -> dict[str, Any]:
     grouped: dict[str, list[PuzzleExample]] = defaultdict(list)
     for example in _ensure_family_tags(examples):
-        family = example.metadata.family_tags[0] if example.metadata.family_tags else "unknown"
+        family = example.metadata.official_family or "unknown"
         if family_filter and family not in family_filter:
             continue
         if len(grouped[family]) < max_per_family:
@@ -64,23 +72,26 @@ def benchmark_examples(
         family_rows: list[dict[str, Any]] = []
         for example in family_examples:
             candidates = engine.solve_example(example, top_k=top_k)
+            annotate_example_from_candidates(example, candidates)
             best = candidates[0] if candidates else None
             prediction = "" if best is None or best.query_prediction is None else best.query_prediction
-            exact = prediction == (example.target_answer or "")
-            numeric = numeric_match(prediction, example.target_answer)
-            if exact:
+            exact = exact_match(prediction, example.target_answer or "")
+            numeric = competition_numeric_match(prediction, example.target_answer)
+            competition_correct = exact or numeric
+            if competition_correct:
                 correct += 1
             row = {
                 "id": example.id,
-                "family": family,
-                "family_tags": example.metadata.family_tags,
+                "official_family": family,
+                "subtype": example.metadata.subtype,
                 "prediction": prediction,
                 "target": example.target_answer or "",
                 "exact": exact,
                 "numeric": numeric,
+                "competition_correct": competition_correct,
                 "boxed_valid": bool(prediction),
-                "is_correct": exact,
-                "confidence": 0.0 if best is None else best.confidence,
+                "teacher_confidence": example.metadata.teacher_confidence,
+                "program_signature": example.metadata.program_signature,
                 "steps": [] if best is None else [step.op_name for step in best.steps],
                 "failure_type": "exact_match",
                 "debug": None if best is None else best.to_debug_dict(),
@@ -89,7 +100,7 @@ def benchmark_examples(
             family_rows.append(row)
             records.append(row)
         if failures_only:
-            family_rows = [row for row in family_rows if not row["exact"]]
+            family_rows = [row for row in family_rows if not row["competition_correct"]]
         family_reports[family] = {
             "num_examples": len(family_examples),
             "correct": correct,
@@ -98,22 +109,22 @@ def benchmark_examples(
         }
 
     if failures_only:
-        records = [row for row in records if not row["exact"]]
+        records = [row for row in records if not row["competition_correct"]]
 
-    family_wise_accuracy = {
+    family_wise_competition_correct = {
         family: payload["accuracy"]
         for family, payload in sorted(family_reports.items())
     }
     num_examples = sum(payload["num_examples"] for payload in family_reports.values())
-    overall_accuracy = (
+    competition_correct_rate = (
         0.0
         if not num_examples
         else sum(payload["correct"] for payload in family_reports.values()) / num_examples
     )
     return {
         "num_examples": num_examples,
-        "overall_accuracy": overall_accuracy,
-        "family_wise_accuracy": family_wise_accuracy,
+        "competition_correct_rate": competition_correct_rate,
+        "family_wise_competition_correct": family_wise_competition_correct,
         "records": records,
         "by_family": family_reports,
     }

@@ -11,7 +11,9 @@ if str(REPO_ROOT) not in sys.path:
 from src.common.io import read_yaml, write_jsonl
 from src.competition.parser import parse_competition_file
 from src.competition.split_builder import build_splits
+from src.teacher.chain_search import ChainSearchEngine
 from src.teacher.family_tagger import apply_family_tags
+from src.teacher.program_signature import annotate_example_from_candidates
 
 
 def main() -> None:
@@ -36,15 +38,18 @@ def main() -> None:
         split=dataset_split,
     )
     examples = apply_family_tags(examples)
+    engine = ChainSearchEngine(beam_width=8, max_depth=2)
+    for example in examples:
+        candidates = engine.solve_example(example, top_k=2)
+        annotate_example_from_candidates(example, candidates)
     write_jsonl(output_path, [example.to_dict() for example in examples])
 
     if config.get("build_splits", True):
         split_cfg = config.get("split_strategy", config.get("split", {}))
         split_payload = build_splits(
             examples,
-            valid_ratio=float(split_cfg.get("valid_ratio", 0.2)),
-            family_holdout_ratio=float(split_cfg.get("family_holdout_ratio", 0.34)),
-            composition_holdout_ratio=float(split_cfg.get("composition_holdout_ratio", 0.34)),
+            rule_novelty_valid_ratio=float(split_cfg.get("rule_novelty_valid_ratio", 0.15)),
+            hard_triad_valid_ratio=float(split_cfg.get("hard_triad_valid_ratio", 0.15)),
             seed=int(config.get("seed", 42)),
         )
         output_dir = Path(split_output_dir)

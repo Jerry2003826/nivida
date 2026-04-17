@@ -1,15 +1,14 @@
 seed: 42
 num_samples: 128
-output_path: data/synthetic/synth_stage_b.jsonl
+output_path: data/synthetic/stage2_synth.jsonl
 summary_path: data/synthetic/synth_summary.json
-max_chain_length: 2
+max_chain_length: 3
 hard_negative_ratio: 0.1
 dedupe_against_real: data/processed/official_train_tagged.jsonl
 family_weights:
-  reverse_reorder: 1.0
-  substitution_cipher: 0.8
-  cipher: 0.8
-  arithmetic_equation: 1.0
-  unit_conversion: 0.7
+  bit: 1.0
+  cipher: 1.0
+  equation: 1.0
+  numeral: 0.7
+  unit: 0.7
   gravity: 0.6
-  bit_manipulation: 0.8

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import inspect
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +62,8 @@ def dry_run_manifest(config: dict[str, Any]) -> dict[str, Any]:
             if value not in (None, "")
         },
         "training": training,
+        "resolved_max_seq_length": resolve_max_seq_length(config),
+        "resolved_target_modules": normalise_target_modules(config.get("lora", {}).get("target_modules")),
         "status": "dry_run_ok",
         "notes": "Training loop wired for Kaggle demo compatibility; dry-run skips model loading and optimization.",
     }
@@ -83,6 +86,53 @@ def load_supervised_records(path: str | Path) -> list[SupervisedRecord]:
 
 def _build_text_sample(record: SupervisedRecord, eos_token: str = "") -> str:
     return f"{record.prompt.rstrip()}\n{record.completion.strip()}{eos_token}"
+
+
+def _simple_token_count(text: str) -> int:
+    return len(text.split())
+
+
+def infer_recommended_max_seq_length(
+    records: list[SupervisedRecord],
+    *,
+    floor: int = 1024,
+    minimum_above_floor: int = 1536,
+    cap: int = 2048,
+    tokenizer: Any | None = None,
+) -> int:
+    if not records:
+        return floor
+    lengths: list[int] = []
+    for record in records:
+        sample = _build_text_sample(record)
+        if tokenizer is None:
+            lengths.append(_simple_token_count(sample))
+        else:
+            lengths.append(len(tokenizer(sample, add_special_tokens=False)["input_ids"]))
+    lengths.sort()
+    percentile_index = max(0, math.ceil(0.95 * len(lengths)) - 1)
+    p95 = lengths[percentile_index]
+    if p95 <= floor:
+        return floor
+    return min(cap, max(minimum_above_floor, p95))
+
+
+def resolve_max_seq_length(config: dict[str, Any], *, tokenizer: Any | None = None) -> int:
+    training = config.get("training", {})
+    value = training.get("max_seq_length", 1024)
+    if value != "auto":
+        return int(value)
+    dataset_path = training.get("dataset_path")
+    if not dataset_path or not Path(dataset_path).exists():
+        return int(training.get("auto_floor_seq_length", 1024))
+    records = load_supervised_records(dataset_path)
+    return infer_recommended_max_seq_length(
+        records,
+        floor=int(training.get("auto_floor_seq_length", 1024)),
+        minimum_above_floor=int(training.get("auto_min_seq_length_above_floor", 1536)),
+        cap=int(training.get("auto_max_seq_length_cap", 2048)),
+        tokenizer=tokenizer,
+    )
 
 
 def _load_torch_dtype(torch_module: Any, dtype_name: str) -> Any:
@@ -138,6 +188,14 @@ def build_training_arguments_kwargs(
     elif "eval_strategy" in training_args_params:
         kwargs["eval_strategy"] = evaluation_value
     return kwargs
+
+
+def normalise_target_modules(raw_target_modules: Any) -> str | list[str]:
+    if isinstance(raw_target_modules, list):
+        return [str(item) for item in raw_target_modules]
+    if raw_target_modules is None:
+        return r".*\.(in_proj|out_proj|up_proj|down_proj)$"
+    return str(raw_target_modules)
 
 
 def requires_mamba_ssm(config: dict[str, Any]) -> bool:
@@ -238,6 +296,7 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
     dtype = _load_torch_dtype(torch, config.get("torch_dtype", "bfloat16"))
 
     tokenizer = load_tokenizer(transformers, model_path, config)
+    resolved_max_seq_length = resolve_max_seq_length(config, tokenizer=tokenizer)
 
     model = transformers.AutoModelForCausalLM.from_pretrained(
         model_path,
@@ -246,7 +305,7 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         torch_dtype=dtype,
     )
 
-    target_modules = config.get("lora", {}).get("target_modules", r".*\.(in_proj|out_proj|up_proj|down_proj)$")
+    target_modules = normalise_target_modules(config.get("lora", {}).get("target_modules"))
     lora_config = peft.LoraConfig(
         r=int(config["lora"]["rank"]),
         lora_alpha=int(config["lora"].get("alpha", 16)),
@@ -270,13 +329,13 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
                 item.prompt.rstrip() + "\n",
                 add_special_tokens=False,
                 truncation=True,
-                max_length=int(config["training"].get("max_seq_length", 1024)),
+                max_length=resolved_max_seq_length,
             )["input_ids"]
             full_ids = tokenizer(
                 _build_text_sample(item, tokenizer.eos_token or ""),
                 add_special_tokens=False,
                 truncation=True,
-                max_length=int(config["training"].get("max_seq_length", 1024)),
+                max_length=resolved_max_seq_length,
             )["input_ids"]
             labels = list(full_ids)
             prompt_len = min(len(prompt_ids), len(labels))
@@ -331,6 +390,7 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         "num_eval_records": len(eval_records),
         "adapter_files": adapter_files,
         "target_modules": target_modules,
+        "resolved_max_seq_length": resolved_max_seq_length,
     }
     write_json(output_dir / "training_metadata.json", metadata)
     return metadata

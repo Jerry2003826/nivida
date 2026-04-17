@@ -1,146 +1,215 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
+from src.competition.official_prompts import detect_official_family
 from src.competition.schema import PuzzleExample
 from src.teacher.feature_extractor import extract_example_features, extract_pair_features
 
 
-FAMILY_LABELS = [
-    "bit_manipulation",
-    "gravity",
-    "unit_conversion",
-    "cipher",
-    "numeral",
-    "equation",
-    "reverse_reorder",
-    "substitution_cipher",
-    "base_conversion",
-    "bit_operations",
-    "arithmetic_equation",
-    "count_filter_aggregation",
-    "multi_step_composition",
-]
+OFFICIAL_FAMILIES = ["bit", "gravity", "unit", "cipher", "numeral", "equation"]
 
-OFFICIAL_PROMPT_FAMILY_PATTERNS = {
-    "bit manipulation rule transforms 8-bit binary numbers": "bit_manipulation",
-    "gravitational constant has been secretly changed": "gravity",
-    "secret unit conversion is applied to measurements": "unit_conversion",
-    "secret encryption rules are used on text": "cipher",
-    "numbers are secretly converted into a different numeral system": "numeral",
-    "secret set of transformation rules is applied to equations": "equation",
-}
+_UNIT_RE = re.compile(r"^\s*([+-]?\d+(?:\.\d+)?)\s*([A-Za-z]+)\s*$")
+_NUMERIC_EQUATION_RE = re.compile(r"^\s*\d+\D\d+\s*$")
+_ROMAN_RE = re.compile(r"^[IVXLCDM]+$", flags=re.IGNORECASE)
 
 
 @dataclass(slots=True)
 class FamilyPrediction:
-    families: list[str]
+    official_family: str
+    subtype: str
     confidence: float
     scores: dict[str, float]
     evidence: dict[str, Any]
 
 
-def detect_official_prompt_family(prompt: str) -> str | None:
-    lower = prompt.lower()
-    for pattern, family in OFFICIAL_PROMPT_FAMILY_PATTERNS.items():
-        if pattern in lower:
-            return family
+def _is_binary(text: str) -> bool:
+    stripped = text.strip()
+    return bool(stripped) and set(stripped) <= {"0", "1"}
+
+
+def _infer_from_examples(example: PuzzleExample) -> tuple[str, dict[str, float]]:
+    scores = {family: 0.0 for family in OFFICIAL_FAMILIES}
+    pairs = example.parsed_examples
+    if not pairs:
+        return "equation", scores
+
+    if all(_is_binary(pair.input) and _is_binary(pair.output) for pair in pairs):
+        scores["bit"] += 1.0
+    if all(_UNIT_RE.match(pair.input) for pair in pairs):
+        scores["unit"] += 1.0
+    if all(pair.input.replace(".", "", 1).isdigit() and pair.output.replace(".", "", 1).isdigit() for pair in pairs):
+        scores["gravity"] += 0.5
+    if all(_ROMAN_RE.fullmatch(pair.output) for pair in pairs if pair.output):
+        scores["numeral"] += 1.0
+    if all(_NUMERIC_EQUATION_RE.match(pair.input) for pair in pairs):
+        scores["equation"] += 0.8
+    if any(" " in pair.input or pair.input.isalpha() for pair in pairs):
+        scores["cipher"] += 0.5
+
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    return ranked[0][0], scores
+
+
+def _classify_unit(example: PuzzleExample) -> str:
+    output_has_unit = any(_UNIT_RE.match(pair.output) for pair in example.parsed_examples)
+    return "convert" if output_has_unit else "scale"
+
+
+def _classify_numeral(example: PuzzleExample) -> str:
+    outputs = [pair.output for pair in example.parsed_examples]
+    return "roman" if outputs and all(_ROMAN_RE.fullmatch(output) for output in outputs) else "base_like"
+
+
+def _classify_equation(example: PuzzleExample) -> str:
+    values = [pair.input for pair in example.parsed_examples]
+    if example.query:
+        values.append(example.query)
+    numeric = [_NUMERIC_EQUATION_RE.match(value.strip()) is not None for value in values if value.strip()]
+    if numeric and all(numeric):
+        return "numeric"
+    if numeric and any(numeric):
+        return "mixed"
+    return "symbolic"
+
+
+def _classify_cipher(example: PuzzleExample) -> str:
+    pair_features = [extract_pair_features(pair.input, pair.output) for pair in example.parsed_examples]
+    if any(any(char in pair.input for char in ".,;:!?") for pair in example.parsed_examples):
+        return "whitespace_preserving"
+    if pair_features and all(feature.consistent_char_map and feature.input_length == feature.output_length for feature in pair_features):
+        return "char_substitution"
+    if all(len(pair.input.split()) == len(pair.output.split()) and len(pair.input.split()) > 1 for pair in example.parsed_examples):
+        return "token_substitution"
+    if any(feature.same_char_multiset for feature in pair_features):
+        return "substitution_permutation"
+    lower_prompt = example.raw_prompt.lower()
+    if "caesar" in lower_prompt or "shift" in lower_prompt:
+        return "caesar_affine"
+    return "partial_map_completion"
+
+
+def _rotate_matches(lhs: str, rhs: str) -> bool:
+    if len(lhs) != len(rhs) or not lhs:
+        return False
+    for shift in range(1, len(lhs)):
+        if lhs[shift:] + lhs[:shift] == rhs or lhs[-shift:] + lhs[:-shift] == rhs:
+            return True
+    return False
+
+
+def _constant_mask_family(example: PuzzleExample) -> str | None:
+    pairs = example.parsed_examples
+    if not pairs or not all(_is_binary(pair.input) and _is_binary(pair.output) for pair in pairs):
+        return None
+    values = [(int(pair.input, 2), int(pair.output, 2)) for pair in pairs]
+    xor_masks = {src ^ dst for src, dst in values}
+    and_masks = {src & 0xFF for src, _ in values}
+    or_masks = {dst | 0x00 for _, dst in values}
+    if len(xor_masks) == 1:
+        return "mask_logic"
+    if len(and_masks) == 1 or len(or_masks) == 1:
+        return "mask_logic"
     return None
 
 
-def _score_single_pair(input_text: str, output_text: str) -> dict[str, float]:
-    features = extract_pair_features(input_text, output_text)
-    scores = defaultdict(float)
+def _classify_bit(example: PuzzleExample) -> str:
+    pairs = example.parsed_examples
+    if pairs and all(_rotate_matches(pair.input, pair.output) for pair in pairs):
+        return "rotate"
+    if pairs and all(pair.input[4:] + pair.input[:4] == pair.output for pair in pairs if len(pair.input) == 8):
+        return "nibble_permute"
+    mask_family = _constant_mask_family(example)
+    if mask_family:
+        return mask_family
+    if len(pairs) >= 3:
+        return "multi_step"
+    return "binary_affine"
 
-    if features.is_reverse or features.is_token_reverse or features.same_char_multiset:
-        scores["reverse_reorder"] += 1.0 if features.is_reverse or features.is_token_reverse else 0.6
-    if features.consistent_char_map and not features.is_reverse and not features.same_char_multiset:
-        scores["substitution_cipher"] += 1.0
-    if features.possible_base_conversion:
-        scores["base_conversion"] += 1.0
-    if features.possible_unit_conversion:
-        scores["unit_conversion"] += 1.0
-    if features.possible_counting:
-        scores["count_filter_aggregation"] += 1.0
-    if features.equation_like or (features.numeric_input and features.numeric_output):
-        scores["arithmetic_equation"] += 0.7
-    if input_text.strip() and set(input_text.strip()) <= {"0", "1"} and set(output_text.strip()) <= {"0", "1"}:
-        scores["bit_operations"] += 0.8
-    if len([name for name, value in scores.items() if value >= 0.8]) >= 2:
-        scores["multi_step_composition"] += 0.7
 
-    return scores
+def _classify_subtype(example: PuzzleExample, family: str) -> str:
+    if family == "bit":
+        return _classify_bit(example)
+    if family == "gravity":
+        return "fit_constant"
+    if family == "unit":
+        return _classify_unit(example)
+    if family == "cipher":
+        return _classify_cipher(example)
+    if family == "numeral":
+        return _classify_numeral(example)
+    return _classify_equation(example)
 
 
 def tag_example(example: PuzzleExample) -> FamilyPrediction:
-    aggregate = defaultdict(float)
-    evidence_rows: list[dict[str, Any]] = []
-    official_family = detect_official_prompt_family(example.raw_prompt)
-    if official_family is not None:
-        aggregate[official_family] += 2.0
-    for pair in example.train_pairs:
-        scores = _score_single_pair(pair.input, pair.output)
-        aggregate.update({name: aggregate[name] + value for name, value in scores.items()})
-        evidence_rows.append({"input": pair.input, "output": pair.output, "scores": dict(scores)})
+    scores = {family: 0.0 for family in OFFICIAL_FAMILIES}
+    official_family = example.metadata.official_family or detect_official_family(example.raw_prompt)
+    if official_family:
+        scores[official_family] = 1.0
+    else:
+        official_family, inferred_scores = _infer_from_examples(example)
+        for family, score in inferred_scores.items():
+            scores[family] = max(scores[family], score)
 
-    if not example.train_pairs:
-        return FamilyPrediction(
-            families=["multi_step_composition"],
-            confidence=0.0,
-            scores={"multi_step_composition": 0.0},
-            evidence={"pairs": []},
-        )
-
-    normalized = {family: aggregate.get(family, 0.0) / len(example.train_pairs) for family in FAMILY_LABELS}
-    ranked = sorted(normalized.items(), key=lambda item: (-item[1], item[0]))
-    best_score = ranked[0][1]
-    selected = [name for name, score in ranked if score >= max(0.45, best_score * 0.7) and score > 0]
-    if len(selected) >= 2 and "multi_step_composition" not in selected:
-        normalized["multi_step_composition"] = max(normalized["multi_step_composition"], min(0.99, best_score))
-        selected.append("multi_step_composition")
-    if official_family is not None:
-        selected = [official_family] + [name for name in selected if name != official_family]
-    if not selected:
-        selected = ["multi_step_composition"]
-    confidence = best_score / max(1e-6, sum(normalized.values()) or 1.0)
+    subtype = _classify_subtype(example, official_family)
+    confidence = max(scores.values()) if any(scores.values()) else 0.0
+    if confidence <= 0:
+        confidence = 0.5
     return FamilyPrediction(
-        families=selected,
+        official_family=official_family,
+        subtype=subtype,
         confidence=min(1.0, confidence),
-        scores=dict(normalized),
-        evidence={"pairs": evidence_rows, "features": extract_example_features(example), "official_family": official_family},
+        scores=scores,
+        evidence={
+            "official_family": official_family,
+            "subtype": subtype,
+            "num_examples": len(example.parsed_examples),
+        },
     )
 
 
 def apply_family_tags(examples: list[PuzzleExample]) -> list[PuzzleExample]:
     for example in examples:
         prediction = tag_example(example)
-        example.metadata.family_tags = prediction.families
+        example.metadata.official_family = prediction.official_family
+        example.metadata.subtype = prediction.subtype
         example.metadata.family_scores = prediction.scores
-        example.metadata.composition_key = "+".join(sorted(prediction.families))
+        example.metadata.teacher_confidence = prediction.confidence
+        if not example.official_instruction:
+            example.official_instruction = example.raw_prompt.split("\n\n", 1)[0].strip()
     return examples
 
 
 def build_family_report(examples: list[PuzzleExample]) -> dict[str, Any]:
     examples = apply_family_tags(examples)
     feature_rows = [extract_example_features(example) for example in examples]
-    counts = Counter(tag for example in examples for tag in example.metadata.family_tags)
+    family_counts = Counter(example.metadata.official_family or "unknown" for example in examples)
+    subtype_counts = Counter(
+        f"{example.metadata.official_family}:{example.metadata.subtype}"
+        for example in examples
+        if example.metadata.official_family and example.metadata.subtype
+    )
     mean_confidence = 0.0
     if examples:
-        mean_confidence = sum(max(example.metadata.family_scores.values(), default=0.0) for example in examples) / len(examples)
+        mean_confidence = sum(example.metadata.teacher_confidence or 0.0 for example in examples) / len(examples)
     return {
         "num_examples": len(examples),
-        "family_counts": dict(counts),
-        "avg_top_family_confidence": mean_confidence,
+        "family_counts": dict(sorted(family_counts.items())),
+        "subtype_counts": dict(sorted(subtype_counts.items())),
+        "avg_teacher_confidence": mean_confidence,
         "avg_length_delta": sum(row["avg_length_delta"] for row in feature_rows) / max(1, len(feature_rows)),
         "avg_char_jaccard": sum(row["avg_char_jaccard"] for row in feature_rows) / max(1, len(feature_rows)),
         "avg_token_jaccard": sum(row["avg_token_jaccard"] for row in feature_rows) / max(1, len(feature_rows)),
         "rows": [
             {
                 "id": example.id,
-                "family_tags": example.metadata.family_tags,
+                "official_family": example.metadata.official_family,
+                "subtype": example.metadata.subtype,
                 "family_scores": example.metadata.family_scores,
+                "teacher_confidence": example.metadata.teacher_confidence,
                 "avg_length_delta": features["avg_length_delta"],
                 "avg_char_jaccard": features["avg_char_jaccard"],
                 "avg_token_jaccard": features["avg_token_jaccard"],

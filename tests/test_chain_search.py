@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from src.teacher.chain_search import ChainSearchEngine
 from src.competition.schema import PuzzleExample, PuzzleMetadata, PuzzlePair
+from src.teacher.chain_search import ChainSearchEngine
 
 
 def test_chain_search_solves_atomic_reverse() -> None:
     engine = ChainSearchEngine(max_depth=1)
-    candidates = engine.search([("abc", "cba"), ("lamp", "pmal")], query_input="stun", top_k=3)
+    candidates = engine.search([("abc", "cba"), ("lamp", "pmal")], query="stun", top_k=3)
     assert candidates
     assert candidates[0].query_prediction == "nuts"
     assert candidates[0].steps[0].op_name == "reverse_string"
@@ -14,7 +14,7 @@ def test_chain_search_solves_atomic_reverse() -> None:
 
 def test_chain_search_finds_two_step_composition() -> None:
     engine = ChainSearchEngine(max_depth=2, beam_width=8)
-    candidates = engine.search([("abac", "dbcb"), ("xyxz", "ayzy")], query_input="mnmo", top_k=5)
+    candidates = engine.search([("abac", "dbcb"), ("xyxz", "ayzy")], query="mnmo", top_k=5)
     assert candidates
     assert candidates[0].query_prediction == "pnon"
     assert [step.op_name for step in candidates[0].steps] == ["reverse_string", "caesar_shift"]
@@ -25,13 +25,14 @@ def test_chain_search_solves_gravity_example() -> None:
     example = PuzzleExample(
         id="gravity",
         raw_prompt="",
-        train_pairs=[
+        official_instruction="",
+        parsed_examples=[
             PuzzlePair(input="1.37", output="14.92"),
             PuzzlePair(input="4.27", output="144.96"),
             PuzzlePair(input="3.28", output="85.54"),
         ],
-        query_input="4.41",
-        metadata=PuzzleMetadata(family_tags=["gravity"]),
+        query="4.41",
+        metadata=PuzzleMetadata(official_family="gravity", subtype="fit_constant"),
     )
     candidates = engine.solve_example(example, top_k=3)
     assert candidates
@@ -44,14 +45,15 @@ def test_chain_search_solves_roman_numeral_example() -> None:
     example = PuzzleExample(
         id="numeral",
         raw_prompt="",
-        train_pairs=[
+        official_instruction="",
+        parsed_examples=[
             PuzzlePair(input="11", output="XI"),
             PuzzlePair(input="15", output="XV"),
             PuzzlePair(input="94", output="XCIV"),
             PuzzlePair(input="19", output="XIX"),
         ],
-        query_input="38",
-        metadata=PuzzleMetadata(family_tags=["numeral"]),
+        query="38",
+        metadata=PuzzleMetadata(official_family="numeral", subtype="roman"),
     )
     candidates = engine.solve_example(example, top_k=3)
     assert candidates
@@ -64,14 +66,15 @@ def test_chain_search_solves_cipher_example() -> None:
     example = PuzzleExample(
         id="cipher",
         raw_prompt="",
-        train_pairs=[
+        official_instruction="",
+        parsed_examples=[
             PuzzlePair(input="ucoov pwgtfyoqg vorq yrjjoe", output="queen discovers near valley"),
             PuzzlePair(input="pqrsfv pqorzg wvgwpo trgbjo", output="dragon dreams inside castle"),
             PuzzlePair(input="gbcpovb tqorbog bxo zrswtrj pffq", output="student creates the magical door"),
             PuzzlePair(input="bxo sfjpov pqrsfv dfjjfig", output="the golden dragon follows"),
         ],
-        query_input="trb wzrswvog hffk",
-        metadata=PuzzleMetadata(family_tags=["cipher"]),
+        query="trb wzrswvog hffk",
+        metadata=PuzzleMetadata(official_family="cipher", subtype="token_substitution"),
     )
     candidates = engine.solve_example(example, top_k=3)
     assert candidates
@@ -84,13 +87,14 @@ def test_chain_search_solves_delete_character_equation() -> None:
     example = PuzzleExample(
         id="equation_delete",
         raw_prompt="",
-        train_pairs=[
+        official_instruction="",
+        parsed_examples=[
             PuzzlePair(input="a*b*c", output="abc"),
             PuzzlePair(input="1-2-3", output="123"),
             PuzzlePair(input="%|\"|", output="%|\"|"),
         ],
-        query_input="x*y*z",
-        metadata=PuzzleMetadata(family_tags=["equation"]),
+        query="x*y*z",
+        metadata=PuzzleMetadata(official_family="equation", subtype="symbolic"),
     )
     candidates = engine.solve_example(example, top_k=3)
     assert candidates
@@ -103,14 +107,15 @@ def test_chain_search_solves_position_transducer_equation() -> None:
     example = PuzzleExample(
         id="equation_position_transducer",
         raw_prompt="",
-        train_pairs=[
+        official_instruction="",
+        parsed_examples=[
             PuzzlePair(input="%|*\"|", output="%|\"|"),
             PuzzlePair(input="\\(*[^", output="\\([^"),
             PuzzlePair(input="(%+[@", output="(%[@"),
-            PuzzlePair(input="|[*([", output="|[(["),
+            PuzzlePair(input="|[*([", output="|[(["), 
         ],
-        query_input="\\(*[#",
-        metadata=PuzzleMetadata(family_tags=["equation"]),
+        query="\\(*[#",
+        metadata=PuzzleMetadata(official_family="equation", subtype="symbolic"),
     )
     candidates = engine.solve_example(example, top_k=3)
     assert candidates
@@ -123,15 +128,16 @@ def test_chain_search_solves_operator_template_equation() -> None:
     example = PuzzleExample(
         id="equation_operator_template",
         raw_prompt="",
-        train_pairs=[
+        official_instruction="",
+        parsed_examples=[
             PuzzlePair(input="%|*\"|", output="%|\"|"),
             PuzzlePair(input="\\(*[^", output="\\([^"),
             PuzzlePair(input="(%+[@", output="(%[@"),
             PuzzlePair(input="|[*([", output="|[(["), 
             PuzzlePair(input="[^-[(", output="-^"),
         ],
-        query_input="\\(*[#",
-        metadata=PuzzleMetadata(family_tags=["equation"]),
+        query="\\(*[#",
+        metadata=PuzzleMetadata(official_family="equation", subtype="symbolic"),
     )
     candidates = engine.solve_example(example, top_k=3)
     assert candidates
@@ -144,14 +150,15 @@ def test_chain_search_solves_binary_equation_rule_example() -> None:
     example = PuzzleExample(
         id="equation_numeric",
         raw_prompt="",
-        train_pairs=[
+        official_instruction="",
+        parsed_examples=[
             PuzzlePair(input="96$54", output="5184"),
             PuzzlePair(input="50$41", output="2050"),
             PuzzlePair(input="51$95", output="4845"),
             PuzzlePair(input="89$47", output="4183"),
         ],
-        query_input="59$49",
-        metadata=PuzzleMetadata(family_tags=["equation"]),
+        query="59$49",
+        metadata=PuzzleMetadata(official_family="equation", subtype="numeric"),
     )
     candidates = engine.solve_example(example, top_k=3)
     assert candidates
@@ -164,7 +171,8 @@ def test_chain_search_solves_binary_xor_mask_example() -> None:
     example = PuzzleExample(
         id="bit_xor",
         raw_prompt="",
-        train_pairs=[
+        official_instruction="",
+        parsed_examples=[
             PuzzlePair(input="10100101", output="01010101"),
             PuzzlePair(input="00001111", output="11111111"),
             PuzzlePair(input="11000011", output="00110011"),
@@ -172,8 +180,8 @@ def test_chain_search_solves_binary_xor_mask_example() -> None:
             PuzzlePair(input="01010101", output="10100101"),
             PuzzlePair(input="00111100", output="11001100"),
         ],
-        query_input="10011001",
-        metadata=PuzzleMetadata(family_tags=["bit_manipulation"]),
+        query="10011001",
+        metadata=PuzzleMetadata(official_family="bit", subtype="mask_logic"),
     )
     candidates = engine.solve_example(example, top_k=3)
     assert candidates
@@ -186,12 +194,13 @@ def test_chain_search_rejects_non_binary_bit_states() -> None:
     example = PuzzleExample(
         id="bit_guard",
         raw_prompt="",
-        train_pairs=[
+        official_instruction="",
+        parsed_examples=[
             PuzzlePair(input="11111111", output="11101111"),
             PuzzlePair(input="00001111", output="00011111"),
         ],
-        query_input="00110011",
-        metadata=PuzzleMetadata(family_tags=["bit_manipulation"]),
+        query="00110011",
+        metadata=PuzzleMetadata(official_family="bit", subtype="mask_logic"),
     )
     candidates = engine.solve_example(example, top_k=5)
     assert candidates

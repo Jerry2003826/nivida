@@ -143,7 +143,7 @@ def extract_pair_features(input_text: str, output_text: str) -> PairFeatures:
 
 
 def extract_example_features(example: PuzzleExample) -> dict[str, Any]:
-    pair_features = [extract_pair_features(pair.input, pair.output) for pair in example.train_pairs]
+    pair_features = [extract_pair_features(pair.input, pair.output) for pair in example.parsed_examples]
     if not pair_features:
         return {
             "id": example.id,

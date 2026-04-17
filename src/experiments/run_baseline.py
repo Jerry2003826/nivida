@@ -10,6 +10,7 @@ from src.competition.schema import PuzzleExample
 from src.student.format_guard import wrap_boxed
 from src.teacher.chain_search import ChainSearchEngine
 from src.teacher.family_tagger import apply_family_tags
+from src.teacher.program_signature import annotate_example_from_candidates
 
 
 def _load_examples(input_path: str) -> list[PuzzleExample]:
@@ -20,11 +21,16 @@ def _load_examples(input_path: str) -> list[PuzzleExample]:
 
 
 def _ensure_family_tags(examples: list[PuzzleExample]) -> list[PuzzleExample]:
-    missing = [example for example in examples if not example.metadata.family_tags]
+    missing = [example for example in examples if not example.metadata.official_family or not example.metadata.subtype]
     if not missing:
         return examples
     resolved: dict[str, PuzzleExample] = {example.id: example for example in apply_family_tags(missing)}
-    return [resolved.get(example.id, example) if not example.metadata.family_tags else example for example in examples]
+    return [
+        resolved.get(example.id, example)
+        if not example.metadata.official_family or not example.metadata.subtype
+        else example
+        for example in examples
+    ]
 
 
 def main() -> None:
@@ -51,17 +57,18 @@ def main() -> None:
     evaluation_rows = []
     record_index: dict[str, dict[str, object]] = {}
     for example in examples:
-        family = example.metadata.family_tags[0] if example.metadata.family_tags else "unknown"
         candidates = engine.solve_example(example, top_k=args.top_k)
+        annotate_example_from_candidates(example, candidates)
         best = candidates[0] if candidates else None
         answer = best.query_prediction if best and best.query_prediction is not None else ""
         row = {
             "id": example.id,
             "prediction": wrap_boxed(answer) if answer else "",
             "target_answer": example.target_answer or "",
-            "family": family,
-            "family_tags": example.metadata.family_tags,
-            "confidence": 0.0 if best is None else best.confidence,
+            "official_family": example.metadata.official_family,
+            "subtype": example.metadata.subtype,
+            "teacher_confidence": example.metadata.teacher_confidence,
+            "program_signature": example.metadata.program_signature,
             "steps": [] if best is None else [step.op_name for step in best.steps],
             "debug": None if best is None else best.to_debug_dict(),
         }
@@ -75,14 +82,14 @@ def main() -> None:
         merged_records.append(
             {
                 **record,
-                "family": extras.get("family", "unknown"),
-                "family_tags": extras.get("family_tags", []),
-                "confidence": extras.get("confidence", 0.0),
+                "official_family": extras.get("official_family"),
+                "subtype": extras.get("subtype"),
+                "teacher_confidence": extras.get("teacher_confidence"),
+                "program_signature": extras.get("program_signature"),
                 "steps": extras.get("steps", []),
                 "debug": extras.get("debug"),
             }
         )
-    summary["overall_accuracy"] = summary["exact_match_rate"]
     summary["records"] = merged_records
     summary["predictions"] = merged_records
     write_json(args.output, summary)

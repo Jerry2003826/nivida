@@ -7,7 +7,9 @@ from src.student.lora_train import (
     build_training_arguments_kwargs,
     dry_run_manifest,
     ensure_generation_output_aliases,
+    infer_recommended_max_seq_length,
     load_tokenizer,
+    normalise_target_modules,
     requires_mamba_ssm,
     validate_lora_config,
 )
@@ -18,14 +20,14 @@ def test_validate_lora_config_rejects_large_rank() -> None:
         validate_lora_config({"lora": {"rank": 64}})
 
 
-def test_dry_run_manifest_contains_demo_fields() -> None:
+def test_dry_run_manifest_contains_resolved_fields() -> None:
     manifest = dry_run_manifest(
         {
             "base_model": "nvidia/Nemotron-3-Nano-30B",
             "model_source": "kagglehub",
             "model_handle": "metric/nemotron-3-nano-30b-a3b-bf16/transformers/default",
             "environment": {"KAGGLEHUB_CACHE": "/workspace/.cache/kagglehub"},
-            "lora": {"rank": 16},
+            "lora": {"rank": 32, "target_modules": ["in_proj", "out_proj"]},
             "training": {"output_dir": "artifacts/adapter"},
         }
     )
@@ -33,6 +35,7 @@ def test_dry_run_manifest_contains_demo_fields() -> None:
     assert manifest["model_source"] == "kagglehub"
     assert manifest["model_handle"].endswith("/default")
     assert manifest["environment"]["KAGGLEHUB_CACHE"] == "/workspace/.cache/kagglehub"
+    assert manifest["resolved_target_modules"] == ["in_proj", "out_proj"]
 
 
 def test_requires_mamba_ssm_only_for_nemotron_like_configs() -> None:
@@ -153,3 +156,16 @@ def test_ensure_generation_output_aliases_backfills_missing_decoder_outputs() ->
     }
     assert generation.GreedySearchDecoderOnlyOutput is generation.GenerateDecoderOnlyOutput
     assert generation.SampleDecoderOnlyOutput is generation.GenerateDecoderOnlyOutput
+
+
+def test_normalise_target_modules_supports_lists_and_regex() -> None:
+    assert normalise_target_modules(["q_proj", "v_proj"]) == ["q_proj", "v_proj"]
+    assert normalise_target_modules(".*proj$") == ".*proj$"
+
+
+def test_infer_recommended_max_seq_length_uses_p95_and_floor() -> None:
+    records = [
+        type("Record", (), {"prompt": "a", "completion": " ".join(["x"] * 10)})(),
+        type("Record", (), {"prompt": "a", "completion": " ".join(["x"] * 1100)})(),
+    ]
+    assert infer_recommended_max_seq_length(records, floor=1024, minimum_above_floor=1536, cap=2048) == 1536

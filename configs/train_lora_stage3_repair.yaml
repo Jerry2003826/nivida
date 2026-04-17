@@ -12,14 +12,17 @@ lora:
   target_modules: ".*\\.(in_proj|out_proj|up_proj|down_proj)$"
   bias: none
 training:
-  output_dir: artifacts/adapter_stage1_format_align
-  dataset_path: data/processed/stage1_format_align_train.jsonl
-  eval_path: data/processed/stage1_format_align_valid.jsonl
+  output_dir: artifacts/adapter_stage3_repair
+  dataset_path: data/processed/stage3_repair_train.jsonl
+  eval_path: data/processed/stage3_repair_valid.jsonl
   num_train_epochs: 1
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 16
-  learning_rate: 1e-4
-  max_seq_length: 1024
+  learning_rate: 5e-5
+  max_seq_length: auto
+  auto_floor_seq_length: 1024
+  auto_min_seq_length_above_floor: 1536
+  auto_max_seq_length_cap: 2048
   logging_steps: 10
   save_steps: 100
   eval_steps: 100

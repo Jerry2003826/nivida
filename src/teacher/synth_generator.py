@@ -8,12 +8,48 @@ from pathlib import Path
 from typing import Any
 
 from src.common.io import load_jsonl, read_yaml, write_json, write_jsonl
+from src.competition.official_prompts import OFFICIAL_FAMILY_INSTRUCTIONS
 from src.competition.prompt_templates import build_competition_prompt
 from src.competition.schema import PuzzleExample, PuzzleMetadata, PuzzlePair
 from src.teacher.op_catalog import build_default_catalog
+from src.teacher.program_signature import canonicalize_program_signature
 
 
 _EQUATION_RE = re.compile(r"^\s*(\d+)(\D)(\d+)\s*$")
+
+_SUBTYPE_OPS: dict[str, dict[str, list[str]]] = {
+    "bit": {
+        "rotate": ["binary_rotate_left", "binary_rotate_right"],
+        "mask_logic": ["binary_xor_mask", "binary_and_mask", "binary_or_mask"],
+        "nibble_permute": ["swap_nibbles", "binary_permutation", "binary_nibble_map"],
+        "binary_affine": ["binary_affine_transform"],
+        "multi_step": ["binary_rotate_left", "binary_rotate_right", "binary_xor_mask", "swap_nibbles", "binary_affine_transform"],
+    },
+    "gravity": {
+        "fit_constant": ["gravity_distance"],
+    },
+    "unit": {
+        "scale": ["scale_measurement"],
+        "convert": ["unit_convert"],
+    },
+    "cipher": {
+        "char_substitution": ["fixed_substitution"],
+        "token_substitution": ["vocabulary_cipher"],
+        "substitution_permutation": ["fixed_substitution", "reverse_tokens"],
+        "whitespace_preserving": ["fixed_substitution"],
+        "partial_map_completion": ["vocabulary_cipher", "fixed_substitution"],
+        "caesar_affine": ["caesar_shift"],
+    },
+    "numeral": {
+        "roman": ["decimal_to_roman"],
+        "base_like": ["decimal_to_binary", "decimal_to_hex"],
+    },
+    "equation": {
+        "numeric": ["binary_equation_rule", "add_constant", "multiply_constant", "affine_transform"],
+        "symbolic": ["operator_template", "position_transducer", "delete_characters"],
+        "mixed": ["operator_template", "binary_equation_rule"],
+    },
+}
 
 
 def _weighted_choice(rng: random.Random, weights: dict[str, float]) -> str:
@@ -46,29 +82,30 @@ def _sample_input_like(seed_text: str, rng: random.Random) -> str:
     if stripped.isdigit():
         width = len(stripped)
         return f"{rng.randint(0, 10 ** width - 1):0{width}d}"
-    alphabet = "".join(sorted(set(stripped))) or "abcd"
+    alphabet = "".join(sorted(set(stripped.replace(" ", "")))) or "abcd"
+    if " " in stripped:
+        token_count = max(1, len(stripped.split()))
+        token_width = max(3, len(stripped.split()[0]))
+        return " ".join("".join(rng.choice(alphabet) for _ in range(token_width)) for _ in range(token_count))
     return "".join(rng.choice(alphabet) for _ in stripped)
 
 
 def _example_signature(example: PuzzleExample) -> tuple[Any, ...]:
     return (
-        tuple((pair.input, pair.output) for pair in example.train_pairs),
-        example.query_input,
+        tuple((pair.input, pair.output) for pair in example.parsed_examples),
+        example.query,
         example.target_answer,
     )
 
 
-def _chainable_ops_for_family(family: str) -> list[str]:
-    mapping = {
-        "reverse_reorder": {"reverse_string", "rotate_left", "rotate_right", "sort_chars"},
-        "substitution_cipher": {"caesar_shift"},
-        "cipher": {"vocabulary_cipher"},
-        "arithmetic_equation": {"add_constant", "multiply_constant", "affine_transform"},
-        "unit_conversion": {"scale_measurement"},
-        "gravity": {"gravity_distance"},
-        "bit_manipulation": {"binary_invert", "reverse_bits", "swap_nibbles", "binary_rotate_left", "binary_rotate_right"},
-    }
-    return sorted(mapping.get(family, set()))
+def _max_chain_length_for_family(family: str, requested: int) -> int:
+    family_cap = 3 if family in {"bit", "cipher"} else 2
+    return max(1, min(requested, family_cap))
+
+
+def _pick_subtype(rng: random.Random, family: str) -> str:
+    subtype_names = sorted(_SUBTYPE_OPS[family])
+    return subtype_names[rng.randrange(len(subtype_names))]
 
 
 def _build_single_op_example(
@@ -76,6 +113,7 @@ def _build_single_op_example(
     *,
     index: int,
     family: str,
+    subtype: str,
     rng: random.Random,
     hard_negative_ratio: float,
 ) -> PuzzleExample | None:
@@ -86,15 +124,17 @@ def _build_single_op_example(
         seed_input, _, params = op.generate_random_instance(rng)
     except Exception:
         return None
+
     chain_params: list[dict[str, Any]] = [params]
     current_probe = seed_input
     try:
         current_probe = op.apply(current_probe, params)
     except Exception:
         return None
+
     for extra_op in op_chain[1:]:
         extra_params: dict[str, Any] | None = None
-        for _ in range(24):
+        for _ in range(32):
             try:
                 _, _, candidate_params = extra_op.generate_random_instance(rng)
                 extra_op.apply(current_probe, candidate_params)
@@ -109,7 +149,7 @@ def _build_single_op_example(
 
     support_inputs = [seed_input]
     attempts = 0
-    while len(support_inputs) < 3 and attempts < 24:
+    while len(support_inputs) < 3 and attempts < 32:
         attempts += 1
         candidate = _sample_input_like(seed_input, rng)
         if candidate in support_inputs:
@@ -125,20 +165,21 @@ def _build_single_op_example(
     if len(support_inputs) < 3:
         return None
 
-    query_input = _sample_input_like(seed_input, rng)
+    query = _sample_input_like(seed_input, rng)
+    query_target: str | None = None
     attempts = 0
-    while attempts < 24:
+    while attempts < 32:
         attempts += 1
-        if query_input not in support_inputs:
+        if query not in support_inputs:
             try:
-                query_target = query_input
+                query_target = query
                 for chain_op, chain_params_item in zip(op_chain, chain_params):
                     query_target = chain_op.apply(query_target, chain_params_item)
                 break
             except Exception:
                 pass
-        query_input = _sample_input_like(seed_input, rng)
-    else:
+        query = _sample_input_like(seed_input, rng)
+    if query_target is None:
         return None
 
     try:
@@ -151,28 +192,47 @@ def _build_single_op_example(
     except Exception:
         return None
 
+    signature = canonicalize_program_signature(
+        [
+            type(
+                "SigStep",
+                (),
+                {"op_name": chain_op.name, "params": params},
+            )()
+            for chain_op, params in zip(op_chain, chain_params)
+        ],
+        family=family,
+        subtype=subtype,
+    )
     metadata = PuzzleMetadata(
+        official_family=family,
+        subtype=subtype,
+        family_scores={family: 1.0},
+        teacher_confidence=1.0,
+        program_signature=signature,
+        difficulty=0.35 + 0.15 * (len(op_chain) - 1),
         source="synthetic",
         split="synthetic",
-        family_tags=[family],
-        family_scores={family: 1.0},
-        difficulty=0.35 + 0.15 * (len(op_chain) - 1),
         extras={
             "source": "synthetic",
-            "family": family,
-            "op_chain": [op.name for op in op_chain],
+            "solver_verifiable": True,
+            "support_coverage": 1.0,
+            "top1_top2_margin": 1.0,
             "chain_length": len(op_chain),
             "hard_negative": False,
+            "top_candidate_steps": [op.name for op in op_chain],
         },
     )
     if rng.random() < hard_negative_ratio:
         metadata.extras["hard_negative"] = True
         metadata.extras["negative_answer"] = query_target[::-1] if len(query_target) > 1 else f"{query_target}0"
+
     example = PuzzleExample(
         id=f"synth_{index:05d}",
         raw_prompt="",
-        train_pairs=pairs,
-        query_input=query_input,
+        official_instruction=OFFICIAL_FAMILY_INSTRUCTIONS[family],
+        parsed_examples=pairs,
+        query=query,
         target_answer=query_target,
         metadata=metadata,
     )
@@ -191,9 +251,7 @@ def generate_synthetic_examples(
 ) -> tuple[list[PuzzleExample], dict[str, Any]]:
     rng = random.Random(seed)
     ops = build_default_catalog()
-    family_ops: dict[str, list[Any]] = {}
-    for op in ops:
-        family_ops.setdefault(getattr(op, "family", "unknown"), []).append(op)
+    ops_by_name = {op.name: op for op in ops}
 
     dedupe_signatures: set[tuple[Any, ...]] = set()
     if dedupe_against_real and Path(dedupe_against_real).exists():
@@ -205,28 +263,32 @@ def generate_synthetic_examples(
     skipped_duplicates = 0
     skipped_generation_failures = 0
     generation_failure_families: Counter[str] = Counter()
-    while len(examples) < num_samples and attempts < num_samples * 24:
+
+    while len(examples) < num_samples and attempts < num_samples * 32:
         attempts += 1
         family = _weighted_choice(rng, family_weights)
-        chainable_names = set(_chainable_ops_for_family(family))
-        candidates = [op for op in family_ops.get(family, []) if not chainable_names or op.name in chainable_names]
-        if not candidates:
-            candidates = family_ops.get(family, [])
+        if family not in _SUBTYPE_OPS:
+            skipped_generation_failures += 1
+            generation_failure_families[family] += 1
+            continue
+        subtype = _pick_subtype(rng, family)
+        candidate_names = _SUBTYPE_OPS[family][subtype]
+        candidates = [ops_by_name[name] for name in candidate_names if name in ops_by_name]
         if not candidates:
             skipped_generation_failures += 1
             generation_failure_families[family] += 1
             continue
-        desired_chain_length = 1 if max_chain_length <= 1 or not chainable_names else rng.randint(1, max_chain_length)
+
+        desired_chain_length = rng.randint(1, _max_chain_length_for_family(family, max_chain_length))
         op_chain = [rng.choice(candidates)]
         while len(op_chain) < desired_chain_length:
-            chain_candidates = [op for op in candidates if op.name in chainable_names]
-            if not chain_candidates:
-                break
-            op_chain.append(rng.choice(chain_candidates))
+            op_chain.append(rng.choice(candidates))
+
         example = _build_single_op_example(
             op_chain,
             index=len(examples),
             family=family,
+            subtype=subtype,
             rng=rng,
             hard_negative_ratio=hard_negative_ratio,
         )
@@ -241,15 +303,19 @@ def generate_synthetic_examples(
         dedupe_signatures.add(signature)
         examples.append(example)
 
-    family_balance = Counter(example.metadata.family_tags[0] for example in examples if example.metadata.family_tags)
-    difficulty_distribution = Counter(str(example.metadata.difficulty) for example in examples)
+    family_balance = Counter(example.metadata.official_family for example in examples if example.metadata.official_family)
+    subtype_balance = Counter(
+        f"{example.metadata.official_family}:{example.metadata.subtype}"
+        for example in examples
+        if example.metadata.official_family and example.metadata.subtype
+    )
     chain_length_distribution = Counter(int(example.metadata.extras.get("chain_length", 1)) for example in examples)
     hard_negative_count = sum(bool(example.metadata.extras.get("hard_negative")) for example in examples)
     summary = {
         "num_examples": len(examples),
         "requested_examples": num_samples,
         "family_balance": dict(sorted(family_balance.items())),
-        "difficulty_distribution": dict(sorted(difficulty_distribution.items())),
+        "subtype_balance": dict(sorted(subtype_balance.items())),
         "chain_length_distribution": dict(sorted(chain_length_distribution.items())),
         "hard_negative_ratio": 0.0 if not examples else hard_negative_count / len(examples),
         "dedupe_rate": 0.0 if attempts == 0 else skipped_duplicates / attempts,
@@ -261,23 +327,23 @@ def generate_synthetic_examples(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate a synthetic teacher dataset.")
+    parser = argparse.ArgumentParser(description="Generate a subtype-aware synthetic teacher dataset.")
     parser.add_argument("--config", default="configs/synth.yaml")
     args = parser.parse_args()
     config = read_yaml(args.config)
     family_weights = config.get("family_weights") or {
         family: 1.0
-        for family in config.get("families", ["reverse_reorder", "substitution_cipher", "base_conversion", "arithmetic_equation"])
+        for family in config.get("families", ["bit", "cipher", "equation", "unit", "gravity", "numeral"])
     }
     examples, summary = generate_synthetic_examples(
         num_samples=int(config.get("num_samples", 128)),
         family_weights={str(key): float(value) for key, value in family_weights.items()},
-        max_chain_length=int(config.get("max_chain_length", 1)),
+        max_chain_length=int(config.get("max_chain_length", 3)),
         hard_negative_ratio=float(config.get("hard_negative_ratio", 0.0)),
         dedupe_against_real=config.get("dedupe_against_real"),
         seed=int(config.get("seed", 42)),
     )
-    output_path = config.get("output_path", "data/synthetic/synth.jsonl")
+    output_path = config.get("output_path", "data/synthetic/synth_stage2.jsonl")
     summary_path = config.get("summary_path", str(Path(output_path).with_name("synth_summary.json")))
     write_jsonl(output_path, [example.to_dict() for example in examples])
     write_json(summary_path, summary)

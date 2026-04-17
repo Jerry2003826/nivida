@@ -14,9 +14,16 @@ def main() -> None:
     args = parser.parse_args()
 
     config = read_yaml(args.config)
-    examples = generate_synthetic_examples(int(config.get("num_samples", 128)), seed=int(config.get("seed", 42)))
-    family_counts = Counter(tag for example in examples for tag in example.metadata.family_tags)
-    write_json(args.output, {"num_examples": len(examples), "family_counts": dict(family_counts)})
+    examples, summary = generate_synthetic_examples(
+        num_samples=int(config.get("num_samples", 128)),
+        family_weights={str(key): float(value) for key, value in dict(config.get("family_weights", {})).items()},
+        max_chain_length=int(config.get("max_chain_length", 3)),
+        hard_negative_ratio=float(config.get("hard_negative_ratio", 0.0)),
+        dedupe_against_real=config.get("dedupe_against_real"),
+        seed=int(config.get("seed", 42)),
+    )
+    family_counts = Counter(example.metadata.official_family for example in examples if example.metadata.official_family)
+    write_json(args.output, {"num_examples": len(examples), "family_counts": dict(family_counts), "summary": summary})
 
 
 if __name__ == "__main__":

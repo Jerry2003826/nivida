@@ -12,12 +12,14 @@ class PuzzlePair:
 
 @dataclass(slots=True)
 class PuzzleMetadata:
+    official_family: str | None = None
+    subtype: str | None = None
+    family_scores: dict[str, float] = field(default_factory=dict)
+    teacher_confidence: float | None = None
+    program_signature: str | None = None
+    difficulty: float | None = None
     source: str = "unknown"
     split: str = "unknown"
-    family_tags: list[str] = field(default_factory=list)
-    family_scores: dict[str, float] = field(default_factory=dict)
-    difficulty: float | None = None
-    composition_key: str | None = None
     extras: dict[str, Any] = field(default_factory=dict)
 
 
@@ -25,8 +27,9 @@ class PuzzleMetadata:
 class PuzzleExample:
     id: str
     raw_prompt: str
-    train_pairs: list[PuzzlePair]
-    query_input: str
+    official_instruction: str
+    parsed_examples: list[PuzzlePair]
+    query: str
     target_answer: str | None = None
     metadata: PuzzleMetadata = field(default_factory=PuzzleMetadata)
 
@@ -35,11 +38,20 @@ class PuzzleExample:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PuzzleExample":
+        metadata_payload = dict(payload.get("metadata", {}))
+        family_tags = metadata_payload.pop("family_tags", None)
+        metadata_payload.pop("composition_key", None)
+        if metadata_payload.get("official_family") is None and family_tags:
+            metadata_payload["official_family"] = str(family_tags[0])
         return cls(
             id=str(payload["id"]),
             raw_prompt=payload.get("raw_prompt", ""),
-            train_pairs=[PuzzlePair(**pair) for pair in payload.get("train_pairs", [])],
-            query_input=payload.get("query_input", ""),
+            official_instruction=payload.get("official_instruction", ""),
+            parsed_examples=[
+                PuzzlePair(**pair)
+                for pair in payload.get("parsed_examples", payload.get("train_pairs", []))
+            ],
+            query=payload.get("query", payload.get("query_input", "")),
             target_answer=payload.get("target_answer"),
-            metadata=PuzzleMetadata(**payload.get("metadata", {})),
+            metadata=PuzzleMetadata(**metadata_payload),
         )

@@ -9,23 +9,24 @@ environment:
   KAGGLEHUB_CACHE: /workspace/.cache/kagglehub
   HF_HOME: /workspace/.cache/huggingface
   TRANSFORMERS_CACHE: /workspace/.cache/huggingface/transformers
-tokenizer:
-  use_fast: false
 lora:
-  rank: 16
-  alpha: 32
+  rank: 32
+  alpha: 64
   dropout: 0.05
   target_modules: ".*\\.(in_proj|out_proj|up_proj|down_proj)$"
   bias: none
 training:
-  output_dir: artifacts/adapter_official_full_runpod
-  dataset_path: data/processed/official_stage_c_train.jsonl
-  eval_path: data/processed/official_stage_c_valid.jsonl
-  num_train_epochs: 1
+  output_dir: artifacts/adapter_stage2_distill_full_runpod
+  dataset_path: data/processed/stage2_distill_train.jsonl
+  eval_path: data/processed/stage2_distill_valid.jsonl
+  num_train_epochs: 2
   per_device_train_batch_size: 1
-  gradient_accumulation_steps: 1
-  learning_rate: 1e-4
-  max_seq_length: 1024
+  gradient_accumulation_steps: 16
+  learning_rate: 8e-5
+  max_seq_length: auto
+  auto_floor_seq_length: 1024
+  auto_min_seq_length_above_floor: 1536
+  auto_max_seq_length_cap: 2048
   logging_steps: 25
   save_steps: 500
   eval_steps: 500

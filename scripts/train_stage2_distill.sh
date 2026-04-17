@@ -7,7 +7,7 @@ python -m src.student.sft_dataset_builder \
   --input data/processed/official_train_tagged.jsonl,data/synthetic/stage2_synth.jsonl \
   --output data/processed/stage2_distill_train.jsonl \
   --selection-profile stage2 \
-  --completion-style short_trace \
+  --completion-style token_trace \
   --split-file data/splits/official/splits.json \
   --split-name hard_triad \
   --split-role train
@@ -15,11 +15,8 @@ python -m src.student.sft_dataset_builder \
   --input data/processed/official_train_tagged.jsonl,data/synthetic/stage2_synth.jsonl \
   --output data/processed/stage2_distill_valid.jsonl \
   --selection-profile stage2 \
-  --completion-style short_trace \
+  --completion-style token_trace \
   --split-file data/splits/official/splits.json \
   --split-name hard_triad \
   --split-role valid
-python -m src.experiments.run_baseline \
-  --input data/processed/official_train_tagged.jsonl \
-  --output data/processed/baseline_eval.json
-python -m src.student.lora_train --config configs/train_lora_smoke.yaml
+python -m src.student.lora_train --config configs/train_lora.yaml

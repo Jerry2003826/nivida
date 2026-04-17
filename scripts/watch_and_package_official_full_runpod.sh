@@ -3,11 +3,11 @@ set -euo pipefail
 
 cd /workspace/nivida_remote
 
-pid_file="/workspace/nivida_remote/train_official_full_runpod.pid"
-train_log="/workspace/nivida_remote/train_official_full_runpod.log"
-package_log="/workspace/nivida_remote/package_official_full_runpod.log"
-adapter_dir="artifacts/adapter_official_full_runpod"
-submission_zip="submission_official_full_runpod.zip"
+pid_file="/workspace/nivida_remote/train_stage2_distill_full_runpod.pid"
+train_log="/workspace/nivida_remote/train_stage2_distill_full_runpod.log"
+package_log="/workspace/nivida_remote/package_stage2_distill_full_runpod.log"
+adapter_dir="artifacts/adapter_stage2_distill_full_runpod"
+submission_zip="submission_stage2_distill_full_runpod.zip"
 
 if [[ ! -f "${pid_file}" ]]; then
   echo "missing pid file: ${pid_file}" >&2

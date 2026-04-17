@@ -5,20 +5,30 @@ trust_remote_code: false
 device_map: auto
 torch_dtype: float16
 lora:
-  rank: 8
-  alpha: 16
+  rank: 32
+  alpha: 64
   dropout: 0.05
-  target_modules: ".*\\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
   bias: none
 training:
   output_dir: artifacts/adapter_smoke
-  dataset_path: data/processed/official_stage_c_train.jsonl
-  eval_path: data/processed/official_stage_c_valid.jsonl
+  dataset_path: data/processed/stage2_distill_train.jsonl
+  eval_path: data/processed/stage2_distill_valid.jsonl
   num_train_epochs: 1
   per_device_train_batch_size: 1
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 16
   learning_rate: 2e-4
-  max_seq_length: 512
+  max_seq_length: auto
+  auto_floor_seq_length: 512
+  auto_min_seq_length_above_floor: 1024
+  auto_max_seq_length_cap: 1536
   logging_steps: 10
   save_steps: 100
   eval_steps: 100

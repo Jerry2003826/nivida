@@ -10,6 +10,7 @@ from typing import Any
 from src.common.io import load_table, read_yaml, write_jsonl
 from src.common.logging_utils import configure_logging
 from src.common.text_normalise import canonical_text
+from src.competition.official_prompts import detect_official_family, extract_official_instruction
 from src.competition.schema import PuzzleExample, PuzzleMetadata, PuzzlePair
 
 
@@ -169,30 +170,57 @@ def parse_row(row: dict[str, Any], *, source: str, split: str, row_index: int) -
     example_id = _normalise_segment(_pick_column(row, ["id", "sample_id", "uid"]) or f"{split}_{row_index}")
     raw_prompt = _normalise_segment(_pick_column(row, ["raw_prompt", "prompt", "question", "text"]) or "")
     target_answer = _pick_column(row, ["target_answer", "answer", "output", "label"])
-    query_input = _pick_column(row, ["query_input", "query", "test_input"])
+    query_input = _pick_column(row, ["query", "query_input", "test_input"])
     pair_field = _pick_column(row, ["train_pairs", "examples", "pairs"])
 
-    train_pairs = _parse_pairs_field(pair_field)
-    if not train_pairs and raw_prompt:
-        train_pairs = _extract_pairs_from_prompt(raw_prompt)
+    parsed_examples = _parse_pairs_field(pair_field)
+    if not parsed_examples and raw_prompt:
+        parsed_examples = _extract_pairs_from_prompt(raw_prompt)
 
     if query_input is None:
         query_input = _extract_query_from_prompt(raw_prompt)
 
+    official_family = detect_official_family(raw_prompt)
+    official_instruction = extract_official_instruction(raw_prompt, family=official_family)
     metadata = PuzzleMetadata(
+        official_family=official_family,
         source=source,
         split=split,
         extras={
             key: value
             for key, value in row.items()
-            if key.lower() not in {"id", "sample_id", "uid", "raw_prompt", "prompt", "question", "text", "target_answer", "answer", "output", "label", "query_input", "query", "test_input", "train_pairs", "examples", "pairs"}
+            if key.lower()
+            not in {
+                "id",
+                "sample_id",
+                "uid",
+                "raw_prompt",
+                "prompt",
+                "question",
+                "text",
+                "official_instruction",
+                "target_answer",
+                "answer",
+                "output",
+                "label",
+                "query_input",
+                "query",
+                "test_input",
+                "train_pairs",
+                "parsed_examples",
+                "examples",
+                "pairs",
+            }
         },
     )
     return PuzzleExample(
         id=example_id,
         raw_prompt=raw_prompt,
-        train_pairs=train_pairs,
-        query_input=_normalise_segment(query_input),
+        official_instruction=_normalise_segment(
+            _pick_column(row, ["official_instruction"]) or official_instruction
+        ),
+        parsed_examples=parsed_examples,
+        query=_normalise_segment(query_input),
         target_answer=None if target_answer is None else _normalise_segment(target_answer),
         metadata=metadata,
     )

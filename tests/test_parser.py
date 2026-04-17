@@ -13,10 +13,10 @@ def test_parse_prompt_only_row() -> None:
     }
     example = parse_row(row, source="kaggle", split="train", row_index=0)
     assert example.id == "demo"
-    assert len(example.train_pairs) == 2
-    assert example.train_pairs[0].input == "abc"
-    assert example.train_pairs[1].output == "zyx"
-    assert example.query_input == "lamp"
+    assert len(example.parsed_examples) == 2
+    assert example.parsed_examples[0].input == "abc"
+    assert example.parsed_examples[1].output == "zyx"
+    assert example.query == "lamp"
     assert example.target_answer == "pmal"
 
 
@@ -24,7 +24,7 @@ def test_parse_fixture_csv() -> None:
     fixture_path = Path("tests/fixtures/sample_competition.csv")
     examples = parse_competition_file(fixture_path, source="kaggle", split="train")
     assert len(examples) == 5
-    assert examples[0].query_input == "lamp"
+    assert examples[0].query == "lamp"
     assert examples[-1].target_answer == "pon"
 
 
@@ -41,10 +41,12 @@ Here are some examples of input -> output:
 Now, determine the output for: 00110100""",
     }
     example = parse_row(row, source="kaggle", split="test", row_index=0)
-    assert len(example.train_pairs) == 3
-    assert example.train_pairs[0].input == "01010001"
-    assert example.train_pairs[0].output == "11011101"
-    assert example.query_input == "00110100"
+    assert example.metadata.official_family == "bit"
+    assert example.official_instruction == "In Alice's Wonderland, a secret bit manipulation rule transforms 8-bit binary numbers."
+    assert len(example.parsed_examples) == 3
+    assert example.parsed_examples[0].input == "01010001"
+    assert example.parsed_examples[0].output == "11011101"
+    assert example.query == "00110100"
 
 
 def test_parse_official_gravity_prompt_format() -> None:
@@ -58,10 +60,11 @@ Now, determine the falling distance for t = 4.41s given d = 0.5*g*t^2.""",
         "answer": "154.62",
     }
     example = parse_row(row, source="kaggle", split="train", row_index=0)
-    assert len(example.train_pairs) == 3
-    assert example.train_pairs[0].input == "1.37"
-    assert example.train_pairs[0].output == "14.92"
-    assert example.query_input == "4.41"
+    assert example.metadata.official_family == "gravity"
+    assert len(example.parsed_examples) == 3
+    assert example.parsed_examples[0].input == "1.37"
+    assert example.parsed_examples[0].output == "14.92"
+    assert example.query == "4.41"
 
 
 def test_parse_official_unit_and_decrypt_queries() -> None:
@@ -73,10 +76,11 @@ def test_parse_official_unit_and_decrypt_queries() -> None:
 Now, convert the following measurement: 25.09 m""",
     }
     unit_example = parse_row(unit_row, source="kaggle", split="test", row_index=0)
-    assert len(unit_example.train_pairs) == 2
-    assert unit_example.train_pairs[0].input == "10.08 m"
-    assert unit_example.train_pairs[0].output == "6.69"
-    assert unit_example.query_input == "25.09 m"
+    assert len(unit_example.parsed_examples) == 2
+    assert unit_example.metadata.official_family == "unit"
+    assert unit_example.parsed_examples[0].input == "10.08 m"
+    assert unit_example.parsed_examples[0].output == "6.69"
+    assert unit_example.query == "25.09 m"
 
     decrypt_row = {
         "id": "cipher_like",
@@ -86,5 +90,6 @@ pqrsfv pqorzg wvgwpo trgbjo -> dragon dreams inside castle
 Now, decrypt the following text: trb wzrswvog hffk""",
     }
     decrypt_example = parse_row(decrypt_row, source="kaggle", split="test", row_index=1)
-    assert len(decrypt_example.train_pairs) == 2
-    assert decrypt_example.query_input == "trb wzrswvog hffk"
+    assert decrypt_example.metadata.official_family == "cipher"
+    assert len(decrypt_example.parsed_examples) == 2
+    assert decrypt_example.query == "trb wzrswvog hffk"

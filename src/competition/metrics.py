@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, getcontext
@@ -13,6 +12,7 @@ from src.competition.answer_extract import extract_single_boxed_answer
 
 getcontext().prec = 50
 
+BOXED_TOKEN = r"\boxed{"
 _LATEX_FRAC_RE = re.compile(r"^\\frac\{([^{}]+)\}\{([^{}]+)\}$")
 _PLAIN_FRAC_RE = re.compile(r"^([+-]?\d+)\/([+-]?\d+)$")
 
@@ -32,7 +32,6 @@ def canonicalize_answer(text: str | None) -> str:
 
 
 def parse_numeric_value(text: str | None) -> Decimal | None:
-    """Parse common numeric answer forms including fractions and base prefixes."""
     candidate = canonicalize_answer(text).replace(",", "").replace(" ", "")
     if not candidate:
         return None
@@ -48,11 +47,10 @@ def parse_numeric_value(text: str | None) -> Decimal | None:
     plain_fraction = _PLAIN_FRAC_RE.match(candidate)
     if plain_fraction:
         try:
-            return Decimal(Fraction(int(plain_fraction.group(1)), int(plain_fraction.group(2))).numerator) / Decimal(
-                Fraction(int(plain_fraction.group(1)), int(plain_fraction.group(2))).denominator
-            )
+            fraction = Fraction(int(plain_fraction.group(1)), int(plain_fraction.group(2)))
         except ZeroDivisionError:
             return None
+        return Decimal(fraction.numerator) / Decimal(fraction.denominator)
 
     try:
         if candidate.lower().startswith(("0x", "-0x", "+0x")):
@@ -70,12 +68,28 @@ def exact_match(prediction: str | None, target: str | None) -> bool:
     return canonicalize_answer(prediction) == canonicalize_answer(target)
 
 
-def numeric_match(prediction: str | None, target: str | None, tolerance: float = 1e-9) -> bool:
+def competition_numeric_match(
+    prediction: str | None,
+    target: str | None,
+    *,
+    rel_tol: float = 1e-2,
+    abs_tol: float = 1e-5,
+) -> bool:
     pred_value = parse_numeric_value(prediction)
     target_value = parse_numeric_value(target)
     if pred_value is None or target_value is None:
         return False
-    return abs(pred_value - target_value) <= Decimal(str(tolerance))
+    diff = abs(pred_value - target_value)
+    abs_tol_decimal = Decimal(str(abs_tol))
+    if diff <= abs_tol_decimal:
+        return True
+    rel_tol_decimal = Decimal(str(rel_tol))
+    scale = max(abs(pred_value), abs(target_value), Decimal("1"))
+    return diff <= rel_tol_decimal * scale
+
+
+def numeric_match(prediction: str | None, target: str | None, tolerance: float = 1e-2) -> bool:
+    return competition_numeric_match(prediction, target, rel_tol=tolerance, abs_tol=1e-5)
 
 
 @dataclass(slots=True)
@@ -86,7 +100,10 @@ class EvaluationRecord:
     boxed_valid: bool
     exact: bool
     numeric: bool
+    competition_correct: bool
     extracted_answer: str | None
+    official_family: str | None
+    subtype: str | None
 
 
 def evaluate_predictions(
@@ -95,17 +112,27 @@ def evaluate_predictions(
     prediction_key: str = "prediction",
     target_key: str = "target_answer",
     id_key: str = "id",
-    tolerance: float = 1e-9,
+    numeric_rel_tolerance: float = 1e-2,
+    numeric_abs_tolerance: float = 1e-5,
 ) -> dict[str, Any]:
     records: list[EvaluationRecord] = []
     family_buckets: dict[str, list[bool]] = {}
+    subtype_buckets: dict[str, list[bool]] = {}
     for row in rows:
         prediction = row.get(prediction_key, "")
-        target = row.get(target_key, "")
-        boxed = extract_single_boxed_answer(prediction)
+        target = row.get(target_key, row.get("target", ""))
+        boxed = extract_single_boxed_answer(str(prediction))
         extracted = boxed.answer if boxed.is_valid else None
-        exact = exact_match(prediction, target)
-        numeric = numeric_match(prediction, target, tolerance=tolerance)
+        exact = exact_match(str(prediction), str(target))
+        numeric = competition_numeric_match(
+            str(prediction),
+            str(target),
+            rel_tol=numeric_rel_tolerance,
+            abs_tol=numeric_abs_tolerance,
+        )
+        competition_correct = exact or numeric
+        official_family = row.get("official_family") or row.get("family")
+        subtype = row.get("subtype")
         records.append(
             EvaluationRecord(
                 example_id=str(row.get(id_key, len(records))),
@@ -114,16 +141,22 @@ def evaluate_predictions(
                 boxed_valid=boxed.is_valid,
                 exact=exact,
                 numeric=numeric,
+                competition_correct=competition_correct,
                 extracted_answer=extracted,
+                official_family=None if official_family is None else str(official_family),
+                subtype=None if subtype is None else str(subtype),
             )
         )
-        for family in row.get("family_tags", []):
-            family_buckets.setdefault(str(family), []).append(exact)
+        if official_family:
+            family_buckets.setdefault(str(official_family), []).append(competition_correct)
+        if official_family and subtype:
+            subtype_buckets.setdefault(f"{official_family}:{subtype}", []).append(competition_correct)
 
     total = len(records) or 1
     boxed_rate = sum(record.boxed_valid for record in records) / total
     exact_rate = sum(record.exact for record in records) / total
     numeric_rate = sum(record.numeric for record in records) / total
+    competition_correct_rate = sum(record.competition_correct for record in records) / total
     invalid_rate = 1.0 - boxed_rate
     avg_output_tokens = sum(len(record.prediction.split()) for record in records) / total
 
@@ -132,11 +165,16 @@ def evaluate_predictions(
         "boxed_rate": boxed_rate,
         "exact_match_rate": exact_rate,
         "numeric_match_rate": numeric_rate,
+        "competition_correct_rate": competition_correct_rate,
         "invalid_output_rate": invalid_rate,
         "avg_output_tokens": avg_output_tokens,
-        "family_wise_accuracy": {
+        "family_wise_competition_correct": {
             family: sum(values) / max(1, len(values))
             for family, values in sorted(family_buckets.items())
+        },
+        "subtype_wise_competition_correct": {
+            subtype: sum(values) / max(1, len(values))
+            for subtype, values in sorted(subtype_buckets.items())
         },
         "records": [
             {
@@ -146,11 +184,11 @@ def evaluate_predictions(
                 "boxed_valid": record.boxed_valid,
                 "exact": record.exact,
                 "numeric": record.numeric,
+                "competition_correct": record.competition_correct,
                 "extracted_answer": record.extracted_answer,
+                "official_family": record.official_family,
+                "subtype": record.subtype,
             }
             for record in records
         ],
     }
-
-
-BOXED_TOKEN = r"\boxed{"
