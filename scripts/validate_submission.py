@@ -28,14 +28,24 @@ def validate_submission(
     labels: str | Path | None = None,
     splits: str | Path | None = None,
     package_output: str | Path | None = None,
+    max_new_tokens: int | None = None,
 ) -> dict[str, object]:
     config = read_yaml(config_path)
     adapter_files = validate_adapter_dir(adapter_dir)
     adapter_rank = read_adapter_rank(adapter_dir)
-    if adapter_rank is not None and adapter_rank > 32:
+    if adapter_rank is None:
+        raise SubmissionValidationError(
+            "Adapter rank could not be read from adapter_config.json; "
+            "ensure the adapter was saved via peft.PeftModel.save_pretrained"
+        )
+    if adapter_rank > 32:
         raise SubmissionValidationError(f"Adapter rank must be <= 32, got {adapter_rank}")
     if labels and not smoke_input:
         raise SubmissionValidationError("--labels requires --smoke-input so local_eval can be computed")
+    if package_output and not smoke_input:
+        raise SubmissionValidationError("--package-output requires --smoke-input")
+    if package_output and not labels:
+        raise SubmissionValidationError("--package-output requires --labels")
 
     payload: dict[str, object] = {
         "adapter_files": adapter_files,
@@ -51,6 +61,7 @@ def validate_submission(
             input_path=smoke_input,
             adapter_dir=adapter_dir,
             output_path=predictions_path,
+            max_new_tokens=max_new_tokens,
         )
         payload["smoke_predictions_path"] = str(predictions_path)
 
@@ -75,13 +86,14 @@ def validate_submission(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate an adapter before packaging a submission zip.")
-    parser.add_argument("--config", default="configs/train_stage2_selected_trace.yaml")
+    parser.add_argument("--config", default="configs/train_stage3_repair.yaml")
     parser.add_argument("--adapter-dir", required=True)
     parser.add_argument("--output", default="artifacts/submission_validation.json")
     parser.add_argument("--smoke-input")
     parser.add_argument("--labels")
     parser.add_argument("--splits")
     parser.add_argument("--package-output")
+    parser.add_argument("--max-new-tokens", type=int)
     args = parser.parse_args()
 
     validate_submission(
@@ -92,6 +104,7 @@ def main() -> None:
         labels=args.labels,
         splits=args.splits,
         package_output=args.package_output,
+        max_new_tokens=args.max_new_tokens,
     )
 
 

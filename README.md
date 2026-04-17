@@ -84,11 +84,11 @@ python -m src.student.sft_dataset_builder \
   --split-role train
 ```
 
-Stage3 build from stage2 model failures plus replay:
+Stage3 build from stage2 model failures plus all-family replay:
 
 ```bash
 python -m src.student.sft_dataset_builder \
-  --input data/processed/stage3_repair_subset_train.jsonl \
+  --input data/processed/official_train_tagged.jsonl \
   --output data/processed/stage3_repair_train.jsonl \
   --selection-profile stage3 \
   --prompt-mode chat_thinking \
@@ -98,10 +98,21 @@ python -m src.student.sft_dataset_builder \
   --max-depth 2 \
   --top-k 2 \
   --repair-artifact data/processed/stage2_model_failures_train.json \
-  --replay-input data/processed/stage2_model_successes_train.json \
+  --replay-input data/processed/stage2_model_successes_all_train.json \
   --replay-ratio 0.25 \
   --report-output data/processed/stage3_repair_train_report.json
 ```
+
+Stage3 failure / success buckets are produced by `scripts/train_stage3_repair.sh`:
+
+- repair failures come from `hard_triad_rule_novelty/train` — the stage2 adapter
+  predictions that missed on the hard triad, the only samples we want to correct
+- replay successes come from `rule_novelty_all/train` — the stage2 adapter
+  predictions that were correct across all six families, so replay can keep
+  easy-triad families anchored and avoid catastrophic forgetting
+- the builder receives `data/processed/official_train_tagged.jsonl` as input so
+  `build_repair_set` can materialise replay records for ids that live outside
+  the hard-triad subset
 
 ## Training Notes
 
@@ -139,8 +150,20 @@ python scripts/validate_submission.py \
   --smoke-input data/processed/official_train_tagged.jsonl \
   --labels data/processed/official_train_tagged.jsonl \
   --splits data/splits/official/splits.json \
+  --max-new-tokens 2048 \
   --package-output submission.zip
 ```
+
+The validator hard-fails when:
+
+- `adapter_config.json` is missing or its rank cannot be parsed
+- the parsed rank exceeds 32
+- `--labels` is passed without `--smoke-input`, or `--package-output` is passed
+  without both `--smoke-input` and `--labels`
+- `--package-output` runs before a successful `local_eval`
+
+`--max-new-tokens` is optional; it overrides the inference token budget from
+the config (defaults to 2048 for `chat_thinking` in stage2 / stage3 configs).
 
 ## Tests
 

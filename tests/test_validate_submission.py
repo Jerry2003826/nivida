@@ -53,16 +53,56 @@ def test_validate_submission_requires_smoke_input_for_labels(tmp_path: Path) -> 
         )
 
 
-def test_validate_submission_requires_local_eval_before_packaging(tmp_path: Path) -> None:
+def test_validate_submission_requires_smoke_input_for_packaging(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path / "config.yaml")
     adapter_dir = _write_adapter_dir(tmp_path / "adapter")
 
-    with pytest.raises(validate_submission_module.SubmissionValidationError, match="local_eval"):
+    with pytest.raises(
+        validate_submission_module.SubmissionValidationError,
+        match="--package-output requires --smoke-input",
+    ):
         validate_submission_module.validate_submission(
             config_path=config_path,
             adapter_dir=adapter_dir,
             output_path=tmp_path / "validation.json",
             package_output=tmp_path / "submission.zip",
+        )
+
+
+def test_validate_submission_requires_labels_for_packaging(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path / "config.yaml")
+    adapter_dir = _write_adapter_dir(tmp_path / "adapter")
+    smoke_input = tmp_path / "smoke.jsonl"
+    smoke_input.write_text('{"id":"x"}\n', encoding="utf-8")
+
+    with pytest.raises(
+        validate_submission_module.SubmissionValidationError,
+        match="--package-output requires --labels",
+    ):
+        validate_submission_module.validate_submission(
+            config_path=config_path,
+            adapter_dir=adapter_dir,
+            output_path=tmp_path / "validation.json",
+            smoke_input=smoke_input,
+            package_output=tmp_path / "submission.zip",
+        )
+
+
+def test_validate_submission_requires_readable_adapter_rank(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path / "config.yaml")
+    adapter_dir = tmp_path / "adapter_no_rank"
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    (adapter_dir / "adapter_model.safetensors").write_text("weights", encoding="utf-8")
+    (adapter_dir / "adapter_config.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        validate_submission_module.SubmissionValidationError,
+        match="Adapter rank could not be read",
+    ):
+        validate_submission_module.validate_submission(
+            config_path=config_path,
+            adapter_dir=adapter_dir,
+            output_path=tmp_path / "validation.json",
         )
 
 
