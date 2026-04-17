@@ -1,0 +1,26 @@
+id,raw_prompt,train_pairs,query_input,target_answer
+reverse_string,"Input: abc
+Output: cba
+Input: stun
+Output: nuts
+Query: lamp","[{""input"":""abc"",""output"":""cba""},{""input"":""stun"",""output"":""nuts""}]","lamp","pmal"
+decimal_to_binary,"Input: 5
+Output: 101
+Input: 8
+Output: 1000
+Query: 6","[{""input"":""5"",""output"":""101""},{""input"":""8"",""output"":""1000""}]","6","110"
+count_tokens,"Input: red blue
+Output: 2
+Input: one two three
+Output: 3
+Query: alpha beta gamma delta","[{""input"":""red blue"",""output"":""2""},{""input"":""one two three"",""output"":""3""}]","alpha beta gamma delta","4"
+add_constant,"Input: 2
+Output: 5
+Input: 7
+Output: 10
+Query: 11","[{""input"":""2"",""output"":""5""},{""input"":""7"",""output"":""10""}]","11","14"
+reverse_caesar,"Input: abc
+Output: dcb
+Input: xyz
+Output: azy
+Query: mno","[{""input"":""abc"",""output"":""dcb""},{""input"":""xyz"",""output"":""azy""}]","mno","pon"

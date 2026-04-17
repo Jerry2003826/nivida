@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+import argparse
+import zipfile
+from pathlib import Path
+
+
+REQUIRED_ADAPTER_FILES = {"adapter_config.json"}
+ADAPTER_WEIGHT_CANDIDATES = ("adapter_model.safetensors", "adapter_model.bin")
+
+
+def validate_adapter_dir(adapter_dir: str | Path) -> list[str]:
+    path = Path(adapter_dir)
+    if not path.exists():
+        raise FileNotFoundError(f"Adapter directory does not exist: {path}")
+    if not path.is_dir():
+        raise NotADirectoryError(f"Adapter path must be a directory: {path}")
+
+    files = sorted(item.name for item in path.iterdir() if item.is_file())
+    missing = sorted(REQUIRED_ADAPTER_FILES - set(files))
+    if missing:
+        raise FileNotFoundError(f"Missing required adapter files: {missing}")
+    if not any(candidate in files for candidate in ADAPTER_WEIGHT_CANDIDATES):
+        raise FileNotFoundError(
+            f"Missing LoRA weight file. Expected one of: {', '.join(ADAPTER_WEIGHT_CANDIDATES)}"
+        )
+    return files
+
+
+def build_submission_zip(adapter_dir: str | Path, output_path: str | Path) -> Path:
+    adapter_path = Path(adapter_dir)
+    validate_adapter_dir(adapter_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for file_path in adapter_path.iterdir():
+            if file_path.is_file():
+                archive.write(file_path, arcname=file_path.name)
+    return output_path
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Package a saved LoRA adapter directory into submission.zip")
+    parser.add_argument("--adapter-dir", default="artifacts/adapter")
+    parser.add_argument("--output", default="submission.zip")
+    args = parser.parse_args()
+
+    validate_adapter_dir(args.adapter_dir)
+    build_submission_zip(args.adapter_dir, args.output)
+
+
+if __name__ == "__main__":
+    main()

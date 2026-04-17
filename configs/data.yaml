@@ -1,0 +1,12 @@
+seed: 42
+input_path: tests/fixtures/sample_competition.csv
+output_path: data/processed/parsed_train.jsonl
+report_output_dir: data/processed/family_report
+source: kaggle
+dataset_split: train
+build_splits: true
+split_output_dir: data/splits
+split_strategy:
+  valid_ratio: 0.25
+  family_holdout_ratio: 0.34
+  composition_holdout_ratio: 0.34

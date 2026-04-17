@@ -1,0 +1,7 @@
+seed: 42
+input_path: tests/fixtures/sample_competition.csv
+processed_path: data/processed/parsed_train.jsonl
+top_k: 5
+beam_width: 6
+max_depth: 2
+numeric_tolerance: 1e-9

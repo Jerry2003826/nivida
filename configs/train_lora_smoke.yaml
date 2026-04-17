@@ -1,0 +1,29 @@
+seed: 42
+base_model: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+model_source: huggingface
+trust_remote_code: false
+device_map: auto
+torch_dtype: float16
+lora:
+  rank: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: ".*\\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+  bias: none
+training:
+  output_dir: artifacts/adapter_smoke
+  dataset_path: data/processed/official_stage_c_train.jsonl
+  eval_path: data/processed/official_stage_c_valid.jsonl
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 2e-4
+  max_seq_length: 512
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  save_total_limit: 2
+  report_to: []
+  dataloader_pin_memory: false
+  resume_from_checkpoint:
+  dry_run: true

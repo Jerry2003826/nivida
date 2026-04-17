@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nemotron-reasoning-baseline"
+version = "0.1.0"
+description = "Offline teacher + LoRA student baseline for the NVIDIA Nemotron Model Reasoning Challenge"
+requires-python = ">=3.10"
+dependencies = [
+  "pandas>=2.0.0",
+  "pyyaml>=6.0.0",
+  "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+train = [
+  "datasets>=2.20.0",
+  "transformers>=4.44.0",
+  "accelerate>=0.33.0",
+  "peft>=0.12.0",
+  "kagglehub>=0.3.12",
+  "mamba-ssm>=2.2.4",
+]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools]
+include-package-data = true
