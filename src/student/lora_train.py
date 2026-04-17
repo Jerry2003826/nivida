@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from src.common.io import load_jsonl, read_yaml, write_json
+from src.student.package_submission import (
+    read_adapter_rank,
+    read_adapter_target_modules,
+    validate_adapter_dir,
+)
 from src.student.preflight import requires_mamba_ssm, run_training_preflight
 
 
@@ -302,7 +307,7 @@ def build_training_arguments_kwargs(
 
 
 def normalise_target_modules(raw_target_modules: Any) -> str | list[str]:
-    if isinstance(raw_target_modules, list):
+    if isinstance(raw_target_modules, (list, tuple)):
         return [str(item) for item in raw_target_modules]
     if raw_target_modules is None:
         return r".*\.(in_proj|out_proj|up_proj|down_proj)$"
@@ -377,6 +382,98 @@ def load_tokenizer(transformers_module: Any, model_path: str, config: dict[str, 
     return tokenizer
 
 
+def configure_model_for_training(model: Any, config: dict[str, Any]) -> Any:
+    training_config = dict(config.get("training", {}))
+    if bool(training_config.get("gradient_checkpointing", False)):
+        model_config = getattr(model, "config", None)
+        if model_config is not None and hasattr(model_config, "use_cache"):
+            model_config.use_cache = False
+        generation_config = getattr(model, "generation_config", None)
+        if generation_config is not None and hasattr(generation_config, "use_cache"):
+            generation_config.use_cache = False
+        if hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable()
+    return model
+
+
+def _load_trainable_adapter(peft_module: Any, model: Any, adapter_dir: str | Path) -> Any:
+    try:
+        return peft_module.PeftModel.from_pretrained(model, str(adapter_dir), is_trainable=True)
+    except TypeError:
+        return peft_module.PeftModel.from_pretrained(model, str(adapter_dir))
+
+
+def validate_init_adapter_compatibility(
+    config: dict[str, Any],
+    init_adapter_dir: str | Path,
+) -> dict[str, Any]:
+    validate_adapter_dir(init_adapter_dir)
+
+    config_rank = int(config.get("lora", {}).get("rank", 16))
+    init_rank = read_adapter_rank(init_adapter_dir)
+    if init_rank is not None and init_rank != config_rank:
+        raise ValueError(
+            f"Init adapter rank {init_rank} != config rank {config_rank}. "
+            "Keep ranks identical across staged fine-tuning."
+        )
+
+    config_target_modules = normalise_target_modules(config.get("lora", {}).get("target_modules"))
+    init_target_modules = normalise_target_modules(read_adapter_target_modules(init_adapter_dir))
+    if config_target_modules != init_target_modules:
+        raise ValueError(
+            "Init adapter target_modules do not match the current config after normalisation. "
+            f"config={config_target_modules!r} init={init_target_modules!r}"
+        )
+
+    return {
+        "init_adapter_dir": str(init_adapter_dir),
+        "init_adapter_rank": init_rank,
+        "init_adapter_target_modules": init_target_modules,
+    }
+
+
+def initialise_lora_model(
+    model: Any,
+    peft_module: Any,
+    config: dict[str, Any],
+) -> tuple[Any, dict[str, Any]]:
+    target_modules = normalise_target_modules(config.get("lora", {}).get("target_modules"))
+    matched_target_modules = resolve_target_module_matches(model, target_modules)
+    if not matched_target_modules:
+        raise ValueError(
+            f"No modules matched target_modules={target_modules!r}. "
+            "Run `python scripts/inspect_target_modules.py --config ...` first."
+        )
+
+    training_config = dict(config.get("training", {}))
+    init_adapter_dir = training_config.get("init_adapter_dir")
+    init_metadata = {
+        "init_adapter_dir": None,
+        "init_adapter_rank": None,
+        "init_adapter_target_modules": None,
+    }
+    if init_adapter_dir:
+        init_metadata = validate_init_adapter_compatibility(config, init_adapter_dir)
+        model = _load_trainable_adapter(peft_module, model, init_adapter_dir)
+    else:
+        lora_config = peft_module.LoraConfig(
+            r=int(config["lora"]["rank"]),
+            lora_alpha=int(config["lora"].get("alpha", 16)),
+            target_modules=target_modules,
+            lora_dropout=float(config["lora"].get("dropout", 0.05)),
+            bias=str(config["lora"].get("bias", "none")),
+            task_type=peft_module.TaskType.CAUSAL_LM,
+        )
+        model = peft_module.get_peft_model(model, lora_config)
+
+    return model, {
+        "target_modules": target_modules,
+        "matched_target_modules": matched_target_modules,
+        "num_matched_target_modules": len(matched_target_modules),
+        **init_metadata,
+    }
+
+
 def train_lora(config: dict[str, Any]) -> dict[str, Any]:
     validate_lora_config(config)
     applied_environment = apply_runtime_environment(config)
@@ -410,20 +507,8 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         trust_remote_code=bool(config.get("trust_remote_code", True)),
         torch_dtype=dtype,
     )
-    if bool(config.get("training", {}).get("gradient_checkpointing", False)) and hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
-
-    target_modules = normalise_target_modules(config.get("lora", {}).get("target_modules"))
-    matched_target_modules = resolve_target_module_matches(model, target_modules)
-    lora_config = peft.LoraConfig(
-        r=int(config["lora"]["rank"]),
-        lora_alpha=int(config["lora"].get("alpha", 16)),
-        target_modules=target_modules,
-        lora_dropout=float(config["lora"].get("dropout", 0.05)),
-        bias=str(config["lora"].get("bias", "none")),
-        task_type=peft.TaskType.CAUSAL_LM,
-    )
-    model = peft.get_peft_model(model, lora_config)
+    model = configure_model_for_training(model, config)
+    model, lora_initialisation = initialise_lora_model(model, peft, config)
 
     class PromptCompletionDataset(torch.utils.data.Dataset):
         def __init__(self, items: list[SupervisedRecord]) -> None:
@@ -499,8 +584,12 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         "num_eval_records": len(eval_records),
         "preflight": preflight,
         "adapter_files": adapter_files,
-        "target_modules": target_modules,
-        "matched_target_modules": matched_target_modules,
+        "target_modules": lora_initialisation["target_modules"],
+        "matched_target_modules": lora_initialisation["matched_target_modules"],
+        "num_matched_target_modules": lora_initialisation["num_matched_target_modules"],
+        "init_adapter_dir": lora_initialisation["init_adapter_dir"],
+        "init_adapter_rank": lora_initialisation["init_adapter_rank"],
+        "init_adapter_target_modules": lora_initialisation["init_adapter_target_modules"],
         "dataset_stats": summarise_supervised_records(
             records,
             max_seq_length=resolved_max_seq_length,
@@ -517,12 +606,14 @@ def main() -> None:
     parser.add_argument("--config", default="configs/train_lora.yaml")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--dry-run-stats-only", action="store_true")
+    parser.add_argument("--force-train", action="store_true")
     args = parser.parse_args()
 
     config = read_yaml(args.config)
     validate_lora_config(config)
 
-    if args.dry_run or args.dry_run_stats_only or config.get("training", {}).get("dry_run", True):
+    config_dry_run = bool(config.get("training", {}).get("dry_run", False))
+    if args.dry_run or args.dry_run_stats_only or (config_dry_run and not args.force_train):
         output_dir = Path(config.get("training", {}).get("output_dir", "artifacts/adapter"))
         write_json(output_dir / "dry_run_manifest.json", dry_run_manifest(config))
         return

@@ -3,6 +3,13 @@
 This runbook is the shortest path from a fresh H100 machine to the first real
 Nemotron stage1 smoke run.
 
+The committed smoke config routes `KAGGLEHUB_CACHE` to `/workspace/.cache/kagglehub`
+so the 47 GB base-model download lands on the large workspace volume instead of
+the container root overlay. It also sets
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, which was required on the
+first real H100 smoke to avoid a step-0 optimizer OOM caused by allocator
+fragmentation.
+
 ## 1. Bootstrap
 
 ```bash
@@ -138,8 +145,9 @@ avoids stale trainer state or half-written artifacts changing the next run.
 
 ### Disk-space preflight failure
 
-- Free space on the volume containing `artifacts/smoke/`
-- Or point `training.output_dir` to a larger volume
+- Free space on the volume used by `preflight.disk_check_path`
+- For uncached Kaggle models, confirm `KAGGLEHUB_CACHE` points at a large volume
+- If a failed run filled the root overlay with a partial download, clear `/root/.cache/kagglehub/` before retrying
 
 ### Unwritable output directory
 

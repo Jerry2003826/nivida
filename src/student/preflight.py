@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ TOKENIZER_FILE_CANDIDATES: tuple[str, ...] = (
 )
 MODEL_WEIGHT_EXTENSIONS = {".safetensors", ".bin", ".pt"}
 DEFAULT_OUTPUT_DIR = "artifacts/adapter"
+DEFAULT_KAGGLEHUB_CACHE = Path.home() / ".cache" / "kagglehub"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -140,6 +142,18 @@ def _ensure_output_dir_writable(output_dir: Path) -> Path:
     return output_dir
 
 
+def _ensure_directory(path: Path, label: str, remediation: str) -> Path:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _raise_failure(
+            label,
+            f"Unable to create {path} ({type(exc).__name__})",
+            remediation,
+        )
+    return path
+
+
 def _tokenizer_files(tokenizer_path: Path) -> list[str]:
     if not tokenizer_path.is_dir():
         _raise_failure(
@@ -196,17 +210,25 @@ def _bundle_root_has_model_weights(bundle_root: Path) -> bool:
     return False
 
 
-def _disk_space_report(output_dir: Path, required_gb: int) -> float:
-    usage = shutil.disk_usage(output_dir)
+def _configured_kagglehub_cache(config: dict[str, Any], repo_root: Path) -> Path:
+    environment = dict(config.get("environment", {}))
+    cache_raw = environment.get("KAGGLEHUB_CACHE") or os.environ.get("KAGGLEHUB_CACHE")
+    if cache_raw:
+        return _resolve_config_path(cache_raw, repo_root)
+    return DEFAULT_KAGGLEHUB_CACHE
+
+
+def _disk_space_report(target_dir: Path, required_gb: int) -> float:
+    usage = shutil.disk_usage(target_dir)
     free_gb = usage.free / (1024**3)
     if free_gb < required_gb:
         _raise_failure(
             "disk_space",
             (
-                f"Only {free_gb:.2f} GB free under {output_dir}; "
+                f"Only {free_gb:.2f} GB free under {target_dir}; "
                 f"required at least {required_gb} GB"
             ),
-            "Free disk space or point output_dir at a larger volume before retrying.",
+            "Free disk space or point the Kaggle/model output paths at a larger volume before retrying.",
         )
     return round(free_gb, 2)
 
@@ -309,6 +331,7 @@ def run_training_preflight(
         "status": "ok",
         "checks": {},
         "disk_free_gb": None,
+        "disk_check_path": None,
         "required_disk_gb": None,
         "kaggle_model_cached": None,
         "tokenizer_path": _path_for_display(tokenizer_path, repo_root),
@@ -394,16 +417,23 @@ def run_training_preflight(
         _record_success(report, "kaggle_model_access", "Not required for model_source!=kagglehub.")
 
     required_disk_gb = 20
+    disk_check_path = writable_output_dir
     if model_source == "kagglehub" and report["kaggle_model_cached"] is False:
         required_disk_gb = 80
+        disk_check_path = _ensure_directory(
+            _configured_kagglehub_cache(config, repo_root),
+            "kagglehub_cache",
+            "Set environment.KAGGLEHUB_CACHE to a writable directory on a larger volume.",
+        )
     report["required_disk_gb"] = required_disk_gb
-    report["disk_free_gb"] = _disk_space_report(writable_output_dir, required_disk_gb)
+    report["disk_check_path"] = _path_for_display(disk_check_path, repo_root)
+    report["disk_free_gb"] = _disk_space_report(disk_check_path, required_disk_gb)
     _record_success(
         report,
         "disk_space",
         (
             f"{report['disk_free_gb']:.2f} GB free at "
-            f"{_path_for_display(writable_output_dir, repo_root)} "
+            f"{report['disk_check_path']} "
             f"(required {required_disk_gb} GB)"
         ),
     )

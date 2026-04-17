@@ -32,7 +32,7 @@ training:
   report_to: []
   dataloader_pin_memory: false
   resume_from_checkpoint:
-  dry_run: true
+  dry_run: false
 inference:
   prompt_mode: chat_thinking
   max_new_tokens: 64

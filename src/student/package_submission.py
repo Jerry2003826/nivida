@@ -4,6 +4,7 @@ import argparse
 import json
 import zipfile
 from pathlib import Path
+from typing import Any
 
 
 REQUIRED_ADAPTER_FILES = {"adapter_config.json"}
@@ -28,13 +29,27 @@ def validate_adapter_dir(adapter_dir: str | Path) -> list[str]:
     return files
 
 
-def read_adapter_rank(adapter_dir: str | Path) -> int | None:
+def read_adapter_config(adapter_dir: str | Path) -> dict[str, Any]:
     config_path = Path(adapter_dir) / "adapter_config.json"
     if not config_path.exists():
-        return None
-    payload = json.loads(config_path.read_text(encoding="utf-8"))
+        return {}
+    return json.loads(config_path.read_text(encoding="utf-8"))
+
+
+def read_adapter_rank(adapter_dir: str | Path) -> int | None:
+    payload = read_adapter_config(adapter_dir)
     rank = payload.get("r")
     return None if rank is None else int(rank)
+
+
+def read_adapter_target_modules(adapter_dir: str | Path) -> str | list[str] | None:
+    payload = read_adapter_config(adapter_dir)
+    target_modules = payload.get("target_modules")
+    if target_modules is None:
+        return None
+    if isinstance(target_modules, list):
+        return [str(item) for item in target_modules]
+    return str(target_modules)
 
 
 def build_submission_zip(adapter_dir: str | Path, output_path: str | Path) -> Path:

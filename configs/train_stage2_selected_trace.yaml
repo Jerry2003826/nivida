@@ -16,6 +16,7 @@ training:
   output_dir: artifacts/adapter_stage2_selected_trace
   dataset_path: data/processed/stage2_distill_train.jsonl
   eval_path: data/processed/stage2_distill_valid.jsonl
+  init_adapter_dir: artifacts/adapter_stage1_format
   num_train_epochs: 2
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 16
@@ -35,10 +36,10 @@ training:
   report_to: []
   dataloader_pin_memory: false
   resume_from_checkpoint:
-  dry_run: true
+  dry_run: false
 inference:
   prompt_mode: chat_thinking
-  max_new_tokens: 128
+  max_new_tokens: 2048
   do_sample: false
   temperature: 1.0
   top_p: 1.0

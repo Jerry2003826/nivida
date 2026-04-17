@@ -24,4 +24,4 @@ python -m src.student.sft_dataset_builder \
   --split-file data/splits/official/splits.json \
   --split-name rule_novelty_all \
   --split-role valid
-python -m src.student.lora_train --config configs/train_stage1_format.yaml
+python -m src.student.lora_train --config configs/train_stage1_format.yaml --force-train

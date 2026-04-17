@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import warnings
 
-from src.common.io import load_jsonl, read_json, read_yaml, write_jsonl
+from src.common.io import load_jsonl, read_json, read_yaml, write_json, write_jsonl
 from src.competition.harness_prompt import (
     build_chat_thinking_prompt,
     wrap_as_thinking,
@@ -31,12 +32,13 @@ PROMPT_MODES = {
     PROMPT_MODE_GENERIC,
     PROMPT_MODE_CHAT_THINKING,
 }
+HARD_TRIAD_FAMILIES = ("cipher", "bit", "equation")
+BALANCED_FAMILY_ORDER = ("cipher", "bit", "equation", "numeral", "unit", "gravity")
 
 REPAIR_ARTIFACT_REMEDIATION = (
-    "Regenerate the artifact with: "
-    "python -m src.experiments.run_baseline "
-    "--input data/processed/official_train_tagged.jsonl "
-    "--output data/processed/baseline_eval.json"
+    "Regenerate the artifact with a competition-correct evaluator "
+    "(for example run_baseline or eval_competition_replica) so each record "
+    "includes at least 'id' and 'competition_correct'."
 )
 
 
@@ -66,9 +68,15 @@ def _load_examples(input_paths: list[str]) -> list[PuzzleExample]:
     return examples
 
 
-def _annotate_examples(examples: list[PuzzleExample], *, top_k: int = 2) -> list[PuzzleExample]:
+def _annotate_examples(
+    examples: list[PuzzleExample],
+    *,
+    beam_width: int = 8,
+    max_depth: int = 2,
+    top_k: int = 2,
+) -> list[PuzzleExample]:
     apply_family_tags(examples)
-    engine = ChainSearchEngine(beam_width=8, max_depth=2)
+    engine = ChainSearchEngine(beam_width=beam_width, max_depth=max_depth)
     for example in examples:
         if example.metadata.program_signature and example.metadata.teacher_confidence is not None:
             continue
@@ -210,6 +218,24 @@ def filter_examples_by_split(
     return filtered
 
 
+def export_split_subset(
+    examples: list[PuzzleExample],
+    *,
+    split_file: str | Path,
+    split_name: str,
+    split_role: str,
+) -> list[dict[str, Any]]:
+    return [
+        example.to_dict()
+        for example in filter_examples_by_split(
+            examples,
+            split_file=split_file,
+            split_name=split_name,
+            split_role=split_role,
+        )
+    ]
+
+
 def _source_kind(example: PuzzleExample) -> str:
     source = str(_metadata_value(example, "source", "official"))
     if source == "synthetic":
@@ -279,15 +305,156 @@ def _select_synth_stage2(example: PuzzleExample, *, official_signatures: set[str
     return signature not in official_signatures
 
 
+def _family_for_record(record: dict[str, Any]) -> str:
+    family = record.get("official_family")
+    return str(family) if family else "unknown"
+
+
+def _signature_bucket_key(record: dict[str, Any]) -> str:
+    signature = record.get("program_signature")
+    if signature:
+        return str(signature)
+    return f"id:{record.get('id', 'unknown')}"
+
+
+def _ordered_families(records: list[dict[str, Any]]) -> list[str]:
+    seen = {_family_for_record(record) for record in records}
+    ordered = [family for family in BALANCED_FAMILY_ORDER if family in seen]
+    ordered.extend(sorted(seen - set(BALANCED_FAMILY_ORDER)))
+    return ordered
+
+
+def _truncate_by_signature_bucket(
+    records: list[dict[str, Any]],
+    *,
+    max_per_signature_bucket: int,
+) -> list[dict[str, Any]]:
+    if max_per_signature_bucket <= 0:
+        return list(records)
+    signature_counts: dict[str, int] = {}
+    kept: list[dict[str, Any]] = []
+    for record in records:
+        key = _signature_bucket_key(record)
+        if signature_counts.get(key, 0) >= max_per_signature_bucket:
+            continue
+        signature_counts[key] = signature_counts.get(key, 0) + 1
+        kept.append(record)
+    return kept
+
+
+def _balance_records_by_family(
+    records: list[dict[str, Any]],
+    *,
+    hard_triad_repeat_factor: int,
+    max_per_signature_bucket: int,
+) -> list[dict[str, Any]]:
+    if not records:
+        return []
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        buckets.setdefault(_family_for_record(record), []).append(record)
+
+    family_schedule: list[str] = []
+    repeat_factor = max(1, int(hard_triad_repeat_factor))
+    for family in _ordered_families(records):
+        visits = repeat_factor if family in HARD_TRIAD_FAMILIES else 1
+        family_schedule.extend([family] * visits)
+
+    indices = {family: 0 for family in buckets}
+    signature_counts: dict[str, int] = {}
+    balanced: list[dict[str, Any]] = []
+    while True:
+        made_progress = False
+        for family in family_schedule:
+            bucket = buckets.get(family, [])
+            while indices.get(family, 0) < len(bucket):
+                record = bucket[indices[family]]
+                indices[family] += 1
+                signature_key = _signature_bucket_key(record)
+                if max_per_signature_bucket > 0 and signature_counts.get(signature_key, 0) >= max_per_signature_bucket:
+                    continue
+                signature_counts[signature_key] = signature_counts.get(signature_key, 0) + 1
+                balanced.append(record)
+                made_progress = True
+                break
+        if not made_progress:
+            break
+    return balanced
+
+
+def _record_source_dataset(record: dict[str, Any]) -> str:
+    source_dataset = record.get("source_dataset")
+    return str(source_dataset) if source_dataset else "unknown"
+
+
+def summarise_selected_sft(records: list[dict[str, Any]]) -> dict[str, Any]:
+    family_counts = Counter(_family_for_record(record) for record in records)
+    subtype_counts = Counter(
+        f"{_family_for_record(record)}:{record.get('subtype')}"
+        for record in records
+        if record.get("subtype")
+    )
+    source_dataset_counts = Counter(_record_source_dataset(record) for record in records)
+    hard_triad_records = sum(_family_for_record(record) in HARD_TRIAD_FAMILIES for record in records)
+    return {
+        "num_records": len(records),
+        "family_counts": dict(sorted(family_counts.items())),
+        "subtype_counts": dict(sorted(subtype_counts.items())),
+        "source_dataset_counts": dict(sorted(source_dataset_counts.items())),
+        "hard_triad_ratio": 0.0 if not records else hard_triad_records / len(records),
+    }
+
+
+def _mark_stage3_record(
+    record: dict[str, Any],
+    *,
+    source_dataset: str,
+    repair_source: str,
+) -> dict[str, Any]:
+    record["source_dataset"] = source_dataset
+    record["repair_source"] = repair_source
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict):
+        metadata["source_dataset"] = source_dataset
+        extras = dict(metadata.get("extras", {}))
+        extras["repair_source"] = repair_source
+        metadata["extras"] = extras
+    return record
+
+
+def summarise_repair_sft(records: list[dict[str, Any]]) -> dict[str, Any]:
+    family_counts = Counter(_family_for_record(record) for record in records)
+    source_dataset_counts = Counter(_record_source_dataset(record) for record in records)
+    repair_sources = Counter(str(record.get("repair_source", "repair")) for record in records)
+    return {
+        "num_records": len(records),
+        "repair_count": repair_sources.get("repair", 0),
+        "replay_count": repair_sources.get("replay", 0),
+        "family_counts": dict(sorted(family_counts.items())),
+        "source_dataset_counts": dict(sorted(source_dataset_counts.items())),
+    }
+
+
 def build_selected_sft(
     examples: list[PuzzleExample],
     *,
     prompt_mode: str = PROMPT_MODE_RAW_WITH_GUARD,
     trace_style: str = "token_trace",
     include_metadata: bool = True,
+    beam_width: int = 8,
+    max_depth: int = 2,
+    top_k: int = 2,
+    balance_by_family: bool = True,
+    hard_triad_repeat_factor: int = 2,
+    max_per_signature_bucket: int = 64,
     tokenizer: Any | None = None,
 ) -> list[dict[str, Any]]:
-    annotated = _annotate_examples(examples)
+    annotated = _annotate_examples(
+        examples,
+        beam_width=beam_width,
+        max_depth=max_depth,
+        top_k=top_k,
+    )
     selected_official = [example for example in annotated if _select_official_stage2(example)]
     official_signatures = {
         str(_metadata_value(example, "program_signature"))
@@ -312,7 +479,13 @@ def build_selected_sft(
                 tokenizer=tokenizer,
             )
         )
-    return records
+    if balance_by_family:
+        return _balance_records_by_family(
+            records,
+            hard_triad_repeat_factor=hard_triad_repeat_factor,
+            max_per_signature_bucket=max_per_signature_bucket,
+        )
+    return _truncate_by_signature_bucket(records, max_per_signature_bucket=max_per_signature_bucket)
 
 
 def _repair_bucket(example: PuzzleExample, failure_row: dict[str, Any]) -> str:
@@ -407,29 +580,32 @@ def build_repair_set(
     prompt_mode: str = PROMPT_MODE_RAW_WITH_GUARD,
     trace_style: str = "short_trace",
     include_metadata: bool = True,
+    beam_width: int = 8,
+    max_depth: int = 2,
+    top_k: int = 2,
+    replay_input: str | Path | None = None,
+    replay_ratio: float = 0.0,
     tokenizer: Any | None = None,
 ) -> list[dict[str, Any]]:
     payload = read_json(repair_artifact)
-    failures = _validate_repair_artifact(payload, artifact_path=repair_artifact)
+    repair_rows = _validate_repair_artifact(payload, artifact_path=repair_artifact)
     failure_index = {
         str(row["id"]): row
-        for row in failures
+        for row in repair_rows
         if not row["competition_correct"]
     }
-    annotated = _annotate_examples(examples)
-    records: list[dict[str, Any]] = []
+    annotated = _annotate_examples(
+        examples,
+        beam_width=beam_width,
+        max_depth=max_depth,
+        top_k=top_k,
+    )
+    repair_records: list[dict[str, Any]] = []
     for example in annotated:
         failure_row = failure_index.get(example.id)
         if failure_row is None:
             continue
         bucket = _repair_bucket(example, failure_row)
-        example.metadata.source = "repair"
-        example.metadata.extras = {
-            **dict(example.metadata.extras),
-            "error_type": bucket,
-            "target_signature": _metadata_value(example, "program_signature"),
-            "predicted_signature": failure_row.get("predicted_signature"),
-        }
         record = build_sft_record(
             example,
             stage="stage3",
@@ -441,8 +617,46 @@ def build_repair_set(
         record["error_type"] = bucket
         record["target_signature"] = _metadata_value(example, "program_signature")
         record["predicted_signature"] = failure_row.get("predicted_signature")
-        records.append(record)
-    return records
+        repair_records.append(_mark_stage3_record(record, source_dataset="repair", repair_source="repair"))
+
+    replay_records: list[dict[str, Any]] = []
+    if replay_input and replay_ratio > 0.0:
+        replay_payload = read_json(replay_input)
+        replay_records_payload = []
+        if isinstance(replay_payload, dict):
+            replay_records_payload = replay_payload.get("records", replay_payload.get("rows", []))
+        if replay_records_payload:
+            replay_rows = _validate_repair_artifact(replay_payload, artifact_path=replay_input)
+        else:
+            replay_rows = []
+        success_ids = {
+            str(row["id"])
+            for row in replay_rows
+            if bool(row.get("competition_correct", False))
+        }
+        replay_candidates: list[dict[str, Any]] = []
+        for example in annotated:
+            if example.id not in success_ids:
+                continue
+            record = build_sft_record(
+                example,
+                stage="stage3",
+                prompt_mode=prompt_mode,
+                trace_style=trace_style,
+                include_metadata=include_metadata,
+                tokenizer=tokenizer,
+            )
+            replay_candidates.append(_mark_stage3_record(record, source_dataset="replay", repair_source="replay"))
+        replay_target = int(len(repair_records) * replay_ratio)
+        if replay_target > 0:
+            replay_candidates = _balance_records_by_family(
+                replay_candidates,
+                hard_triad_repeat_factor=1,
+                max_per_signature_bucket=64,
+            )
+            replay_records = replay_candidates[:replay_target]
+
+    return repair_records + replay_records
 
 
 def _resolve_input_paths(args: argparse.Namespace, config: dict[str, Any]) -> list[str]:
@@ -500,8 +714,19 @@ def main() -> None:
     parser.add_argument("--split-name")
     parser.add_argument("--split-role", choices=["train", "valid"])
     parser.add_argument("--repair-artifact")
+    parser.add_argument("--replay-input")
+    parser.add_argument("--replay-ratio", type=float, default=0.0)
     parser.add_argument("--default-official-family", default="equation")
     parser.add_argument("--include-metadata", action="store_true")
+    parser.add_argument("--beam-width", type=int, default=8)
+    parser.add_argument("--max-depth", type=int, default=2)
+    parser.add_argument("--top-k", type=int, default=2)
+    parser.add_argument("--balance-by-family", dest="balance_by_family", action="store_true")
+    parser.add_argument("--no-balance-by-family", dest="balance_by_family", action="store_false")
+    parser.set_defaults(balance_by_family=True)
+    parser.add_argument("--hard-triad-repeat-factor", type=int, default=2)
+    parser.add_argument("--max-per-signature-bucket", type=int, default=64)
+    parser.add_argument("--report-output")
     parser.add_argument(
         "--tokenizer-path",
         help=(
@@ -538,6 +763,7 @@ def main() -> None:
             include_metadata=include_metadata,
             tokenizer=tokenizer,
         )
+        report = {"num_records": len(dataset)}
         default_output = "data/processed/stage1_format_align.jsonl"
     elif args.selection_profile == "stage2":
         dataset = build_selected_sft(
@@ -545,8 +771,15 @@ def main() -> None:
             prompt_mode=prompt_mode,
             trace_style=trace_style,
             include_metadata=include_metadata,
+            beam_width=args.beam_width,
+            max_depth=args.max_depth,
+            top_k=args.top_k,
+            balance_by_family=args.balance_by_family,
+            hard_triad_repeat_factor=args.hard_triad_repeat_factor,
+            max_per_signature_bucket=args.max_per_signature_bucket,
             tokenizer=tokenizer,
         )
+        report = summarise_selected_sft(dataset)
         default_output = "data/processed/stage2_distill.jsonl"
     else:
         if not args.repair_artifact:
@@ -557,12 +790,20 @@ def main() -> None:
             prompt_mode=prompt_mode,
             trace_style=trace_style,
             include_metadata=include_metadata,
+            beam_width=args.beam_width,
+            max_depth=args.max_depth,
+            top_k=args.top_k,
+            replay_input=args.replay_input,
+            replay_ratio=args.replay_ratio,
             tokenizer=tokenizer,
         )
+        report = summarise_repair_sft(dataset)
         default_output = "data/processed/stage3_repair.jsonl"
 
     output_path = args.output or config.get("output") or default_output
     write_jsonl(output_path, dataset)
+    if args.report_output:
+        write_json(args.report_output, report)
 
 
 if __name__ == "__main__":

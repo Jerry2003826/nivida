@@ -1,21 +1,26 @@
 from __future__ import annotations
 from collections import namedtuple
 from pathlib import Path
+import sys
 
 import pytest
 
+import src.student.lora_train as lora_train_module
 import src.student.preflight as preflight
 from src.common.io import write_json, write_jsonl
 from src.student.lora_train import (
     apply_runtime_environment,
     build_training_arguments_kwargs,
+    configure_model_for_training,
     dry_run_manifest,
     ensure_generation_output_aliases,
     infer_recommended_max_seq_length,
+    initialise_lora_model,
     load_tokenizer,
     normalise_target_modules,
     requires_mamba_ssm,
     summarise_supervised_records,
+    validate_init_adapter_compatibility,
     validate_lora_config,
 )
 from src.student.preflight import TrainingPreflightError, run_training_preflight
@@ -199,6 +204,26 @@ def test_load_tokenizer_falls_back_to_slow_when_fast_fails() -> None:
     assert tokenizer.pad_token == "<pad>"
 
 
+def test_configure_model_for_training_disables_use_cache_with_gradient_checkpointing() -> None:
+    class _DummyModel:
+        def __init__(self) -> None:
+            self.config = type("Config", (), {"use_cache": True})()
+            self.generation_config = type("GenerationConfig", (), {"use_cache": True})()
+            self.gradient_checkpointing_enabled = False
+
+        def gradient_checkpointing_enable(self) -> None:
+            self.gradient_checkpointing_enabled = True
+
+    model = _DummyModel()
+
+    configured = configure_model_for_training(model, {"training": {"gradient_checkpointing": True}})
+
+    assert configured is model
+    assert model.config.use_cache is False
+    assert model.generation_config.use_cache is False
+    assert model.gradient_checkpointing_enabled is True
+
+
 def test_ensure_generation_output_aliases_backfills_missing_decoder_outputs() -> None:
     generation = type("Generation", (), {"GenerateDecoderOnlyOutput": object(), "TextStreamer": object()})()
     transformers_module = type("Transformers", (), {"generation": generation})
@@ -216,6 +241,97 @@ def test_ensure_generation_output_aliases_backfills_missing_decoder_outputs() ->
 def test_normalise_target_modules_supports_lists_and_regex() -> None:
     assert normalise_target_modules(["q_proj", "v_proj"]) == ["q_proj", "v_proj"]
     assert normalise_target_modules(".*proj$") == ".*proj$"
+
+
+def test_initialise_lora_model_raises_when_no_modules_match() -> None:
+    class _FakeModel:
+        @staticmethod
+        def named_modules():
+            return [("decoder.block", object())]
+
+    class _FakePeft:
+        class TaskType:
+            CAUSAL_LM = "causal"
+
+        class LoraConfig:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        @staticmethod
+        def get_peft_model(model, _config):
+            return model
+
+    with pytest.raises(ValueError, match="No modules matched"):
+        initialise_lora_model(
+            _FakeModel(),
+            _FakePeft,
+            {"lora": {"rank": 32, "target_modules": ["in_proj"]}, "training": {}},
+        )
+
+
+def test_validate_init_adapter_compatibility_rejects_target_module_mismatch(tmp_path: Path) -> None:
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    (adapter_dir / "adapter_model.safetensors").write_text("weights", encoding="utf-8")
+    (adapter_dir / "adapter_config.json").write_text(
+        '{"r": 32, "target_modules": ["q_proj"]}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="target_modules"):
+        validate_init_adapter_compatibility(
+            {"lora": {"rank": 32, "target_modules": ["in_proj"]}},
+            adapter_dir,
+        )
+
+
+def test_initialise_lora_model_loads_trainable_init_adapter(tmp_path: Path) -> None:
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    (adapter_dir / "adapter_model.safetensors").write_text("weights", encoding="utf-8")
+    (adapter_dir / "adapter_config.json").write_text(
+        '{"r": 32, "target_modules": ["in_proj", "out_proj"]}',
+        encoding="utf-8",
+    )
+
+    class _FakeModel:
+        @staticmethod
+        def named_modules():
+            return [("layers.0.in_proj", object()), ("layers.0.out_proj", object())]
+
+    calls: list[tuple[str, bool | None]] = []
+
+    class _FakePeft:
+        class TaskType:
+            CAUSAL_LM = "causal"
+
+        class LoraConfig:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class PeftModel:
+            @staticmethod
+            def from_pretrained(model, adapter_dir_arg, is_trainable=True):
+                calls.append((str(adapter_dir_arg), is_trainable))
+                return model
+
+        @staticmethod
+        def get_peft_model(model, _config):
+            raise AssertionError("fresh LoRA path should not be used for continuation")
+
+    model, metadata = initialise_lora_model(
+        _FakeModel(),
+        _FakePeft,
+        {
+            "lora": {"rank": 32, "target_modules": ["in_proj", "out_proj"]},
+            "training": {"init_adapter_dir": str(adapter_dir)},
+        },
+    )
+
+    assert isinstance(model, _FakeModel)
+    assert calls == [(str(adapter_dir), True)]
+    assert metadata["init_adapter_dir"] == str(adapter_dir)
+    assert metadata["num_matched_target_modules"] == 2
 
 
 def test_infer_recommended_max_seq_length_uses_p95_and_floor() -> None:
@@ -346,6 +462,7 @@ def test_preflight_in_dry_run_mode_skips_remote_calls(
 
     assert report["checks"]["remote_runtime_checks"]["ok"] is True
     assert report["kaggle_model_cached"] is None
+    assert report["disk_check_path"] is None
     assert report["required_disk_gb"] is None
 
 
@@ -356,6 +473,64 @@ def test_dry_run_manifest_embeds_preflight_report(tmp_path: Path) -> None:
 
     assert manifest["preflight"]["status"] == "ok"
     assert manifest["preflight"]["checks"]["dataset_path"]["ok"] is True
+
+
+def test_main_defaults_to_real_training_when_config_omits_dry_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(tmp_path)
+    config["training"].pop("dry_run", None)
+    calls: list[str] = []
+
+    monkeypatch.setattr(lora_train_module, "read_yaml", lambda _path: config)
+    monkeypatch.setattr(lora_train_module, "validate_lora_config", lambda _config: None)
+    monkeypatch.setattr(lora_train_module, "train_lora", lambda _config: {"status": "trained"})
+    monkeypatch.setattr(lora_train_module, "write_json", lambda path, payload: calls.append(str(path)))
+    monkeypatch.setattr(sys, "argv", ["lora_train", "--config", "dummy.yaml"])
+
+    lora_train_module.main()
+
+    assert calls == [str(Path(config["training"]["output_dir"]) / "last_run_summary.json")]
+
+
+def test_main_force_train_overrides_config_dry_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(tmp_path)
+    config["training"]["dry_run"] = True
+    trained: list[dict[str, object]] = []
+
+    monkeypatch.setattr(lora_train_module, "read_yaml", lambda _path: config)
+    monkeypatch.setattr(lora_train_module, "validate_lora_config", lambda _config: None)
+    monkeypatch.setattr(lora_train_module, "train_lora", lambda _config: trained.append(_config) or {"status": "trained"})
+    monkeypatch.setattr(lora_train_module, "write_json", lambda path, payload: None)
+    monkeypatch.setattr(sys, "argv", ["lora_train", "--config", "dummy.yaml", "--force-train"])
+
+    lora_train_module.main()
+
+    assert trained == [config]
+
+
+def test_main_dry_run_still_wins_over_force_train(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(tmp_path)
+    config["training"]["dry_run"] = False
+    dry_run_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(lora_train_module, "read_yaml", lambda _path: config)
+    monkeypatch.setattr(lora_train_module, "validate_lora_config", lambda _config: None)
+    monkeypatch.setattr(lora_train_module, "dry_run_manifest", lambda _config: dry_run_calls.append(_config) or {"status": "dry"})
+    monkeypatch.setattr(lora_train_module, "train_lora", lambda _config: (_ for _ in ()).throw(AssertionError("should not train")))
+    monkeypatch.setattr(lora_train_module, "write_json", lambda path, payload: None)
+    monkeypatch.setattr(sys, "argv", ["lora_train", "--config", "dummy.yaml", "--dry-run", "--force-train"])
+
+    lora_train_module.main()
+
+    assert dry_run_calls == [config]
 
 
 def test_preflight_uses_probe_sha_and_relative_tokenizer_path(tmp_path: Path) -> None:
@@ -415,6 +590,7 @@ def test_preflight_disk_threshold_is_20gb_when_model_cached(
     report = run_training_preflight(config, dry_run=False, repo_root=tmp_path)
 
     assert report["kaggle_model_cached"] is True
+    assert report["disk_check_path"] == "artifacts/adapter"
     assert report["required_disk_gb"] == 20
     assert report["disk_free_gb"] == 25.0
 
@@ -430,6 +606,7 @@ def test_preflight_disk_threshold_is_80gb_when_model_not_cached(
             "model_source": "kagglehub",
             "model_handle": "metric/nemotron-3-nano-30b-a3b-bf16/transformers/default",
             "trust_remote_code": True,
+            "environment": {"KAGGLEHUB_CACHE": "workspace/kagglehub-cache"},
         }
     )
     bundle_root = tmp_path / "cache" / "tokenizer_only_bundle"
@@ -443,10 +620,19 @@ def test_preflight_disk_threshold_is_80gb_when_model_not_cached(
         return object()
 
     monkeypatch.setattr(preflight, "_import_or_raise", _fake_import)
-    monkeypatch.setattr(preflight.shutil, "disk_usage", lambda _path: _usage(200, 90))
+
+    disk_usage_paths: list[Path] = []
+
+    def _fake_disk_usage(path: Path):
+        disk_usage_paths.append(Path(path))
+        return _usage(200, 90)
+
+    monkeypatch.setattr(preflight.shutil, "disk_usage", _fake_disk_usage)
 
     report = run_training_preflight(config, dry_run=False, repo_root=tmp_path)
 
     assert report["kaggle_model_cached"] is False
+    assert report["disk_check_path"] == "workspace/kagglehub-cache"
     assert report["required_disk_gb"] == 80
     assert report["disk_free_gb"] == 90.0
+    assert disk_usage_paths == [tmp_path / "workspace" / "kagglehub-cache"]

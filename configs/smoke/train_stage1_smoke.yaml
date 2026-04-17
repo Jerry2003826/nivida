@@ -6,6 +6,9 @@ tokenizer_path: artifacts/_tokenizer_cache/metric_nemotron-3-nano-30b-a3b-bf16_t
 trust_remote_code: true
 device_map: auto
 torch_dtype: bfloat16
+environment:
+  KAGGLEHUB_CACHE: /workspace/.cache/kagglehub
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
 lora:
   rank: 32
   alpha: 64
