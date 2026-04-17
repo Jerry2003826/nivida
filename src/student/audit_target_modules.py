@@ -34,7 +34,7 @@ def audit_modules(config: dict[str, object]) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Audit model module names for LoRA targeting.")
-    parser.add_argument("--config", default="configs/train_lora_stage2_distill.yaml")
+    parser.add_argument("--config", default="configs/train_stage2_selected_trace.yaml")
     parser.add_argument("--output", default="artifacts/target_module_audit.json")
     args = parser.parse_args()
 

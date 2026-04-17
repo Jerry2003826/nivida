@@ -1,0 +1,11 @@
+seed: 42
+input_path: 官方资料/competition_data/unzipped/train.csv
+output_path: data/processed/official_train_tagged.jsonl
+report_output_dir: data/processed/official_family_report
+source: kaggle
+dataset_split: train
+build_splits: true
+split_output_dir: data/splits/official
+split_strategy:
+  rule_novelty_valid_ratio: 0.15
+  hard_triad_valid_ratio: 0.15

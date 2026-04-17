@@ -12,3 +12,10 @@ family_weights:
   numeral: 0.7
   unit: 0.7
   gravity: 0.6
+subtype_weights:
+  bit_xor_mask: 1.2
+  bit_affine: 1.2
+  cipher_token_sub: 1.2
+  cipher_vocab: 1.1
+  equation_template: 1.2
+  equation_position: 1.1

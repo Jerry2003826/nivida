@@ -5,11 +5,13 @@ import importlib
 import inspect
 import math
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from src.common.io import load_jsonl, read_yaml, write_json
+from src.student.preflight import requires_mamba_ssm, run_training_preflight
 
 
 def validate_lora_config(config: dict[str, Any]) -> None:
@@ -48,37 +50,23 @@ def _maybe_add_kaggle_cutlass_path() -> str | None:
     return None
 
 
-def dry_run_manifest(config: dict[str, Any]) -> dict[str, Any]:
-    validate_lora_config(config)
-    training = config.get("training", {})
-    return {
-        "base_model": config.get("base_model"),
-        "model_source": config.get("model_source", "huggingface"),
-        "model_handle": config.get("model_handle"),
-        "lora": config.get("lora", {}),
-        "environment": {
-            str(key): str(value)
-            for key, value in dict(config.get("environment", {})).items()
-            if value not in (None, "")
-        },
-        "training": training,
-        "resolved_max_seq_length": resolve_max_seq_length(config),
-        "resolved_target_modules": normalise_target_modules(config.get("lora", {}).get("target_modules")),
-        "status": "dry_run_ok",
-        "notes": "Training loop wired for Kaggle demo compatibility; dry-run skips model loading and optimization.",
-    }
-
-
 @dataclass(slots=True)
 class SupervisedRecord:
     prompt: str
     completion: str
+    official_family: str | None = None
+    subtype: str | None = None
 
 
 def load_supervised_records(path: str | Path) -> list[SupervisedRecord]:
     rows = load_jsonl(path)
     return [
-        SupervisedRecord(prompt=str(row["prompt"]), completion=str(row["completion"]))
+        SupervisedRecord(
+            prompt=str(row["prompt"]),
+            completion=str(row["completion"]),
+            official_family=None if row.get("official_family") is None else str(row.get("official_family")),
+            subtype=None if row.get("subtype") is None else str(row.get("subtype")),
+        )
         for row in rows
         if row.get("prompt") and row.get("completion")
     ]
@@ -89,7 +77,68 @@ def _build_text_sample(record: SupervisedRecord, eos_token: str = "") -> str:
 
 
 def _simple_token_count(text: str) -> int:
+    """Whitespace-based length fallback used when no tokenizer is available.
+
+    Only appropriate for dry-runs without a real tokenizer; any production
+    accounting of BPE length goes through the ``tokenizer`` path.
+    """
     return len(text.split())
+
+
+def _measure_length(text: str, tokenizer: Any | None) -> int:
+    """Return BPE length if a tokenizer is provided, else the whitespace fallback."""
+    if tokenizer is None:
+        return _simple_token_count(text)
+    return len(tokenizer(text, add_special_tokens=False)["input_ids"])
+
+
+def _percentile(lengths: list[int], percentile: float) -> int:
+    if not lengths:
+        return 0
+    ordered = sorted(lengths)
+    index = max(0, math.ceil(percentile * len(ordered)) - 1)
+    return ordered[index]
+
+
+def summarise_supervised_records(
+    records: list[SupervisedRecord],
+    *,
+    max_seq_length: int | None = None,
+    tokenizer: Any | None = None,
+) -> dict[str, Any]:
+    prompt_lengths = [_measure_length(record.prompt, tokenizer) for record in records]
+    completion_lengths = [
+        _measure_length(record.completion, tokenizer) for record in records
+    ]
+    total_lengths = [
+        _measure_length(_build_text_sample(record), tokenizer) for record in records
+    ]
+
+    family_distribution: dict[str, int] = {}
+    subtype_distribution: dict[str, int] = {}
+    for record in records:
+        family = record.official_family or "unknown"
+        family_distribution[family] = family_distribution.get(family, 0) + 1
+        if record.subtype:
+            key = f"{family}:{record.subtype}"
+            subtype_distribution[key] = subtype_distribution.get(key, 0) + 1
+
+    truncation_ratio = 0.0
+    if max_seq_length:
+        truncation_ratio = sum(length > max_seq_length for length in total_lengths) / max(1, len(total_lengths))
+
+    return {
+        "num_samples": len(records),
+        "length_unit": "bpe_tokens" if tokenizer is not None else "whitespace_words",
+        "family_distribution": dict(sorted(family_distribution.items())),
+        "subtype_distribution": dict(sorted(subtype_distribution.items())),
+        "prompt_length_p50": _percentile(prompt_lengths, 0.50),
+        "prompt_length_p95": _percentile(prompt_lengths, 0.95),
+        "completion_length_p50": _percentile(completion_lengths, 0.50),
+        "completion_length_p95": _percentile(completion_lengths, 0.95),
+        "total_length_p95": _percentile(total_lengths, 0.95),
+        "truncation_ratio": truncation_ratio,
+    }
 
 
 def infer_recommended_max_seq_length(
@@ -109,9 +158,7 @@ def infer_recommended_max_seq_length(
             lengths.append(_simple_token_count(sample))
         else:
             lengths.append(len(tokenizer(sample, add_special_tokens=False)["input_ids"]))
-    lengths.sort()
-    percentile_index = max(0, math.ceil(0.95 * len(lengths)) - 1)
-    p95 = lengths[percentile_index]
+    p95 = _percentile(lengths, 0.95)
     if p95 <= floor:
         return floor
     return min(cap, max(minimum_above_floor, p95))
@@ -133,6 +180,66 @@ def resolve_max_seq_length(config: dict[str, Any], *, tokenizer: Any | None = No
         cap=int(training.get("auto_max_seq_length_cap", 2048)),
         tokenizer=tokenizer,
     )
+
+
+def _load_metrics_tokenizer(config: dict[str, Any]) -> Any | None:
+    """Resolve an optional tokenizer for dataset-stats accounting.
+
+    Looks up ``tokenizer_path`` at the top level of the config. The tokenizer
+    is loaded via transformers.AutoTokenizer and never downloads weights, so
+    it is safe for dry-run contexts. If the path is missing or transformers is
+    not installed, returns ``None`` and the caller falls back to whitespace
+    length.
+    """
+    tokenizer_path = config.get("tokenizer_path")
+    if not tokenizer_path:
+        return None
+    try:
+        from transformers import AutoTokenizer
+    except ImportError:
+        return None
+    try:
+        return AutoTokenizer.from_pretrained(str(tokenizer_path), trust_remote_code=True)
+    except Exception:
+        return None
+
+
+def dry_run_manifest(config: dict[str, Any]) -> dict[str, Any]:
+    validate_lora_config(config)
+    preflight = run_training_preflight(config, dry_run=True)
+    training = config.get("training", {})
+    metrics_tokenizer = _load_metrics_tokenizer(config)
+    resolved_max_seq_length = resolve_max_seq_length(config, tokenizer=metrics_tokenizer)
+    dataset_stats = None
+    dataset_path = training.get("dataset_path")
+    if dataset_path and Path(dataset_path).exists():
+        dataset_stats = summarise_supervised_records(
+            load_supervised_records(dataset_path),
+            max_seq_length=resolved_max_seq_length,
+            tokenizer=metrics_tokenizer,
+        )
+    return {
+        "base_model": config.get("base_model"),
+        "model_source": config.get("model_source", "huggingface"),
+        "model_handle": config.get("model_handle"),
+        "lora": config.get("lora", {}),
+        "environment": {
+            str(key): str(value)
+            for key, value in dict(config.get("environment", {})).items()
+            if value not in (None, "")
+        },
+        "training": training,
+        "tokenizer_path": config.get("tokenizer_path"),
+        "dataset_stats_tokenizer": (
+            type(metrics_tokenizer).__name__ if metrics_tokenizer is not None else None
+        ),
+        "preflight": preflight,
+        "resolved_max_seq_length": resolved_max_seq_length,
+        "resolved_target_modules": normalise_target_modules(config.get("lora", {}).get("target_modules")),
+        "dataset_stats": dataset_stats,
+        "status": "dry_run_ok",
+        "notes": "Training loop wired for Kaggle demo compatibility; dry-run skips model loading and optimization.",
+    }
 
 
 def _load_torch_dtype(torch_module: Any, dtype_name: str) -> Any:
@@ -170,6 +277,9 @@ def build_training_arguments_kwargs(
         "per_device_train_batch_size": int(training_config.get("per_device_train_batch_size", 1)),
         "gradient_accumulation_steps": int(training_config.get("gradient_accumulation_steps", 1)),
         "learning_rate": float(training_config.get("learning_rate", 1e-4)),
+        "warmup_ratio": float(training_config.get("warmup_ratio", 0.0)),
+        "lr_scheduler_type": str(training_config.get("lr_scheduler_type", "linear")),
+        "max_grad_norm": float(training_config.get("max_grad_norm", 1.0)),
         "logging_steps": int(training_config.get("logging_steps", 10)),
         "save_steps": int(training_config.get("save_steps", 100)),
         "eval_steps": int(training_config.get("eval_steps", 100)),
@@ -179,6 +289,7 @@ def build_training_arguments_kwargs(
         "report_to": list(training_config.get("report_to", [])),
         "remove_unused_columns": False,
         "dataloader_pin_memory": bool(training_config.get("dataloader_pin_memory", False)),
+        "gradient_checkpointing": bool(training_config.get("gradient_checkpointing", False)),
         "seed": int(config.get("seed", 42)),
     }
     evaluation_value = "steps" if has_eval_dataset else "no"
@@ -198,17 +309,12 @@ def normalise_target_modules(raw_target_modules: Any) -> str | list[str]:
     return str(raw_target_modules)
 
 
-def requires_mamba_ssm(config: dict[str, Any]) -> bool:
-    source = str(config.get("model_source", "huggingface")).lower()
-    base_model = str(config.get("base_model", "")).lower()
-    model_handle = str(config.get("model_handle", "")).lower()
-    if source == "kagglehub":
-        return True
-    if "nemotron" in base_model or "mamba" in base_model:
-        return True
-    if "nemotron" in model_handle or "mamba" in model_handle:
-        return True
-    return bool(config.get("trust_remote_code", False) and ("nemotron" in base_model or "nemotron" in model_handle))
+def resolve_target_module_matches(model: Any, target_modules: str | list[str]) -> list[str]:
+    module_names = [name for name, _ in model.named_modules() if name]
+    if isinstance(target_modules, list):
+        return [name for name in module_names if any(name.endswith(token) for token in target_modules)]
+    pattern = re.compile(target_modules)
+    return [name for name in module_names if pattern.search(name)]
 
 
 def apply_runtime_environment(config: dict[str, Any]) -> dict[str, str]:
@@ -274,6 +380,7 @@ def load_tokenizer(transformers_module: Any, model_path: str, config: dict[str, 
 def train_lora(config: dict[str, Any]) -> dict[str, Any]:
     validate_lora_config(config)
     applied_environment = apply_runtime_environment(config)
+    preflight = run_training_preflight(config, dry_run=False)
 
     _maybe_add_kaggle_cutlass_path()
     torch = _import_or_raise("torch")
@@ -294,7 +401,6 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
 
     model_path = resolve_model_path(config)
     dtype = _load_torch_dtype(torch, config.get("torch_dtype", "bfloat16"))
-
     tokenizer = load_tokenizer(transformers, model_path, config)
     resolved_max_seq_length = resolve_max_seq_length(config, tokenizer=tokenizer)
 
@@ -304,8 +410,11 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         trust_remote_code=bool(config.get("trust_remote_code", True)),
         torch_dtype=dtype,
     )
+    if bool(config.get("training", {}).get("gradient_checkpointing", False)) and hasattr(model, "gradient_checkpointing_enable"):
+        model.gradient_checkpointing_enable()
 
     target_modules = normalise_target_modules(config.get("lora", {}).get("target_modules"))
+    matched_target_modules = resolve_target_module_matches(model, target_modules)
     lora_config = peft.LoraConfig(
         r=int(config["lora"]["rank"]),
         lora_alpha=int(config["lora"].get("alpha", 16)),
@@ -388,8 +497,15 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         "generation_aliases": generation_aliases,
         "num_train_records": len(records),
         "num_eval_records": len(eval_records),
+        "preflight": preflight,
         "adapter_files": adapter_files,
         "target_modules": target_modules,
+        "matched_target_modules": matched_target_modules,
+        "dataset_stats": summarise_supervised_records(
+            records,
+            max_seq_length=resolved_max_seq_length,
+            tokenizer=tokenizer,
+        ),
         "resolved_max_seq_length": resolved_max_seq_length,
     }
     write_json(output_dir / "training_metadata.json", metadata)
@@ -400,18 +516,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train or dry-run a Nemotron LoRA adapter.")
     parser.add_argument("--config", default="configs/train_lora.yaml")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--dry-run-stats-only", action="store_true")
     args = parser.parse_args()
 
     config = read_yaml(args.config)
     validate_lora_config(config)
-    output_dir = Path(config.get("training", {}).get("output_dir", "artifacts/adapter"))
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.dry_run or config.get("training", {}).get("dry_run", True):
+    if args.dry_run or args.dry_run_stats_only or config.get("training", {}).get("dry_run", True):
+        output_dir = Path(config.get("training", {}).get("output_dir", "artifacts/adapter"))
         write_json(output_dir / "dry_run_manifest.json", dry_run_manifest(config))
         return
 
     metadata = train_lora(config)
+    output_dir = Path(config.get("training", {}).get("output_dir", "artifacts/adapter"))
     write_json(output_dir / "last_run_summary.json", metadata)
 
 

@@ -81,11 +81,21 @@ def competition_numeric_match(
         return False
     diff = abs(pred_value - target_value)
     abs_tol_decimal = Decimal(str(abs_tol))
-    if diff <= abs_tol_decimal:
-        return True
     rel_tol_decimal = Decimal(str(rel_tol))
-    scale = max(abs(pred_value), abs(target_value), Decimal("1"))
-    return diff <= rel_tol_decimal * scale
+    scale = max(abs(pred_value), abs(target_value))
+    return diff <= max(abs_tol_decimal, rel_tol_decimal * scale)
+
+
+def competition_correct(
+    prediction: str | None,
+    target: str | None,
+    *,
+    rel_tol: float = 1e-2,
+    abs_tol: float = 1e-5,
+) -> bool:
+    if exact_match(prediction, target):
+        return True
+    return competition_numeric_match(prediction, target, rel_tol=rel_tol, abs_tol=abs_tol)
 
 
 def numeric_match(prediction: str | None, target: str | None, tolerance: float = 1e-2) -> bool:
@@ -116,7 +126,8 @@ def evaluate_predictions(
     numeric_abs_tolerance: float = 1e-5,
 ) -> dict[str, Any]:
     records: list[EvaluationRecord] = []
-    family_buckets: dict[str, list[bool]] = {}
+    family_exact_buckets: dict[str, list[bool]] = {}
+    family_competition_buckets: dict[str, list[bool]] = {}
     subtype_buckets: dict[str, list[bool]] = {}
     for row in rows:
         prediction = row.get(prediction_key, "")
@@ -130,7 +141,7 @@ def evaluate_predictions(
             rel_tol=numeric_rel_tolerance,
             abs_tol=numeric_abs_tolerance,
         )
-        competition_correct = exact or numeric
+        correct = exact or numeric
         official_family = row.get("official_family") or row.get("family")
         subtype = row.get("subtype")
         records.append(
@@ -141,16 +152,17 @@ def evaluate_predictions(
                 boxed_valid=boxed.is_valid,
                 exact=exact,
                 numeric=numeric,
-                competition_correct=competition_correct,
+                competition_correct=correct,
                 extracted_answer=extracted,
                 official_family=None if official_family is None else str(official_family),
                 subtype=None if subtype is None else str(subtype),
             )
         )
         if official_family:
-            family_buckets.setdefault(str(official_family), []).append(competition_correct)
+            family_exact_buckets.setdefault(str(official_family), []).append(exact)
+            family_competition_buckets.setdefault(str(official_family), []).append(correct)
         if official_family and subtype:
-            subtype_buckets.setdefault(f"{official_family}:{subtype}", []).append(competition_correct)
+            subtype_buckets.setdefault(f"{official_family}:{subtype}", []).append(correct)
 
     total = len(records) or 1
     boxed_rate = sum(record.boxed_valid for record in records) / total
@@ -168,9 +180,21 @@ def evaluate_predictions(
         "competition_correct_rate": competition_correct_rate,
         "invalid_output_rate": invalid_rate,
         "avg_output_tokens": avg_output_tokens,
+        "family_wise_accuracy_exact": {
+            family: sum(values) / max(1, len(values))
+            for family, values in sorted(family_exact_buckets.items())
+        },
+        "family_wise_accuracy_competition": {
+            family: sum(values) / max(1, len(values))
+            for family, values in sorted(family_competition_buckets.items())
+        },
         "family_wise_competition_correct": {
             family: sum(values) / max(1, len(values))
-            for family, values in sorted(family_buckets.items())
+            for family, values in sorted(family_competition_buckets.items())
+        },
+        "subtype_wise_accuracy_competition": {
+            subtype: sum(values) / max(1, len(values))
+            for subtype, values in sorted(subtype_buckets.items())
         },
         "subtype_wise_competition_correct": {
             subtype: sum(values) / max(1, len(values))

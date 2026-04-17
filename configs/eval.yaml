@@ -4,4 +4,6 @@ processed_path: data/processed/parsed_train.jsonl
 top_k: 5
 beam_width: 6
 max_depth: 2
-numeric_tolerance: 1e-9
+numeric_rel_tolerance: 1e-2
+numeric_abs_tolerance: 1e-5
+headline_metric: competition_correct_rate

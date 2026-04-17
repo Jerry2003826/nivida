@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import zipfile
 from pathlib import Path
 
@@ -25,6 +26,15 @@ def validate_adapter_dir(adapter_dir: str | Path) -> list[str]:
             f"Missing LoRA weight file. Expected one of: {', '.join(ADAPTER_WEIGHT_CANDIDATES)}"
         )
     return files
+
+
+def read_adapter_rank(adapter_dir: str | Path) -> int | None:
+    config_path = Path(adapter_dir) / "adapter_config.json"
+    if not config_path.exists():
+        return None
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    rank = payload.get("r")
+    return None if rank is None else int(rank)
 
 
 def build_submission_zip(adapter_dir: str | Path, output_path: str | Path) -> Path:

@@ -1,0 +1,46 @@
+seed: 42
+base_model: nvidia/Nemotron-3-Nano-30B
+model_source: kagglehub
+model_handle: metric/nemotron-3-nano-30b-a3b-bf16/transformers/default
+tokenizer_path: artifacts/_tokenizer_cache/metric_nemotron-3-nano-30b-a3b-bf16_transformers_default
+trust_remote_code: true
+device_map: auto
+torch_dtype: bfloat16
+lora:
+  rank: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules: ".*\\.(in_proj|out_proj|up_proj|down_proj)$"
+  bias: none
+training:
+  output_dir: artifacts/adapter_stage3_repair
+  dataset_path: data/processed/stage3_repair_train.jsonl
+  eval_path: data/processed/stage3_repair_valid.jsonl
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 16
+  gradient_checkpointing: true
+  learning_rate: 5e-5
+  warmup_ratio: 0.03
+  lr_scheduler_type: linear
+  max_grad_norm: 1.0
+  max_seq_length: auto
+  auto_floor_seq_length: 1024
+  auto_min_seq_length_above_floor: 1536
+  auto_max_seq_length_cap: 2048
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  save_total_limit: 2
+  report_to: []
+  dataloader_pin_memory: false
+  resume_from_checkpoint:
+  dry_run: true
+inference:
+  prompt_mode: chat_thinking
+  max_new_tokens: 128
+  do_sample: false
+  temperature: 1.0
+  top_p: 1.0
+  repetition_penalty: 1.0
+  save_raw_generations: false

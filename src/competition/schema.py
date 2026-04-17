@@ -14,9 +14,11 @@ class PuzzlePair:
 class PuzzleMetadata:
     official_family: str | None = None
     subtype: str | None = None
+    family_tags: list[str] = field(default_factory=list)
     family_scores: dict[str, float] = field(default_factory=dict)
     teacher_confidence: float | None = None
     program_signature: str | None = None
+    composition_key: str | None = None
     difficulty: float | None = None
     source: str = "unknown"
     split: str = "unknown"
@@ -39,10 +41,16 @@ class PuzzleExample:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PuzzleExample":
         metadata_payload = dict(payload.get("metadata", {}))
-        family_tags = metadata_payload.pop("family_tags", None)
-        metadata_payload.pop("composition_key", None)
+        family_tags = metadata_payload.get("family_tags")
         if metadata_payload.get("official_family") is None and family_tags:
             metadata_payload["official_family"] = str(family_tags[0])
+        if not metadata_payload.get("family_tags") and metadata_payload.get("official_family"):
+            tags = [str(metadata_payload["official_family"])]
+            if metadata_payload.get("subtype"):
+                tags.append(str(metadata_payload["subtype"]))
+            metadata_payload["family_tags"] = tags
+        if metadata_payload.get("composition_key") is None:
+            metadata_payload["composition_key"] = metadata_payload.get("extras", {}).get("composition_key")
         return cls(
             id=str(payload["id"]),
             raw_prompt=payload.get("raw_prompt", ""),

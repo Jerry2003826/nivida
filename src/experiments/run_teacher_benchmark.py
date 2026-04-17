@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from src.common.io import load_jsonl, write_json
-from src.competition.metrics import competition_numeric_match, exact_match
+from src.competition.metrics import competition_correct, competition_numeric_match, exact_match
 from src.competition.parser import parse_competition_file
 from src.competition.schema import PuzzleExample
 from src.teacher.chain_search import ChainSearchEngine
@@ -35,14 +35,16 @@ def _ensure_family_tags(examples: list[PuzzleExample]) -> list[PuzzleExample]:
 
 
 def _failure_type(record: dict[str, Any]) -> str:
+    if record.get("competition_correct", False):
+        if record.get("numeric") and not record.get("exact"):
+            return "numeric_only"
+        return "correct"
+    if not record.get("boxed_valid", False):
+        return "format_error"
     if not record.get("prediction"):
-        return "no_candidate"
-    if record.get("exact"):
-        return "exact_match"
+        return "format_error"
     if record.get("numeric"):
         return "numeric_only"
-    if record.get("official_family") in {"bit", "cipher", "equation"}:
-        return "hard_triad_failure"
     return "wrong_answer"
 
 
@@ -68,7 +70,7 @@ def benchmark_examples(
     family_reports: dict[str, dict[str, Any]] = {}
     records: list[dict[str, Any]] = []
     for family, family_examples in grouped.items():
-        correct = 0
+        correct_count = 0
         family_rows: list[dict[str, Any]] = []
         for example in family_examples:
             candidates = engine.solve_example(example, top_k=top_k)
@@ -77,9 +79,9 @@ def benchmark_examples(
             prediction = "" if best is None or best.query_prediction is None else best.query_prediction
             exact = exact_match(prediction, example.target_answer or "")
             numeric = competition_numeric_match(prediction, example.target_answer)
-            competition_correct = exact or numeric
-            if competition_correct:
-                correct += 1
+            is_correct = competition_correct(prediction, example.target_answer or "")
+            if is_correct:
+                correct_count += 1
             row = {
                 "id": example.id,
                 "official_family": family,
@@ -88,12 +90,12 @@ def benchmark_examples(
                 "target": example.target_answer or "",
                 "exact": exact,
                 "numeric": numeric,
-                "competition_correct": competition_correct,
-                "boxed_valid": bool(prediction),
+                "competition_correct": is_correct,
+                "boxed_valid": bool(prediction.strip()),
                 "teacher_confidence": example.metadata.teacher_confidence,
                 "program_signature": example.metadata.program_signature,
                 "steps": [] if best is None else [step.op_name for step in best.steps],
-                "failure_type": "exact_match",
+                "failure_type": "correct",
                 "debug": None if best is None else best.to_debug_dict(),
             }
             row["failure_type"] = _failure_type(row)
@@ -103,8 +105,8 @@ def benchmark_examples(
             family_rows = [row for row in family_rows if not row["competition_correct"]]
         family_reports[family] = {
             "num_examples": len(family_examples),
-            "correct": correct,
-            "accuracy": 0.0 if not family_examples else correct / len(family_examples),
+            "correct": correct_count,
+            "accuracy": 0.0 if not family_examples else correct_count / len(family_examples),
             "rows": family_rows,
         }
 

@@ -34,9 +34,11 @@ Processed examples use the unified schema:
 
 - `official_family`
 - `subtype`
+- `family_tags`
 - `family_scores`
 - `teacher_confidence`
 - `program_signature`
+- `composition_key`
 - `difficulty`
 - `source`
 - `split`
@@ -57,8 +59,9 @@ python -m src.student.sft_dataset_builder \
   --input data/processed/official_train_tagged.jsonl \
   --output data/processed/stage1_format_align_train.jsonl \
   --selection-profile stage1 \
+  --prompt-mode raw_with_guard \
   --split-file data/splits/official/splits.json \
-  --split-name rule_novelty \
+  --split-name rule_novelty_all \
   --split-role train
 ```
 
@@ -69,9 +72,10 @@ python -m src.student.sft_dataset_builder \
   --input data/processed/official_train_tagged.jsonl,data/synthetic/stage2_synth.jsonl \
   --output data/processed/stage2_distill_train.jsonl \
   --selection-profile stage2 \
+  --prompt-mode raw_with_guard \
   --completion-style token_trace \
   --split-file data/splits/official/splits.json \
-  --split-name hard_triad \
+  --split-name hard_triad_rule_novelty \
   --split-role train
 ```
 
@@ -82,10 +86,11 @@ python -m src.student.sft_dataset_builder \
   --input data/processed/official_train_tagged.jsonl \
   --output data/processed/stage3_repair_train.jsonl \
   --selection-profile stage3 \
+  --prompt-mode raw_with_guard \
   --completion-style short_trace \
   --repair-artifact data/processed/baseline_eval.json \
   --split-file data/splits/official/splits.json \
-  --split-name hard_triad \
+  --split-name hard_triad_rule_novelty \
   --split-role train
 ```
 
@@ -134,7 +139,7 @@ Headline outputs:
 - `competition_correct_rate`
 - `exact_match_rate`
 - `numeric_match_rate`
-- `family_wise_competition_correct`
+- `family_wise_accuracy_competition`
 
 ## Training Notes
 
@@ -142,7 +147,7 @@ Headline outputs:
 - Default alpha is `64`
 - `target_modules` may be a regex or an explicit list
 - `max_seq_length: auto` uses a token-length audit on the built SFT dataset
-- `rule_novelty` and `hard_triad` are the only maintained validation splits
+- `rule_novelty_all`, `hard_triad_rule_novelty`, and `easy_triad_sanity` are the maintained validation splits
 
 ## Useful Commands
 
@@ -155,14 +160,23 @@ bash scripts/train_smoke_local.sh
 Audit candidate LoRA module targets:
 
 ```bash
-python -m src.student.audit_target_modules --config configs/train_lora.yaml
+python scripts/inspect_target_modules.py --config configs/train_stage2_selected_trace.yaml
+```
+
+Validate an adapter before packaging:
+
+```bash
+python scripts/validate_submission.py \
+  --config configs/train_stage2_selected_trace.yaml \
+  --adapter-dir artifacts/adapter_stage2_selected_trace \
+  --package-output submission.zip
 ```
 
 Package a trained adapter:
 
 ```bash
 python -m src.student.package_submission \
-  --adapter-dir artifacts/adapter_stage2_distill \
+  --adapter-dir artifacts/adapter_stage2_selected_trace \
   --output submission.zip
 ```
 

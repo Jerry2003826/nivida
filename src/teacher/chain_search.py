@@ -123,33 +123,39 @@ class ChainSearchEngine:
     def _prioritized_op_names(self, family: str | None, subtype: str | None, equation_mode: str | None) -> list[str]:
         family = normalize_family_alias(family)
         if family == "bit":
-            if subtype == "rotate":
+            if subtype in {"rotate", "bit_rotate"}:
                 return ["binary_rotate_left", "binary_rotate_right"]
-            if subtype == "mask_logic":
+            if subtype in {"mask_logic", "bit_xor_mask"}:
                 return ["binary_xor_mask", "binary_and_mask", "binary_or_mask", "bitwise_xor_constant", "bitwise_and_constant", "bitwise_or_constant"]
-            if subtype == "nibble_permute":
+            if subtype in {"nibble_permute", "bit_nibble"}:
                 return ["swap_nibbles", "binary_permutation", "binary_nibble_map", "reverse_bits"]
-            if subtype == "binary_affine":
+            if subtype in {"binary_affine", "bit_affine"}:
                 return ["binary_affine_transform"]
+            if subtype == "bit_permutation":
+                return ["binary_permutation", "swap_nibbles", "reverse_bits"]
         if family == "cipher":
-            if subtype == "token_substitution":
+            if subtype in {"token_substitution", "cipher_token_sub"}:
                 return ["vocabulary_cipher"]
-            if subtype in {"char_substitution", "caesar_affine"}:
+            if subtype in {"char_substitution", "caesar_affine", "cipher_char_sub"}:
                 return ["caesar_shift", "fixed_substitution"]
-            if subtype == "substitution_permutation":
+            if subtype in {"substitution_permutation", "cipher_perm"}:
                 return ["fixed_substitution", "reverse_tokens", "sort_tokens"]
-            if subtype == "whitespace_preserving":
-                return ["fixed_substitution", "vocabulary_cipher"]
-            if subtype == "partial_map_completion":
+            if subtype in {"partial_map_completion", "cipher_vocab"}:
                 return ["vocabulary_cipher", "fixed_substitution"]
         if family == "equation":
             if equation_mode == "numeric":
                 return ["binary_equation_rule", "add_constant", "multiply_constant", "affine_transform", "evaluate_expression"]
+            if subtype == "equation_delete":
+                return ["delete_characters"]
+            if subtype == "equation_template":
+                return ["operator_template"]
+            if subtype == "equation_position":
+                return ["position_transducer"]
             return ["position_transducer", "operator_template", "delete_characters"]
         if family == "unit":
-            return ["unit_convert", "scale_measurement"] if subtype == "convert" else ["scale_measurement", "unit_convert"]
+            return ["unit_convert", "scale_measurement"] if subtype in {"convert", "unit_convert"} else ["scale_measurement", "unit_convert"]
         if family == "numeral":
-            return ["decimal_to_roman"] if subtype == "roman" else ["decimal_to_binary", "decimal_to_hex", "binary_to_decimal"]
+            return ["decimal_to_roman"] if subtype in {"roman", "numeral_roman"} else ["decimal_to_binary", "decimal_to_hex", "binary_to_decimal"]
         if family == "gravity":
             return ["gravity_distance"]
         return []

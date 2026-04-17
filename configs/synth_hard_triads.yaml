@@ -1,0 +1,21 @@
+seed: 42
+num_samples: 2000
+output_path: data/synthetic/synth_hard_triads.jsonl
+summary_path: data/synthetic/synth_hard_triads_summary.json
+max_chain_length: 3
+hard_negative_ratio: 0.1
+dedupe_against_real: data/processed/official_train_tagged.jsonl
+family_weights:
+  bit: 1.4
+  cipher: 1.4
+  equation: 1.4
+  numeral: 0.4
+  unit: 0.4
+  gravity: 0.4
+subtype_weights:
+  bit_affine: 1.5
+  bit_xor_mask: 1.5
+  cipher_token_sub: 1.5
+  cipher_vocab: 1.3
+  equation_template: 1.5
+  equation_position: 1.3

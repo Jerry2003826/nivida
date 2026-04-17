@@ -19,35 +19,34 @@ _EQUATION_RE = re.compile(r"^\s*(\d+)(\D)(\d+)\s*$")
 
 _SUBTYPE_OPS: dict[str, dict[str, list[str]]] = {
     "bit": {
-        "rotate": ["binary_rotate_left", "binary_rotate_right"],
-        "mask_logic": ["binary_xor_mask", "binary_and_mask", "binary_or_mask"],
-        "nibble_permute": ["swap_nibbles", "binary_permutation", "binary_nibble_map"],
-        "binary_affine": ["binary_affine_transform"],
-        "multi_step": ["binary_rotate_left", "binary_rotate_right", "binary_xor_mask", "swap_nibbles", "binary_affine_transform"],
+        "bit_rotate": ["binary_rotate_left", "binary_rotate_right", "reverse_bits"],
+        "bit_xor_mask": ["binary_xor_mask"],
+        "bit_nibble": ["swap_nibbles", "binary_nibble_map"],
+        "bit_permutation": ["binary_permutation", "swap_nibbles", "reverse_bits"],
+        "bit_affine": ["binary_affine_transform", "binary_invert", "binary_and_mask", "binary_or_mask"],
     },
     "gravity": {
-        "fit_constant": ["gravity_distance"],
+        "gravity_inverse_square": ["gravity_distance"],
     },
     "unit": {
-        "scale": ["scale_measurement"],
-        "convert": ["unit_convert"],
+        "unit_scale": ["scale_measurement"],
+        "unit_convert": ["unit_convert"],
     },
     "cipher": {
-        "char_substitution": ["fixed_substitution"],
-        "token_substitution": ["vocabulary_cipher"],
-        "substitution_permutation": ["fixed_substitution", "reverse_tokens"],
-        "whitespace_preserving": ["fixed_substitution"],
-        "partial_map_completion": ["vocabulary_cipher", "fixed_substitution"],
-        "caesar_affine": ["caesar_shift"],
+        "cipher_char_sub": ["caesar_shift", "fixed_substitution"],
+        "cipher_token_sub": ["vocabulary_cipher"],
+        "cipher_perm": ["fixed_substitution", "reverse_tokens"],
+        "cipher_vocab": ["vocabulary_cipher", "fixed_substitution"],
     },
     "numeral": {
-        "roman": ["decimal_to_roman"],
-        "base_like": ["decimal_to_binary", "decimal_to_hex"],
+        "numeral_roman": ["decimal_to_roman"],
     },
     "equation": {
-        "numeric": ["binary_equation_rule", "add_constant", "multiply_constant", "affine_transform"],
-        "symbolic": ["operator_template", "position_transducer", "delete_characters"],
-        "mixed": ["operator_template", "binary_equation_rule"],
+        "equation_numeric": ["binary_equation_rule", "add_constant", "multiply_constant", "affine_transform"],
+        "equation_delete": ["delete_characters"],
+        "equation_position": ["position_transducer"],
+        "equation_template": ["operator_template"],
+        "equation_symbolic": ["operator_template", "position_transducer", "delete_characters"],
     },
 }
 
@@ -103,9 +102,12 @@ def _max_chain_length_for_family(family: str, requested: int) -> int:
     return max(1, min(requested, family_cap))
 
 
-def _pick_subtype(rng: random.Random, family: str) -> str:
+def _pick_subtype(rng: random.Random, family: str, subtype_weights: dict[str, float] | None = None) -> str:
     subtype_names = sorted(_SUBTYPE_OPS[family])
-    return subtype_names[rng.randrange(len(subtype_names))]
+    if not subtype_weights:
+        return subtype_names[rng.randrange(len(subtype_names))]
+    weights = {name: float(subtype_weights.get(name, 1.0)) for name in subtype_names}
+    return _weighted_choice(rng, weights)
 
 
 def _build_single_op_example(
@@ -244,6 +246,7 @@ def generate_synthetic_examples(
     *,
     num_samples: int,
     family_weights: dict[str, float],
+    subtype_weights: dict[str, float] | None = None,
     max_chain_length: int,
     hard_negative_ratio: float,
     dedupe_against_real: str | None,
@@ -271,7 +274,7 @@ def generate_synthetic_examples(
             skipped_generation_failures += 1
             generation_failure_families[family] += 1
             continue
-        subtype = _pick_subtype(rng, family)
+        subtype = _pick_subtype(rng, family, subtype_weights=subtype_weights)
         candidate_names = _SUBTYPE_OPS[family][subtype]
         candidates = [ops_by_name[name] for name in candidate_names if name in ops_by_name]
         if not candidates:
@@ -338,6 +341,7 @@ def main() -> None:
     examples, summary = generate_synthetic_examples(
         num_samples=int(config.get("num_samples", 128)),
         family_weights={str(key): float(value) for key, value in family_weights.items()},
+        subtype_weights={str(key): float(value) for key, value in dict(config.get("subtype_weights", {})).items()} or None,
         max_chain_length=int(config.get("max_chain_length", 3)),
         hard_negative_ratio=float(config.get("hard_negative_ratio", 0.0)),
         dedupe_against_real=config.get("dedupe_against_real"),

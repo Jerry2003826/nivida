@@ -4,7 +4,7 @@ import zipfile
 
 import pytest
 
-from src.student.package_submission import build_submission_zip, validate_adapter_dir
+from src.student.package_submission import build_submission_zip, read_adapter_rank, validate_adapter_dir
 
 
 def test_validate_adapter_dir_requires_weight_file(tmp_path) -> None:
@@ -30,3 +30,10 @@ def test_build_submission_zip_writes_root_level_adapter_files(tmp_path) -> None:
     assert "adapter_config.json" in names
     assert "adapter_model.safetensors" in names
     assert "training_metadata.json" in names
+
+
+def test_read_adapter_rank_extracts_rank_from_config(tmp_path) -> None:
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    (adapter_dir / "adapter_config.json").write_text('{"r": 32}', encoding="utf-8")
+    assert read_adapter_rank(adapter_dir) == 32

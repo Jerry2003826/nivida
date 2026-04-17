@@ -50,6 +50,8 @@ def main() -> None:
         args.beam_width = int(config.get("beam_width", args.beam_width))
         args.max_depth = int(config.get("max_depth", args.max_depth))
         args.top_k = int(config.get("top_k", args.top_k))
+    else:
+        config = {}
 
     examples = _ensure_family_tags(_load_examples(args.input))
     engine = ChainSearchEngine(beam_width=args.beam_width, max_depth=args.max_depth)
@@ -75,7 +77,11 @@ def main() -> None:
         evaluation_rows.append(row)
         record_index[example.id] = row
 
-    summary = evaluate_predictions(evaluation_rows)
+    summary = evaluate_predictions(
+        evaluation_rows,
+        numeric_rel_tolerance=float(config.get("numeric_rel_tolerance", 1e-2)),
+        numeric_abs_tolerance=float(config.get("numeric_abs_tolerance", 1e-5)),
+    )
     merged_records = []
     for record in summary["records"]:
         extras = record_index.get(record["id"], {})
@@ -92,6 +98,9 @@ def main() -> None:
         )
     summary["records"] = merged_records
     summary["predictions"] = merged_records
+    headline_metric = str(config.get("headline_metric", "competition_correct_rate"))
+    summary["headline_metric"] = headline_metric
+    summary["overall_accuracy"] = float(summary.get(headline_metric, summary["competition_correct_rate"]))
     write_json(args.output, summary)
 
 

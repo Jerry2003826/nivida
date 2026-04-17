@@ -21,6 +21,8 @@ _ROMAN_RE = re.compile(r"^[IVXLCDM]+$", flags=re.IGNORECASE)
 class FamilyPrediction:
     official_family: str
     subtype: str
+    family_tags: list[str]
+    composition_key: str
     confidence: float
     scores: dict[str, float]
     evidence: dict[str, Any]
@@ -56,12 +58,12 @@ def _infer_from_examples(example: PuzzleExample) -> tuple[str, dict[str, float]]
 
 def _classify_unit(example: PuzzleExample) -> str:
     output_has_unit = any(_UNIT_RE.match(pair.output) for pair in example.parsed_examples)
-    return "convert" if output_has_unit else "scale"
+    return "unit_convert" if output_has_unit else "unit_scale"
 
 
 def _classify_numeral(example: PuzzleExample) -> str:
     outputs = [pair.output for pair in example.parsed_examples]
-    return "roman" if outputs and all(_ROMAN_RE.fullmatch(output) for output in outputs) else "base_like"
+    return "numeral_roman" if outputs and all(_ROMAN_RE.fullmatch(output) for output in outputs) else "numeral_other"
 
 
 def _classify_equation(example: PuzzleExample) -> str:
@@ -70,26 +72,33 @@ def _classify_equation(example: PuzzleExample) -> str:
         values.append(example.query)
     numeric = [_NUMERIC_EQUATION_RE.match(value.strip()) is not None for value in values if value.strip()]
     if numeric and all(numeric):
-        return "numeric"
-    if numeric and any(numeric):
-        return "mixed"
-    return "symbolic"
+        return "equation_numeric"
+    if example.parsed_examples and all(
+        pair.output == "".join(char for char in pair.input if char.isalnum())
+        for pair in example.parsed_examples
+    ):
+        return "equation_delete"
+    if example.parsed_examples and all(len(pair.output) <= len(pair.input) for pair in example.parsed_examples):
+        return "equation_position"
+    if example.parsed_examples and any(any(not char.isalnum() for char in pair.input) for pair in example.parsed_examples):
+        return "equation_template"
+    return "equation_symbolic"
 
 
 def _classify_cipher(example: PuzzleExample) -> str:
     pair_features = [extract_pair_features(pair.input, pair.output) for pair in example.parsed_examples]
-    if any(any(char in pair.input for char in ".,;:!?") for pair in example.parsed_examples):
-        return "whitespace_preserving"
     if pair_features and all(feature.consistent_char_map and feature.input_length == feature.output_length for feature in pair_features):
-        return "char_substitution"
+        return "cipher_char_sub"
     if all(len(pair.input.split()) == len(pair.output.split()) and len(pair.input.split()) > 1 for pair in example.parsed_examples):
-        return "token_substitution"
+        return "cipher_token_sub"
     if any(feature.same_char_multiset for feature in pair_features):
-        return "substitution_permutation"
+        return "cipher_perm"
     lower_prompt = example.raw_prompt.lower()
+    if "vocab" in lower_prompt or "dictionary" in lower_prompt:
+        return "cipher_vocab"
     if "caesar" in lower_prompt or "shift" in lower_prompt:
-        return "caesar_affine"
-    return "partial_map_completion"
+        return "cipher_char_sub"
+    return "cipher_vocab"
 
 
 def _rotate_matches(lhs: str, rhs: str) -> bool:
@@ -107,34 +116,30 @@ def _constant_mask_family(example: PuzzleExample) -> str | None:
         return None
     values = [(int(pair.input, 2), int(pair.output, 2)) for pair in pairs]
     xor_masks = {src ^ dst for src, dst in values}
-    and_masks = {src & 0xFF for src, _ in values}
-    or_masks = {dst | 0x00 for _, dst in values}
     if len(xor_masks) == 1:
-        return "mask_logic"
-    if len(and_masks) == 1 or len(or_masks) == 1:
-        return "mask_logic"
+        return "bit_xor_mask"
     return None
 
 
 def _classify_bit(example: PuzzleExample) -> str:
     pairs = example.parsed_examples
     if pairs and all(_rotate_matches(pair.input, pair.output) for pair in pairs):
-        return "rotate"
+        return "bit_rotate"
     if pairs and all(pair.input[4:] + pair.input[:4] == pair.output for pair in pairs if len(pair.input) == 8):
-        return "nibble_permute"
+        return "bit_nibble"
     mask_family = _constant_mask_family(example)
     if mask_family:
         return mask_family
-    if len(pairs) >= 3:
-        return "multi_step"
-    return "binary_affine"
+    if len(pairs) >= 3 and any(pair.input != pair.output for pair in pairs):
+        return "bit_permutation"
+    return "bit_affine"
 
 
 def _classify_subtype(example: PuzzleExample, family: str) -> str:
     if family == "bit":
         return _classify_bit(example)
     if family == "gravity":
-        return "fit_constant"
+        return "gravity_inverse_square"
     if family == "unit":
         return _classify_unit(example)
     if family == "cipher":
@@ -142,6 +147,18 @@ def _classify_subtype(example: PuzzleExample, family: str) -> str:
     if family == "numeral":
         return _classify_numeral(example)
     return _classify_equation(example)
+
+
+def _pattern_shape(example: PuzzleExample) -> str:
+    if example.parsed_examples and all(_is_binary(pair.input) for pair in example.parsed_examples):
+        return "binary"
+    if example.parsed_examples and all(_UNIT_RE.match(pair.input) for pair in example.parsed_examples):
+        return "measurement"
+    if example.parsed_examples and all(_NUMERIC_EQUATION_RE.match(pair.input) for pair in example.parsed_examples):
+        return "numeric_equation"
+    if example.parsed_examples and all(pair.input.isdigit() for pair in example.parsed_examples):
+        return "numeric"
+    return "symbolic"
 
 
 def tag_example(example: PuzzleExample) -> FamilyPrediction:
@@ -155,12 +172,23 @@ def tag_example(example: PuzzleExample) -> FamilyPrediction:
             scores[family] = max(scores[family], score)
 
     subtype = _classify_subtype(example, official_family)
+    program_bucket = (
+        example.metadata.extras.get("program_signature_bucket")
+        or example.metadata.extras.get("signature_bucket")
+    )
+    composition_key = (
+        f"{official_family}|{subtype}|{program_bucket}"
+        if program_bucket
+        else f"{official_family}|{subtype}|{_pattern_shape(example)}"
+    )
     confidence = max(scores.values()) if any(scores.values()) else 0.0
     if confidence <= 0:
         confidence = 0.5
     return FamilyPrediction(
         official_family=official_family,
         subtype=subtype,
+        family_tags=[official_family, subtype],
+        composition_key=composition_key,
         confidence=min(1.0, confidence),
         scores=scores,
         evidence={
@@ -176,8 +204,16 @@ def apply_family_tags(examples: list[PuzzleExample]) -> list[PuzzleExample]:
         prediction = tag_example(example)
         example.metadata.official_family = prediction.official_family
         example.metadata.subtype = prediction.subtype
+        example.metadata.family_tags = prediction.family_tags
         example.metadata.family_scores = prediction.scores
         example.metadata.teacher_confidence = prediction.confidence
+        example.metadata.composition_key = prediction.composition_key
+        example.metadata.extras = {
+            **dict(example.metadata.extras),
+            "official_family": prediction.official_family,
+            "subtype": prediction.subtype,
+            "composition_key": prediction.composition_key,
+        }
         if not example.official_instruction:
             example.official_instruction = example.raw_prompt.split("\n\n", 1)[0].strip()
     return examples
