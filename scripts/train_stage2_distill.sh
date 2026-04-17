@@ -31,7 +31,7 @@ python -m src.student.sft_dataset_builder \
   --max-per-signature-bucket 64 \
   --report-output "$STAGE2_REPORT" \
   --split-file data/splits/official/splits.json \
-  --split-name hard_triad_rule_novelty \
+  --split-name rule_novelty_all \
   --split-role train
 python -m src.student.sft_dataset_builder \
   --input data/processed/official_train_tagged.jsonl,data/synthetic/synth_hard_triads.jsonl \

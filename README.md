@@ -80,7 +80,7 @@ python -m src.student.sft_dataset_builder \
   --max-per-signature-bucket 64 \
   --report-output data/processed/stage2_distill_report.json \
   --split-file data/splits/official/splits.json \
-  --split-name hard_triad_rule_novelty \
+  --split-name rule_novelty_all \
   --split-role train
 ```
 

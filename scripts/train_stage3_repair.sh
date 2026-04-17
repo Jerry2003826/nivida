@@ -112,8 +112,6 @@ python -m src.student.sft_dataset_builder \
   --max-depth 2 \
   --top-k 2 \
   --repair-artifact "$VALID_FAILURES" \
-  --replay-input "$VALID_SUCCESSES" \
-  --replay-ratio 0.25 \
   --report-output "$STAGE3_VALID_REPORT"
 
 STAGE3_RUNTIME_CONFIG="$(mktemp)"

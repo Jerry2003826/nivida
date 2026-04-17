@@ -1,0 +1,15 @@
+keep stage2 train cross-family and drop replay from stage3 valid
+
+Two targeted adjustments surfaced by the latest external review; both
+are policy-level, no new modules.
+
+- scripts/train_stage2_distill.sh: stage2 train split switched from
+  hard_triad_rule_novelty to rule_novelty_all so all six official
+  families remain available as anchors for --balance-by-family; valid
+  split stays at hard_triad_rule_novelty so evaluation still tracks the
+  hard triad.
+- scripts/train_stage3_repair.sh: stage3 valid builder no longer receives
+  --replay-input / --replay-ratio so the valid set stays a pure stage2
+  model failure set and its competition_correct_rate is not diluted by
+  replayed successes. Train-side replay is unchanged.
+- README.md: the stage2 build example mirrors the new train split.
