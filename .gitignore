@@ -9,6 +9,7 @@ __pycache__/
 artifacts/
 outputs/
 submission.zip
+.commit_msg_tmp*
 data/raw/*
 data/interim/*
 data/processed/*
