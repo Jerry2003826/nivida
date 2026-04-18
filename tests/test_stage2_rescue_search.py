@@ -250,10 +250,14 @@ def test_rescue_promotes_only_when_quality_strictly_improves(
 
     # The promoted example carries the rescue marker.
     assert good.metadata.extras.get("second_pass_rescue_applied") is True
+    # ``use_search_subtype_hint`` defaults to False for canonical rescue;
+    # the setting is recorded on every promoted sample for audit parity
+    # with the experimental subtype-rescue branch.
     assert good.metadata.extras.get("second_pass_settings") == {
         "beam_width": 12,
         "max_depth": 4,
         "top_k": 3,
+        "use_search_subtype_hint": False,
     }
 
     # The non-promoted example was rolled back to its original (better) state.
@@ -345,8 +349,11 @@ def test_build_selected_sft_runs_rescue_only_when_enabled(monkeypatch: pytest.Mo
     assert diagnostics["rescue_attempted"] == {"equation": 1}
     assert diagnostics["rescue_promoted"] == {"equation": 1}
     assert diagnostics["rescue_families"] == ["equation"]
+    # ``use_search_subtype_hint`` defaults to False in canonical runs so
+    # the experimental subtype hint cannot accidentally activate.
     assert diagnostics["rescue_settings"] == {
         "beam_width": 12,
         "max_depth": 4,
         "top_k": 3,
+        "use_search_subtype_hint": False,
     }

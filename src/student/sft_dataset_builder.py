@@ -70,6 +70,22 @@ def _load_examples(input_paths: list[str]) -> list[PuzzleExample]:
 
 HARD_TRIAD_RESCUE_FAMILIES: frozenset[str] = frozenset({"equation", "cipher", "bit"})
 
+# Fallback subtypes produced by :mod:`src.teacher.family_tagger` when the
+# heuristic tagger cannot pin down a more specific subtype:
+#
+# - ``equation_symbolic`` is the ``_classify_equation`` default branch,
+# - ``cipher_vocab`` is the ``_classify_cipher`` final fallback,
+# - ``bit_affine`` is the ``_classify_bit`` final fallback.
+#
+# Samples sitting on these fallbacks are the prime candidates for a
+# subtype-prior rescue because the chain-search op priority derived from them
+# is the most generic (see ``ChainSearchEngine._prioritized_op_names``).
+STAGE2_FALLBACK_SUBTYPES: dict[str, frozenset[str]] = {
+    "equation": frozenset({"equation_symbolic"}),
+    "cipher": frozenset({"cipher_vocab"}),
+    "bit": frozenset({"bit_affine"}),
+}
+
 
 def _annotate_examples(
     examples: list[PuzzleExample],
@@ -86,6 +102,156 @@ def _annotate_examples(
         candidates = engine.solve_example(example, top_k=top_k)
         annotate_example_from_candidates(example, candidates)
     return examples
+
+
+def _step_names_from_example(example: PuzzleExample) -> set[str]:
+    """Return the set of op names recorded on ``top_candidate_steps``.
+
+    ``annotate_example_from_candidates`` writes ``top_candidate_steps`` as a
+    list of op-name strings (see ``src.teacher.program_signature``). The
+    synth generator writes the same shape. A missing or malformed value
+    yields an empty set so callers can treat "no evidence" uniformly.
+    """
+    steps = _metadata_value(example, "top_candidate_steps", []) or []
+    if not isinstance(steps, list):
+        return set()
+    return {str(step) for step in steps if step}
+
+
+def _infer_subtype_hint_from_top_steps(example: PuzzleExample) -> str | None:
+    """Infer a more specific subtype than the fallback based on top_candidate_steps.
+
+    Only runs for hard-triad official families whose current subtype is one
+    of :data:`STAGE2_FALLBACK_SUBTYPES` (i.e., the generic tagger fallback).
+    The returned string matches :meth:`ChainSearchEngine._prioritized_op_names`
+    expectations; a second-pass search run with this hint will receive a more
+    targeted op priority list.
+
+    The function is deliberately conservative:
+    - never returns the current (fallback) subtype itself, to avoid a no-op
+      transition that would still show up in diagnostics;
+    - only emits a cipher hint when there is *evidence* that the generic
+      vocabulary prior should be replaced (``vocabulary_cipher`` alone is
+      itself token/vocab-level evidence and already matches the default
+      op priority for ``cipher_vocab``, so no hint is produced).
+    """
+    family = str(_metadata_value(example, "official_family") or "")
+    current_subtype = str(_metadata_value(example, "subtype") or "")
+
+    if current_subtype not in STAGE2_FALLBACK_SUBTYPES.get(family, frozenset()):
+        return None
+
+    step_set = _step_names_from_example(example)
+    if not step_set:
+        return None
+
+    if family == "equation":
+        if "operator_template" in step_set:
+            return "equation_template"
+        if "position_transducer" in step_set:
+            return "equation_position"
+        if "delete_characters" in step_set:
+            return "equation_delete"
+        if step_set & {
+            "add_constant",
+            "multiply_constant",
+            "affine_transform",
+            "evaluate_expression",
+            "binary_equation_rule",
+        }:
+            return "equation_numeric"
+        return None
+
+    if family == "cipher":
+        # Important:
+        # Do not infer a new subtype from ``vocabulary_cipher`` alone. The
+        # fallback ``cipher_vocab`` already maps to
+        # ``[vocabulary_cipher, fixed_substitution]`` in the op priority
+        # (see ChainSearchEngine._prioritized_op_names), so a
+        # ``cipher_vocab -> cipher_vocab``-shaped hint would be a silent
+        # no-op and would still pollute diagnostics. Only emit a hint when
+        # we can see *substitution + permutation* evidence (cipher_perm)
+        # or a Caesar-shift family signature (cipher_char_sub).
+        has_perm = bool(step_set & {"reverse_tokens", "sort_tokens"})
+        has_substitution = bool(step_set & {"vocabulary_cipher", "fixed_substitution"})
+        if has_perm and has_substitution:
+            return "cipher_perm"
+        if step_set & {"caesar_shift"}:
+            return "cipher_char_sub"
+        return None
+
+    if family == "bit":
+        if step_set & {"binary_rotate_left", "binary_rotate_right"}:
+            return "bit_rotate"
+        if step_set & {
+            "binary_xor_mask",
+            "binary_and_mask",
+            "binary_or_mask",
+            "bitwise_xor_constant",
+            "bitwise_and_constant",
+            "bitwise_or_constant",
+        }:
+            return "bit_xor_mask"
+        if step_set & {"swap_nibbles", "binary_nibble_map"}:
+            return "bit_nibble"
+        if step_set & {"binary_permutation", "reverse_bits"}:
+            return "bit_permutation"
+        if "binary_affine_transform" in step_set:
+            # Current subtype is already ``bit_affine``; returning it would
+            # be a no-op hint, so we keep it as ``None``. Kept here as a
+            # comment to make the mapping explicit and to aid v2 planning.
+            return None
+        return None
+
+    return None
+
+
+def _attach_search_subtype_hints(examples: list[PuzzleExample]) -> dict[str, Any]:
+    """Write ``search_subtype_hint`` into ``extras`` for eligible samples.
+
+    This is a pre-rescue read-only analysis pass. It never mutates
+    ``example.metadata.subtype`` itself; the temporary override (required
+    because ``ChainSearchEngine.solve_example`` reads
+    ``example.metadata.subtype`` directly) happens inside
+    :func:`_rescue_official_hard_triad_examples` so that non-promoted
+    rescue attempts can roll it back safely.
+
+    Returns per-family counts plus a ``from->to`` transition counter so the
+    stage2 report can quantify how often the hint path activated.
+    """
+    hinted: dict[str, int] = {}
+    transitions: dict[str, int] = {}
+
+    for example in examples:
+        if _source_kind(example) != "official":
+            continue
+
+        family = str(_metadata_value(example, "official_family") or "")
+        if family not in HARD_TRIAD_FAMILIES:
+            continue
+
+        current_subtype = str(_metadata_value(example, "subtype") or "")
+        hint = _infer_subtype_hint_from_top_steps(example)
+        if not hint:
+            continue
+        if hint == current_subtype:
+            # Defensive: _infer_subtype_hint_from_top_steps should already
+            # never return the current fallback, but guard anyway.
+            continue
+
+        example.metadata.extras = {
+            **dict(example.metadata.extras or {}),
+            "search_subtype_hint": hint,
+        }
+
+        hinted[family] = hinted.get(family, 0) + 1
+        key = f"{current_subtype}->{hint}"
+        transitions[key] = transitions.get(key, 0) + 1
+
+    return {
+        "hinted": dict(sorted(hinted.items())),
+        "transitions": dict(sorted(transitions.items())),
+    }
 
 
 def _annotation_quality_tuple(example: PuzzleExample) -> tuple:
@@ -116,6 +282,7 @@ def _rescue_official_hard_triad_examples(
     beam_width: int = 12,
     max_depth: int = 4,
     top_k: int = 3,
+    use_search_subtype_hint: bool = False,
 ) -> dict[str, Any]:
     """Second-pass stronger chain-search over official hard-triad samples that
     failed the strict stage2 gate.
@@ -127,16 +294,34 @@ def _rescue_official_hard_triad_examples(
     quality tuple strictly improves**. Otherwise the original annotation is
     restored so rescue cannot degrade any candidate.
 
+    When ``use_search_subtype_hint`` is True, examples carrying an
+    ``extras["search_subtype_hint"]`` (written by
+    :func:`_attach_search_subtype_hints`) have their
+    ``example.metadata.subtype`` **temporarily** overridden with that hint
+    before the second-pass search runs. This is required because
+    :meth:`ChainSearchEngine.solve_example` reads ``example.metadata.subtype``
+    directly (not from ``extras``) to pick an op priority list, so changing
+    only ``extras`` would have no effect on the search. If the rescue is not
+    promoted, the original subtype is restored along with every other
+    annotation field.
+
     Promoted examples gain ``extras.second_pass_rescue_applied=True`` plus a
-    ``second_pass_settings`` snapshot for traceability.
+    ``second_pass_settings`` snapshot for traceability; when the hint was
+    used they also gain ``rescue_subtype_hint`` / ``rescue_original_subtype``
+    markers so downstream tools can audit which subtype changes landed.
 
     Returns per-family ``rescue_attempted`` / ``rescue_promoted`` counters so
     the stage2 report can tell at a glance how many samples the rescue pass
-    recovered for each hard-triad family.
+    recovered for each hard-triad family, plus optional per-family
+    ``rescue_hint_attempted`` / ``rescue_promoted_with_hint`` counters and a
+    ``rescue_hint_transitions`` ``from->to`` histogram.
     """
     allowed_families = set(families) if not isinstance(families, set) else families
     rescue_attempted: dict[str, int] = {}
     rescue_promoted: dict[str, int] = {}
+    rescue_hint_attempted: dict[str, int] = {}
+    rescue_promoted_with_hint: dict[str, int] = {}
+    rescue_hint_transitions: dict[str, int] = {}
     if not allowed_families:
         return {
             "rescue_families": [],
@@ -144,9 +329,13 @@ def _rescue_official_hard_triad_examples(
                 "beam_width": beam_width,
                 "max_depth": max_depth,
                 "top_k": top_k,
+                "use_search_subtype_hint": bool(use_search_subtype_hint),
             },
             "rescue_attempted": {},
             "rescue_promoted": {},
+            "rescue_hint_attempted": {},
+            "rescue_promoted_with_hint": {},
+            "rescue_hint_transitions": {},
         }
 
     engine = ChainSearchEngine(beam_width=beam_width, max_depth=max_depth)
@@ -165,12 +354,51 @@ def _rescue_official_hard_triad_examples(
         rescue_attempted[family_key] = rescue_attempted.get(family_key, 0) + 1
 
         old_quality = _annotation_quality_tuple(example)
+        # ``subtype`` MUST be snapshotted here: when
+        # ``use_search_subtype_hint`` is True we temporarily override
+        # ``example.metadata.subtype`` below, and a non-promoted rescue must
+        # be able to roll the override back. Without this snapshot a failed
+        # rescue would silently leak the hinted subtype into the first-pass
+        # annotation.
         snapshot = {
             "program_signature": example.metadata.program_signature,
             "teacher_confidence": example.metadata.teacher_confidence,
             "composition_key": example.metadata.composition_key,
+            "subtype": example.metadata.subtype,
             "extras": dict(example.metadata.extras or {}),
         }
+
+        hint: str | None = None
+        if use_search_subtype_hint:
+            raw_hint = (example.metadata.extras or {}).get("search_subtype_hint")
+            hint = str(raw_hint) if raw_hint else None
+            if hint:
+                current_subtype = str(example.metadata.subtype or "")
+                if hint != current_subtype:
+                    transition_key = f"{current_subtype}->{hint}"
+                    rescue_hint_transitions[transition_key] = (
+                        rescue_hint_transitions.get(transition_key, 0) + 1
+                    )
+                    rescue_hint_attempted[family_key] = (
+                        rescue_hint_attempted.get(family_key, 0) + 1
+                    )
+
+                    # ChainSearchEngine.solve_example reads
+                    # example.metadata.subtype directly; extras alone is
+                    # insufficient. Record the override on extras for the
+                    # report, but keep the original subtype in ``snapshot``
+                    # so a failed rescue rolls everything back.
+                    example.metadata.subtype = hint
+                    example.metadata.extras = {
+                        **dict(example.metadata.extras or {}),
+                        "rescue_subtype_hint": hint,
+                        "rescue_original_subtype": current_subtype,
+                    }
+                else:
+                    # Hint matches the current subtype: nothing to do, and we
+                    # should not even count it as an attempt because the
+                    # search behaviour is unchanged.
+                    hint = None
 
         candidates = engine.solve_example(example, top_k=top_k)
         annotate_example_from_candidates(example, candidates)
@@ -178,6 +406,10 @@ def _rescue_official_hard_triad_examples(
 
         if new_quality > old_quality:
             rescue_promoted[family_key] = rescue_promoted.get(family_key, 0) + 1
+            if hint:
+                rescue_promoted_with_hint[family_key] = (
+                    rescue_promoted_with_hint.get(family_key, 0) + 1
+                )
             example.metadata.extras = {
                 **(example.metadata.extras or {}),
                 "second_pass_rescue_applied": True,
@@ -185,14 +417,17 @@ def _rescue_official_hard_triad_examples(
                     "beam_width": beam_width,
                     "max_depth": max_depth,
                     "top_k": top_k,
+                    "use_search_subtype_hint": bool(use_search_subtype_hint),
                 },
             }
         else:
             # Roll back so a weaker-or-equal rescue result does not overwrite
-            # the first-pass annotation.
+            # the first-pass annotation, including any temporary subtype
+            # override from the search-subtype-hint path.
             example.metadata.program_signature = snapshot["program_signature"]
             example.metadata.teacher_confidence = snapshot["teacher_confidence"]
             example.metadata.composition_key = snapshot["composition_key"]
+            example.metadata.subtype = snapshot["subtype"]
             example.metadata.extras = dict(snapshot["extras"])
 
     return {
@@ -201,9 +436,13 @@ def _rescue_official_hard_triad_examples(
             "beam_width": beam_width,
             "max_depth": max_depth,
             "top_k": top_k,
+            "use_search_subtype_hint": bool(use_search_subtype_hint),
         },
         "rescue_attempted": dict(sorted(rescue_attempted.items())),
         "rescue_promoted": dict(sorted(rescue_promoted.items())),
+        "rescue_hint_attempted": dict(sorted(rescue_hint_attempted.items())),
+        "rescue_promoted_with_hint": dict(sorted(rescue_promoted_with_hint.items())),
+        "rescue_hint_transitions": dict(sorted(rescue_hint_transitions.items())),
     }
 
 
@@ -745,6 +984,7 @@ def build_selected_sft_with_report(
     rescue_beam_width: int = 12,
     rescue_max_depth: int = 4,
     rescue_top_k: int = 3,
+    stage2_use_search_subtype_hint: bool = False,
 ) -> dict[str, Any]:
     """Build the stage2 SFT dataset and return both records and selection report.
 
@@ -761,6 +1001,15 @@ def build_selected_sft_with_report(
     and sampled round-robin in priority order ``equation -> cipher -> bit``.
     Silver samples are always recorded with ``trace_style="answer_only"`` so a
     weak teacher does not inject unreliable traces.
+
+    ``stage2_use_search_subtype_hint`` is an **experimental, off-by-default**
+    switch that infers a finer-grained subtype from ``top_candidate_steps``
+    after the first-pass annotation (via
+    :func:`_attach_search_subtype_hints`) and then lets the rescue pass
+    temporarily override ``example.metadata.subtype`` with that hint so the
+    second chain search picks a targeted op priority. Canonical stage2 must
+    keep this False; enable only through the dedicated subtype-rescue script
+    so A/B attribution stays clean.
     """
     annotated = _annotate_examples(
         examples,
@@ -769,11 +1018,23 @@ def build_selected_sft_with_report(
         top_k=top_k,
     )
 
+    subtype_hint_diagnostics: dict[str, Any] = {
+        "enabled": bool(stage2_use_search_subtype_hint),
+        "hinted": {},
+        "transitions": {},
+    }
+    if stage2_use_search_subtype_hint:
+        attach_stats = _attach_search_subtype_hints(annotated)
+        subtype_hint_diagnostics.update(attach_stats)
+
     rescue_diagnostics: dict[str, Any] = {
         "rescue_families": [],
         "rescue_settings": None,
         "rescue_attempted": {},
         "rescue_promoted": {},
+        "rescue_hint_attempted": {},
+        "rescue_promoted_with_hint": {},
+        "rescue_hint_transitions": {},
     }
     if rescue_hard_triad:
         effective_families = (
@@ -787,6 +1048,7 @@ def build_selected_sft_with_report(
             beam_width=rescue_beam_width,
             max_depth=rescue_max_depth,
             top_k=rescue_top_k,
+            use_search_subtype_hint=stage2_use_search_subtype_hint,
         )
 
     # Phase 1: strict official + silver candidates + rejection diagnostics
@@ -900,6 +1162,17 @@ def build_selected_sft_with_report(
             records, max_per_signature_bucket=max_per_signature_bucket
         )
 
+    merged_subtype_hint_diagnostics = {
+        **subtype_hint_diagnostics,
+        "rescue_hint_attempted": rescue_diagnostics.get("rescue_hint_attempted", {}),
+        "rescue_promoted_with_hint": rescue_diagnostics.get(
+            "rescue_promoted_with_hint", {}
+        ),
+        "rescue_hint_transitions": rescue_diagnostics.get(
+            "rescue_hint_transitions", {}
+        ),
+    }
+
     return {
         "records": ordered,
         "selection_counts": {
@@ -912,6 +1185,7 @@ def build_selected_sft_with_report(
             for family, reasons in sorted(rejection_counter.items())
         },
         "rescue_diagnostics": rescue_diagnostics,
+        "subtype_hint_diagnostics": merged_subtype_hint_diagnostics,
     }
 
 
@@ -1281,6 +1555,17 @@ def main() -> None:
         help="Top-k for the rescue annotate_example_from_candidates.",
     )
     parser.add_argument(
+        "--stage2-use-search-subtype-hint",
+        action="store_true",
+        help=(
+            "Experimental. Infer a finer-grained subtype from top_candidate_steps "
+            "after the first-pass annotation, and let the rescue second pass "
+            "temporarily override example.metadata.subtype with that hint so "
+            "ChainSearchEngine picks a targeted op priority. Off by default; "
+            "canonical stage2 must leave it off to keep A/B attribution clean."
+        ),
+    )
+    parser.add_argument(
         "--tokenizer-path",
         help=(
             "Local directory for the tokenizer used by prompt_mode=chat_thinking. "
@@ -1350,12 +1635,14 @@ def main() -> None:
             rescue_beam_width=args.stage2_second_pass_beam_width,
             rescue_max_depth=args.stage2_second_pass_max_depth,
             rescue_top_k=args.stage2_second_pass_top_k,
+            stage2_use_search_subtype_hint=args.stage2_use_search_subtype_hint,
         )
         dataset = stage2_bundle["records"]
         report = summarise_selected_sft(dataset)
         report["selection_counts"] = stage2_bundle["selection_counts"]
         report["official_rejection_diagnostics"] = stage2_bundle["official_rejection_diagnostics"]
         report["rescue_diagnostics"] = stage2_bundle["rescue_diagnostics"]
+        report["subtype_hint_diagnostics"] = stage2_bundle["subtype_hint_diagnostics"]
         default_output = "data/processed/stage2_distill.jsonl"
     else:
         if not args.repair_artifact:
