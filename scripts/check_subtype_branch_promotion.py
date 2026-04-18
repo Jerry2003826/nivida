@@ -20,13 +20,6 @@ def check_subtype_branch_promotion(
 ) -> dict[str, Any]:
     source = Path(promotion_json)
     if not source.is_file():
-        if allow_unpromoted:
-            return {
-                "promote": False,
-                "override_used": True,
-                "promotion_json_found": False,
-                "promotion_json": str(source),
-            }
         raise SystemExit(f"promotion json not found: {source}")
 
     payload = read_json(source)

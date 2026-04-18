@@ -45,3 +45,13 @@ def test_check_subtype_branch_promotion_allow_override_passes(tmp_path: Path) ->
     assert payload["promote"] is False
     assert payload["override_used"] is True
     assert payload["promotion_json_found"] is True
+
+
+def test_check_subtype_branch_promotion_missing_json_still_fails_with_override(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SystemExit, match="promotion json not found"):
+        check_subtype_branch_promotion(
+            promotion_json=tmp_path / "missing_promotion.json",
+            allow_unpromoted=True,
+        )

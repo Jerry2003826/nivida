@@ -21,6 +21,8 @@ success.
 - `adapter_model.safetensors` exists
 - `adapter_model.safetensors` is non-empty
 - `adapter_config.json` exists
+- `adapter_config.json` reports a LoRA rank in `1..32`
+- `adapter_config.json` reports non-empty `target_modules`
 - `training_metadata.json` exists
 - `last_run_summary.json` exists
 - `preflight.status == "ok"`
@@ -49,6 +51,10 @@ Treat stage1 as accepted only when all of the following are true:
   - The tokenizer / chat template probe drifted from the harness-aligned contract.
 - `dataset_stats.length_unit != "bpe_tokens"`
   - The run used fallback accounting rather than tokenizer-backed accounting.
+- adapter rank missing / invalid / `> 32`
+  - The adapter config is malformed or no longer matches the competition limit.
+- `adapter_config.target_modules` empty
+  - The saved adapter metadata is incomplete and should not seed stage2.
 - `num_train_records <= 0`
   - The stage1 dataset was empty or the metadata write was corrupted.
 - `num_matched_target_modules <= 0`

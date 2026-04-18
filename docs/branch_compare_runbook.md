@@ -80,7 +80,9 @@ bash scripts/train_stage3_subtype_rescue.sh
 
 The scaffold reads `data/processed/stage2_subtype_rescue_promotion.json` by
 default and refuses to proceed unless that JSON says `"promote": true`.
-Set `ALLOW_UNPROMOTED_SUBTYPE_STAGE3=1` only for a deliberate manual override.
+Set both `ALLOW_UNPROMOTED_SUBTYPE_STAGE3=1` and
+`I_UNDERSTAND_SUBTYPE_STAGE3_WAS_NOT_PROMOTED=1` only for a deliberate manual
+override.
 All outputs stay on isolated branch paths and do not overwrite canonical
 stage3.
 

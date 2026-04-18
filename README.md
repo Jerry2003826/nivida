@@ -83,9 +83,29 @@ unseen across the full staged pipeline (`stage1 -> stage2 init_adapter_dir=stage
 
 Stage2 build with family balancing and stronger teacher search:
 
+For reproducibility, prefer the canonical shell script:
+
 ```bash
+bash scripts/train_stage2_distill.sh
+```
+
+If you need the train-side builder step alone, first export the leak-free
+official subset exactly as the canonical script does, then feed that subset
+plus synth into the builder:
+
+```bash
+python scripts/export_split_subset.py \
+  --input data/processed/official_train_tagged.jsonl \
+  --output data/processed/stage2_official_train_no_hard_valid.jsonl \
+  --split-file data/splits/official/splits.json \
+  --split-name rule_novelty_all \
+  --split-role train \
+  --exclude-split-file data/splits/official/splits.json \
+  --exclude-split-name hard_triad_rule_novelty \
+  --exclude-split-role valid
+
 python -m src.student.sft_dataset_builder \
-  --input data/processed/official_train_tagged.jsonl,data/synthetic/synth_hard_triads.jsonl \
+  --input data/processed/stage2_official_train_no_hard_valid.jsonl,data/synthetic/synth_hard_triads.jsonl \
   --output data/processed/stage2_distill_train.jsonl \
   --selection-profile stage2 \
   --prompt-mode chat_thinking \
@@ -97,10 +117,7 @@ python -m src.student.sft_dataset_builder \
   --balance-by-family \
   --hard-triad-repeat-factor 2 \
   --max-per-signature-bucket 64 \
-  --report-output data/processed/stage2_distill_report.json \
-  --split-file data/splits/official/splits.json \
-  --split-name rule_novelty_all \
-  --split-role train
+  --report-output data/processed/stage2_distill_report.json
 ```
 
 Stage3 build from stage2 model failures plus all-family replay:

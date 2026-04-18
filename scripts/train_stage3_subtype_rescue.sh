@@ -10,8 +10,13 @@ set -euo pipefail
 
 SUBTYPE_BRANCH_PROMOTION_JSON="${SUBTYPE_BRANCH_PROMOTION_JSON:-data/processed/stage2_subtype_rescue_promotion.json}"
 ALLOW_UNPROMOTED_SUBTYPE_STAGE3="${ALLOW_UNPROMOTED_SUBTYPE_STAGE3:-0}"
+I_UNDERSTAND_SUBTYPE_STAGE3_WAS_NOT_PROMOTED="${I_UNDERSTAND_SUBTYPE_STAGE3_WAS_NOT_PROMOTED:-0}"
 
 if [[ "$ALLOW_UNPROMOTED_SUBTYPE_STAGE3" == "1" ]]; then
+  if [[ "$I_UNDERSTAND_SUBTYPE_STAGE3_WAS_NOT_PROMOTED" != "1" ]]; then
+    echo "Manual subtype stage3 override requires I_UNDERSTAND_SUBTYPE_STAGE3_WAS_NOT_PROMOTED=1" >&2
+    exit 1
+  fi
   python scripts/check_subtype_branch_promotion.py \
     --promotion-json "$SUBTYPE_BRANCH_PROMOTION_JSON" \
     --allow-unpromoted
@@ -64,19 +69,23 @@ export REPLAY_RATIO="${REPLAY_RATIO:-0.25}"
 STAGE3_BRANCH_TEMPLATE="$(mktemp)"
 trap 'rm -f "$STAGE3_BRANCH_TEMPLATE"' EXIT
 
-python - "$STAGE3_BRANCH_TEMPLATE" <<'PY'
+python - "$STAGE3_BRANCH_TEMPLATE" \
+  "$FINAL_STAGE3_ADAPTER_DIR" \
+  "$REPAIR_STAGE3_TRAIN_DATASET" \
+  "$REPAIR_STAGE3_VALID_DATASET" <<'PY'
 from pathlib import Path
 import sys
 import yaml
 
 output_path = Path(sys.argv[1])
+output_dir, train_dataset, valid_dataset = sys.argv[2:5]
 payload = yaml.safe_load(
     Path("configs/train_stage3_repair.yaml").read_text(encoding="utf-8")
 ) or {}
 training = payload.setdefault("training", {})
-training["output_dir"] = "artifacts/adapter_stage3_subtype_rescue"
-training["dataset_path"] = "data/processed/stage3_subtype_rescue_train.jsonl"
-training["eval_path"] = "data/processed/stage3_subtype_rescue_valid.jsonl"
+training["output_dir"] = output_dir
+training["dataset_path"] = train_dataset
+training["eval_path"] = valid_dataset
 output_path.write_text(
     yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
     encoding="utf-8",

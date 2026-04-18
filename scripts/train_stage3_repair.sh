@@ -300,10 +300,11 @@ else
     --max-new-tokens 2048
 fi
 
-# Stage3 proxy eval: evaluate the final adapter (real stage3, or the stage2
-# clone in the skip path) against the full hard-triad valid subset. This is
-# the competition_correct_rate we trust for comparing against stage2_proxy
-# and for deciding whether to submit.
+# Stage3 root/final proxy eval: monitoring only.
+# Evaluate the final adapter (real stage3, or the stage2 clone in the skip
+# path) against the hard-triad valid subset so we can compare "final step"
+# behaviour against the bestproxy-selected checkpoint. The submission selector
+# consumes stage3_bestproxy_*_eval.json, not these stage-root artifacts.
 python -m src.student.inference \
   --config "$STAGE3_RUNTIME_CONFIG" \
   --input "$VALID_SUBSET" \
@@ -334,10 +335,10 @@ print(json.dumps(
 ))
 PY
 
-# Stage3 all-family proxy eval: feeds into select_final_adapter as the
-# primary metric. A stage3 adapter with better hard-triad proxy but worse
-# all-family proxy is a sign that easy-triad retention was sacrificed; the
-# selector decides from this artifact whether stage3 actually beats stage2.
+# Stage3 root/final all-family proxy eval: monitoring only.
+# Keep this alongside the hard-triad root proxy so we can diagnose whether the
+# final stage3 step overtrained relative to the bestproxy-selected checkpoint.
+# The submission selector still reads stage3_bestproxy_*_eval.json.
 python -m src.student.inference \
   --config "$STAGE3_RUNTIME_CONFIG" \
   --input "$ALL_FAMILY_PROXY_VALID_SUBSET" \

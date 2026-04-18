@@ -36,11 +36,17 @@ STAGE2_VALID_REPORT="${STAGE2_VALID_REPORT:-data/processed/stage2_subtype_rescue
 STAGE2_TRAIN_DATASET="${STAGE2_TRAIN_DATASET:-data/processed/stage2_subtype_rescue_train.jsonl}"
 STAGE2_VALID_DATASET="${STAGE2_VALID_DATASET:-data/processed/stage2_subtype_rescue_valid.jsonl}"
 
-STAGE2_TRAIN_OFFICIAL_SUBSET="${STAGE2_TRAIN_OFFICIAL_SUBSET:-data/processed/stage2_official_train_no_hard_valid.jsonl}"
-STAGE2_VALID_OFFICIAL_SUBSET="${STAGE2_VALID_OFFICIAL_SUBSET:-data/processed/stage2_official_valid_hard_triad.jsonl}"
-ALL_FAMILY_PROXY_VALID_SUBSET="${ALL_FAMILY_PROXY_VALID_SUBSET:-data/processed/proxy_all_family_valid.jsonl}"
-SYNTH_HARD_TRIADS_PATH="${SYNTH_HARD_TRIADS_PATH:-data/synthetic/synth_hard_triads.jsonl}"
-SYNTH_HARD_TRIADS_SUMMARY_PATH="${SYNTH_HARD_TRIADS_SUMMARY_PATH:-data/synthetic/synth_hard_triads_summary.json}"
+CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET="${CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET:-data/processed/stage2_official_train_no_hard_valid.jsonl}"
+CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET="${CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET:-data/processed/stage2_official_valid_hard_triad.jsonl}"
+CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET="${CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET:-data/processed/proxy_all_family_valid.jsonl}"
+CANONICAL_SYNTH_HARD_TRIADS_PATH="${CANONICAL_SYNTH_HARD_TRIADS_PATH:-data/synthetic/synth_hard_triads.jsonl}"
+CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH="${CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH:-data/synthetic/synth_hard_triads_summary.json}"
+
+STAGE2_TRAIN_OFFICIAL_SUBSET="${STAGE2_TRAIN_OFFICIAL_SUBSET:-data/processed/stage2_subtype_rescue_official_train_no_hard_valid.jsonl}"
+STAGE2_VALID_OFFICIAL_SUBSET="${STAGE2_VALID_OFFICIAL_SUBSET:-data/processed/stage2_subtype_rescue_official_valid_hard_triad.jsonl}"
+ALL_FAMILY_PROXY_VALID_SUBSET="${ALL_FAMILY_PROXY_VALID_SUBSET:-data/processed/stage2_subtype_rescue_proxy_all_family_valid.jsonl}"
+SYNTH_HARD_TRIADS_PATH="${SYNTH_HARD_TRIADS_PATH:-data/synthetic/synth_hard_triads_subtype_rescue.jsonl}"
+SYNTH_HARD_TRIADS_SUMMARY_PATH="${SYNTH_HARD_TRIADS_SUMMARY_PATH:-data/synthetic/synth_hard_triads_subtype_rescue_summary.json}"
 
 STAGE2_ADAPTER_DIR="${STAGE2_ADAPTER_DIR:-artifacts/adapter_stage2_subtype_rescue}"
 STAGE2_PROXY_VALID_PREDICTIONS="${STAGE2_PROXY_VALID_PREDICTIONS:-data/processed/stage2_subtype_rescue_proxy_valid_predictions.jsonl}"
@@ -59,13 +65,30 @@ if [[ ! -d "$STAGE1_ADAPTER_DIR" ]]; then
   exit 1
 fi
 
-# The canonical prepare_data + synth_hard_triads outputs are shared between
-# canonical stage2 and this branch. Regenerate them only when missing, or when
-# REFRESH_SUBTYPE_RESCUE_INPUTS=1 is set for an intentional refresh.
+copy_into_branch_path() {
+  local source_path="$1"
+  local target_path="$2"
+  mkdir -p "$(dirname "$target_path")"
+  local target_tmp
+  target_tmp="$(mktemp "${target_path}.tmp.XXXXXX")"
+  cp "$source_path" "$target_tmp"
+  mv "$target_tmp" "$target_path"
+}
+
+# Materialize branch-local inputs. By default, reuse canonical stabilized inputs
+# by copying them into subtype-rescue-specific paths; only regenerate when the
+# canonical artifact is absent or when REFRESH_SUBTYPE_RESCUE_INPUTS=1 requests
+# a deliberate branch-local refresh.
 if [[ ! -f "data/processed/official_train_tagged.jsonl" ]]; then
   python scripts/prepare_data.py --config configs/data_official.yaml
 fi
-if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" == "1" || ! -f "$SYNTH_HARD_TRIADS_PATH" ]]; then
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$SYNTH_HARD_TRIADS_PATH" ]]; then
+  echo "[stage2-subtype] Reusing existing branch-local input: $SYNTH_HARD_TRIADS_PATH"
+elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$CANONICAL_SYNTH_HARD_TRIADS_PATH" && -f "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" ]]; then
+  copy_into_branch_path "$CANONICAL_SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_PATH"
+  copy_into_branch_path "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" "$SYNTH_HARD_TRIADS_SUMMARY_PATH"
+  echo "[stage2-subtype] Copied canonical synth inputs into branch-local paths."
+else
   mkdir -p "$(dirname "$SYNTH_HARD_TRIADS_PATH")" "$(dirname "$SYNTH_HARD_TRIADS_SUMMARY_PATH")"
   synth_tmp_output="$(mktemp "${SYNTH_HARD_TRIADS_PATH}.tmp.XXXXXX")"
   synth_tmp_summary="$(mktemp "${SYNTH_HARD_TRIADS_SUMMARY_PATH}.tmp.XXXXXX")"
@@ -88,14 +111,17 @@ PY
   mv "$synth_tmp_output" "$SYNTH_HARD_TRIADS_PATH"
   mv "$synth_tmp_summary" "$SYNTH_HARD_TRIADS_SUMMARY_PATH"
   rm -f "$synth_tmp_config"
-else
-  echo "[stage2-subtype] Reusing existing input: $SYNTH_HARD_TRIADS_PATH (set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to regenerate)."
 fi
 
-# The three split subsets below mirror canonical stage2 exactly; regenerate
-# only when missing, or when REFRESH_SUBTYPE_RESCUE_INPUTS=1 is set, so sibling
-# runs share a stable definition of train / valid.
-if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" == "1" || ! -f "$STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then
+# The three split subsets below mirror canonical stage2 exactly, but they live
+# under branch-local names so subtype-rescue never overwrites canonical inputs.
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then
+  echo "[stage2-subtype] Reusing existing branch-local input: $STAGE2_TRAIN_OFFICIAL_SUBSET"
+elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then
+  copy_into_branch_path "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" "$STAGE2_TRAIN_OFFICIAL_SUBSET"
+  echo "[stage2-subtype] Copied canonical train subset into branch-local path."
+else
+  mkdir -p "$(dirname "$STAGE2_TRAIN_OFFICIAL_SUBSET")"
   stage2_train_subset_tmp="$(mktemp "${STAGE2_TRAIN_OFFICIAL_SUBSET}.tmp.XXXXXX")"
   python scripts/export_split_subset.py \
     --input data/processed/official_train_tagged.jsonl \
@@ -107,11 +133,15 @@ if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" == "1" || ! -f "$STAGE2_TRAIN_OFFICIAL_SU
     --exclude-split-name hard_triad_rule_novelty \
     --exclude-split-role valid
   mv "$stage2_train_subset_tmp" "$STAGE2_TRAIN_OFFICIAL_SUBSET"
-else
-  echo "[stage2-subtype] Reusing existing input: $STAGE2_TRAIN_OFFICIAL_SUBSET (set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to regenerate)."
 fi
 
-if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" == "1" || ! -f "$STAGE2_VALID_OFFICIAL_SUBSET" ]]; then
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$STAGE2_VALID_OFFICIAL_SUBSET" ]]; then
+  echo "[stage2-subtype] Reusing existing branch-local input: $STAGE2_VALID_OFFICIAL_SUBSET"
+elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" ]]; then
+  copy_into_branch_path "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" "$STAGE2_VALID_OFFICIAL_SUBSET"
+  echo "[stage2-subtype] Copied canonical valid subset into branch-local path."
+else
+  mkdir -p "$(dirname "$STAGE2_VALID_OFFICIAL_SUBSET")"
   stage2_valid_subset_tmp="$(mktemp "${STAGE2_VALID_OFFICIAL_SUBSET}.tmp.XXXXXX")"
   python scripts/export_split_subset.py \
     --input data/processed/official_train_tagged.jsonl \
@@ -120,11 +150,15 @@ if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" == "1" || ! -f "$STAGE2_VALID_OFFICIAL_SU
     --split-name hard_triad_rule_novelty \
     --split-role valid
   mv "$stage2_valid_subset_tmp" "$STAGE2_VALID_OFFICIAL_SUBSET"
-else
-  echo "[stage2-subtype] Reusing existing input: $STAGE2_VALID_OFFICIAL_SUBSET (set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to regenerate)."
 fi
 
-if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" == "1" || ! -f "$ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then
+  echo "[stage2-subtype] Reusing existing branch-local input: $ALL_FAMILY_PROXY_VALID_SUBSET"
+elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then
+  copy_into_branch_path "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" "$ALL_FAMILY_PROXY_VALID_SUBSET"
+  echo "[stage2-subtype] Copied canonical all-family proxy subset into branch-local path."
+else
+  mkdir -p "$(dirname "$ALL_FAMILY_PROXY_VALID_SUBSET")"
   all_family_proxy_subset_tmp="$(mktemp "${ALL_FAMILY_PROXY_VALID_SUBSET}.tmp.XXXXXX")"
   python scripts/export_split_subset.py \
     --input data/processed/official_train_tagged.jsonl \
@@ -136,8 +170,6 @@ if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" == "1" || ! -f "$ALL_FAMILY_PROXY_VALID_S
     --exclude-split-name hard_triad_rule_novelty \
     --exclude-split-role train
   mv "$all_family_proxy_subset_tmp" "$ALL_FAMILY_PROXY_VALID_SUBSET"
-else
-  echo "[stage2-subtype] Reusing existing input: $ALL_FAMILY_PROXY_VALID_SUBSET (set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to regenerate)."
 fi
 
 # ---------------------------------------------------------------------------

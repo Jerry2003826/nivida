@@ -95,6 +95,20 @@ def check_stage1_acceptance(
     summary = _load_json_object(
         file_paths["last_run_summary.json"], label="last_run_summary.json"
     )
+    adapter_config = _load_json_object(
+        file_paths["adapter_config.json"], label="adapter_config.json"
+    )
+
+    try:
+        adapter_rank = int(adapter_config.get("r", adapter_config.get("rank", -1)))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("adapter rank missing or not an integer") from exc
+    if adapter_rank <= 0 or adapter_rank > 32:
+        raise SystemExit(f"adapter rank must be in 1..32, got {adapter_rank}")
+
+    target_modules = adapter_config.get("target_modules")
+    if not target_modules:
+        raise SystemExit("adapter_config.target_modules must be non-empty")
 
     preflight = _coalesce(metadata.get("preflight"), summary.get("preflight"))
     if not isinstance(preflight, dict):
@@ -148,6 +162,8 @@ def check_stage1_acceptance(
         "accepted": True,
         "adapter_dir": str(adapter_path),
         "required_files": {name: str(path) for name, path in file_paths.items()},
+        "adapter_rank": adapter_rank,
+        "target_modules": target_modules,
         "preflight_status": preflight["status"],
         "chat_template_sha16": chat_template_sha16,
         "expected_chat_template_sha16": EXPECTED_CHAT_TEMPLATE_SHA16,

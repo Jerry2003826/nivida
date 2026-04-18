@@ -13,7 +13,10 @@ def _make_stage1_adapter_dir(tmp_path: Path) -> Path:
     adapter_dir = tmp_path / "adapter_stage1_format"
     adapter_dir.mkdir(parents=True)
     (adapter_dir / "adapter_model.safetensors").write_text("weights", encoding="utf-8")
-    (adapter_dir / "adapter_config.json").write_text('{"r": 32}', encoding="utf-8")
+    (adapter_dir / "adapter_config.json").write_text(
+        '{"r": 32, "target_modules": ["q_proj", "v_proj"]}',
+        encoding="utf-8",
+    )
     payload = {
         "preflight": {"status": "ok", "chat_template_sha16": EXPECTED_CHAT_TEMPLATE_SHA16},
         "dataset_stats": {"length_unit": "bpe_tokens"},
@@ -40,6 +43,8 @@ def test_check_stage1_acceptance_passes_with_complete_artifacts(tmp_path: Path) 
 
     assert payload["accepted"] is True
     assert payload["preflight_status"] == "ok"
+    assert payload["adapter_rank"] == 32
+    assert payload["target_modules"] == ["q_proj", "v_proj"]
     assert payload["dataset_length_unit"] == "bpe_tokens"
     assert payload["num_matched_target_modules"] == 42
     assert payload["num_train_records"] == 7561
@@ -148,4 +153,23 @@ def test_check_stage1_acceptance_rejects_empty_adapter_weights(tmp_path: Path) -
     (adapter_dir / "adapter_model.safetensors").write_text("", encoding="utf-8")
 
     with pytest.raises(SystemExit, match="must be non-empty"):
+        check_stage1_acceptance(adapter_dir=adapter_dir)
+
+
+def test_check_stage1_acceptance_rejects_rank_above_limit(tmp_path: Path) -> None:
+    adapter_dir = _make_stage1_adapter_dir(tmp_path)
+    (adapter_dir / "adapter_config.json").write_text(
+        '{"r": 64, "target_modules": ["q_proj", "v_proj"]}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="adapter rank"):
+        check_stage1_acceptance(adapter_dir=adapter_dir)
+
+
+def test_check_stage1_acceptance_rejects_missing_target_modules(tmp_path: Path) -> None:
+    adapter_dir = _make_stage1_adapter_dir(tmp_path)
+    (adapter_dir / "adapter_config.json").write_text('{"r": 32}', encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="target_modules"):
         check_stage1_acceptance(adapter_dir=adapter_dir)

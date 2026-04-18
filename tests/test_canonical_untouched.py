@@ -69,6 +69,13 @@ def test_readme_never_points_canonical_submission_to_stage3_repair_adapter() -> 
     )
 
 
+def test_readme_stage2_example_prefers_canonical_script_and_exported_subset() -> None:
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "bash scripts/train_stage2_distill.sh" in text
+    assert "--input data/processed/stage2_official_train_no_hard_valid.jsonl,data/synthetic/synth_hard_triads.jsonl" in text
+    assert "--input data/processed/official_train_tagged.jsonl,data/synthetic/synth_hard_triads.jsonl" not in text
+
+
 def test_branch_and_canonical_output_paths_do_not_overlap() -> None:
     canonical_outputs: set[str] = set()
     branch_outputs: set[str] = set()
@@ -117,6 +124,18 @@ def test_stage3_branch_scaffold_exports_dataset_overrides() -> None:
     assert 'export REPAIR_STAGE3_VALID_DATASET="${REPAIR_STAGE3_VALID_DATASET:-data/processed/stage3_subtype_rescue_valid.jsonl}"' in branch_text
 
 
+def test_stage3_subtype_runtime_config_uses_exported_paths() -> None:
+    text = (REPO_ROOT / "scripts" / "train_stage3_subtype_rescue.sh").read_text(
+        encoding="utf-8"
+    )
+    assert '"$FINAL_STAGE3_ADAPTER_DIR"' in text
+    assert '"$REPAIR_STAGE3_TRAIN_DATASET"' in text
+    assert '"$REPAIR_STAGE3_VALID_DATASET"' in text
+    assert 'training["output_dir"] = "artifacts/adapter_stage3_subtype_rescue"' not in text
+    assert 'training["dataset_path"] = "data/processed/stage3_subtype_rescue_train.jsonl"' not in text
+    assert 'training["eval_path"] = "data/processed/stage3_subtype_rescue_valid.jsonl"' not in text
+
+
 def test_stage3_repair_script_uses_env_for_stage2_inference_config() -> None:
     text = (REPO_ROOT / "scripts" / "train_stage3_repair.sh").read_text(
         encoding="utf-8"
@@ -137,3 +156,28 @@ def test_subtype_rescue_script_declares_refresh_and_atomic_write_pattern() -> No
     assert 'REFRESH_SUBTYPE_RESCUE_INPUTS="${REFRESH_SUBTYPE_RESCUE_INPUTS:-0}"' in text
     assert "mktemp" in text
     assert "REFRESH_SUBTYPE_RESCUE_INPUTS" in text
+
+
+def test_subtype_rescue_defaults_do_not_write_canonical_stage2_inputs() -> None:
+    text = (REPO_ROOT / "scripts" / "train_stage2_subtype_rescue.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'STAGE2_TRAIN_OFFICIAL_SUBSET="${STAGE2_TRAIN_OFFICIAL_SUBSET:-data/processed/stage2_subtype_rescue_official_train_no_hard_valid.jsonl}"' in text
+    assert 'STAGE2_VALID_OFFICIAL_SUBSET="${STAGE2_VALID_OFFICIAL_SUBSET:-data/processed/stage2_subtype_rescue_official_valid_hard_triad.jsonl}"' in text
+    assert 'ALL_FAMILY_PROXY_VALID_SUBSET="${ALL_FAMILY_PROXY_VALID_SUBSET:-data/processed/stage2_subtype_rescue_proxy_all_family_valid.jsonl}"' in text
+    assert 'SYNTH_HARD_TRIADS_PATH="${SYNTH_HARD_TRIADS_PATH:-data/synthetic/synth_hard_triads_subtype_rescue.jsonl}"' in text
+    assert 'SYNTH_HARD_TRIADS_SUMMARY_PATH="${SYNTH_HARD_TRIADS_SUMMARY_PATH:-data/synthetic/synth_hard_triads_subtype_rescue_summary.json}"' in text
+    assert 'CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET="${CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET:-data/processed/stage2_official_train_no_hard_valid.jsonl}"' in text
+    assert 'CANONICAL_SYNTH_HARD_TRIADS_PATH="${CANONICAL_SYNTH_HARD_TRIADS_PATH:-data/synthetic/synth_hard_triads.jsonl}"' in text
+    assert 'copy_into_branch_path "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" "$STAGE2_TRAIN_OFFICIAL_SUBSET"' in text
+    assert 'copy_into_branch_path "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" "$STAGE2_VALID_OFFICIAL_SUBSET"' in text
+    assert 'copy_into_branch_path "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" "$ALL_FAMILY_PROXY_VALID_SUBSET"' in text
+    assert 'copy_into_branch_path "$CANONICAL_SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_PATH"' in text
+
+
+def test_stage3_subtype_manual_override_requires_second_confirmation() -> None:
+    text = (REPO_ROOT / "scripts" / "train_stage3_subtype_rescue.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'I_UNDERSTAND_SUBTYPE_STAGE3_WAS_NOT_PROMOTED="${I_UNDERSTAND_SUBTYPE_STAGE3_WAS_NOT_PROMOTED:-0}"' in text
+    assert "Manual subtype stage3 override requires I_UNDERSTAND_SUBTYPE_STAGE3_WAS_NOT_PROMOTED=1" in text
