@@ -26,6 +26,7 @@ STAGE2_PROXY_VALID_EVAL="${STAGE2_PROXY_VALID_EVAL:-data/processed/stage2_proxy_
 ALL_FAMILY_PROXY_VALID_SUBSET="${ALL_FAMILY_PROXY_VALID_SUBSET:-data/processed/proxy_all_family_valid.jsonl}"
 STAGE2_PROXY_ALL_VALID_PREDICTIONS="${STAGE2_PROXY_ALL_VALID_PREDICTIONS:-data/processed/stage2_proxy_all_valid_predictions.jsonl}"
 STAGE2_PROXY_ALL_VALID_EVAL="${STAGE2_PROXY_ALL_VALID_EVAL:-data/processed/stage2_proxy_all_valid_eval.json}"
+STAGE2_BESTPROXY_WORKDIR="${STAGE2_BESTPROXY_WORKDIR:-artifacts/_proxy_checkpoint_scratch/stage2_canonical}"
 
 if [[ ! -d "$STAGE1_ADAPTER_DIR" ]]; then
   echo "Missing stage1 adapter: $STAGE1_ADAPTER_DIR" >&2
@@ -249,6 +250,7 @@ python scripts/select_best_proxy_checkpoint.py \
   --stage-output-dir "$STAGE2_ADAPTER_DIR" \
   --hard-proxy-input "$STAGE2_VALID_OFFICIAL_SUBSET" \
   --all-proxy-input "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+  --workdir "$STAGE2_BESTPROXY_WORKDIR" \
   --output-best-dir "$STAGE2_BESTPROXY_DIR" \
   --output-hard-eval "$STAGE2_BESTPROXY_HARD_EVAL" \
   --output-all-eval "$STAGE2_BESTPROXY_ALL_EVAL" \

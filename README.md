@@ -18,12 +18,23 @@ bash scripts/train_stage1_format_align.sh
 bash scripts/train_stage2_distill.sh
 bash scripts/train_stage3_repair.sh
 
+python scripts/select_final_adapter.py \
+  --stage2-hard-eval data/processed/stage2_bestproxy_hard_eval.json \
+  --stage2-all-eval  data/processed/stage2_bestproxy_all_eval.json \
+  --stage2-adapter-dir artifacts/adapter_stage2_bestproxy \
+  --stage3-hard-eval data/processed/stage3_bestproxy_hard_eval.json \
+  --stage3-all-eval  data/processed/stage3_bestproxy_all_eval.json \
+  --stage3-adapter-dir artifacts/adapter_stage3_bestproxy \
+  --output-adapter-dir artifacts/adapter_final_selected \
+  --output-json        data/processed/final_adapter_selection.json
+
 python scripts/validate_submission.py \
   --config configs/train_stage3_repair.yaml \
-  --adapter-dir artifacts/adapter_stage3_repair \
+  --adapter-dir artifacts/adapter_final_selected \
   --smoke-input data/processed/official_train_tagged.jsonl \
   --labels data/processed/official_train_tagged.jsonl \
   --splits data/splits/official/splits.json \
+  --max-new-tokens 2048 \
   --package-output submission.zip
 ```
 
@@ -157,36 +168,6 @@ Legacy local smoke entry now forwards to the canonical stage1 smoke script:
 
 ```bash
 bash scripts/train_smoke_local.sh
-```
-
-Canonical training order (run top-to-bottom on an H100 box):
-
-```bash
-python scripts/probe_chat_template.py
-python scripts/inspect_target_modules.py --config configs/train_stage1_format.yaml
-
-bash scripts/train_stage1_format_align.sh
-bash scripts/train_stage2_distill.sh
-bash scripts/train_stage3_repair.sh
-
-python scripts/select_final_adapter.py \
-  --stage2-hard-eval data/processed/stage2_bestproxy_hard_eval.json \
-  --stage2-all-eval  data/processed/stage2_bestproxy_all_eval.json \
-  --stage2-adapter-dir artifacts/adapter_stage2_bestproxy \
-  --stage3-hard-eval data/processed/stage3_bestproxy_hard_eval.json \
-  --stage3-all-eval  data/processed/stage3_bestproxy_all_eval.json \
-  --stage3-adapter-dir artifacts/adapter_stage3_bestproxy \
-  --output-adapter-dir artifacts/adapter_final_selected \
-  --output-json        data/processed/final_adapter_selection.json
-
-python scripts/validate_submission.py \
-  --config configs/train_stage3_repair.yaml \
-  --adapter-dir artifacts/adapter_final_selected \
-  --smoke-input data/processed/official_train_tagged.jsonl \
-  --labels data/processed/official_train_tagged.jsonl \
-  --splits data/splits/official/splits.json \
-  --max-new-tokens 2048 \
-  --package-output submission.zip
 ```
 
 Inside each stage, `scripts/select_best_proxy_checkpoint.py` iterates over

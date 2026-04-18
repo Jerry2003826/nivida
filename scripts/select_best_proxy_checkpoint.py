@@ -43,6 +43,15 @@ from src.student.proxy_selection import (  # noqa: E402
 
 
 CHECKPOINT_STEP_RE = re.compile(r"^checkpoint-(\d+)$")
+SCRATCH_ROOT = Path("artifacts/_proxy_checkpoint_scratch")
+
+
+def derive_default_workdir(stage_output_dir: Path) -> Path:
+    raw_name = stage_output_dir.as_posix().strip("/")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "__", raw_name).strip("_")
+    if not safe_name:
+        safe_name = "stage_output_dir"
+    return SCRATCH_ROOT / safe_name
 
 
 def discover_candidate_dirs(stage_output_dir: Path) -> list[tuple[str, Path]]:
@@ -140,8 +149,10 @@ def select_best_checkpoint(
     output_all_eval: Path,
     output_json: Path,
     max_new_tokens: int,
-    workdir: Path,
+    workdir: Path | None,
 ) -> dict[str, Any]:
+    if workdir is None:
+        workdir = derive_default_workdir(stage_output_dir)
     workdir.mkdir(parents=True, exist_ok=True)
     candidates = discover_candidate_dirs(stage_output_dir)
     if not candidates:
@@ -233,6 +244,7 @@ def select_best_checkpoint(
 
     summary = {
         "stage_output_dir": str(stage_output_dir),
+        "workdir": str(workdir),
         "selected_candidate": best["name"],
         "selected_adapter_dir": str(output_best_dir),
         "selected_hard_eval": str(output_hard_eval),
@@ -265,7 +277,7 @@ def main() -> None:
     parser.add_argument(
         "--workdir",
         type=Path,
-        default=Path("artifacts/_proxy_checkpoint_scratch"),
+        default=None,
         help="Directory for per-candidate prediction / eval intermediates.",
     )
     args = parser.parse_args()

@@ -8,9 +8,22 @@ set -euo pipefail
 # scripts/train_stage3_repair.sh. It stays dormant until
 # scripts/decide_subtype_branch_promotion.py says the branch earned a stage3.
 
+SUBTYPE_BRANCH_PROMOTION_JSON="${SUBTYPE_BRANCH_PROMOTION_JSON:-data/processed/stage2_subtype_rescue_promotion.json}"
+ALLOW_UNPROMOTED_SUBTYPE_STAGE3="${ALLOW_UNPROMOTED_SUBTYPE_STAGE3:-0}"
+
+if [[ "$ALLOW_UNPROMOTED_SUBTYPE_STAGE3" == "1" ]]; then
+  python scripts/check_subtype_branch_promotion.py \
+    --promotion-json "$SUBTYPE_BRANCH_PROMOTION_JSON" \
+    --allow-unpromoted
+else
+  python scripts/check_subtype_branch_promotion.py \
+    --promotion-json "$SUBTYPE_BRANCH_PROMOTION_JSON"
+fi
+
 export TOKENIZER_PATH="${TOKENIZER_PATH:-artifacts/_tokenizer_cache/metric_nemotron-3-nano-30b-a3b-bf16_transformers_default}"
 
 export STAGE2_ADAPTER_DIR="${STAGE2_ADAPTER_DIR:-artifacts/adapter_stage2_subtype_rescue_bestproxy}"
+export STAGE2_INFERENCE_CONFIG="${STAGE2_INFERENCE_CONFIG:-configs/train_stage2_selected_trace_subtype_rescue.yaml}"
 export STAGE2_BESTPROXY_HARD_EVAL="${STAGE2_BESTPROXY_HARD_EVAL:-data/processed/stage2_subtype_rescue_bestproxy_hard_eval.json}"
 export STAGE2_BESTPROXY_ALL_EVAL="${STAGE2_BESTPROXY_ALL_EVAL:-data/processed/stage2_subtype_rescue_bestproxy_all_eval.json}"
 
@@ -19,6 +32,7 @@ export STAGE3_BESTPROXY_DIR="${STAGE3_BESTPROXY_DIR:-artifacts/adapter_stage3_su
 export STAGE3_BESTPROXY_HARD_EVAL="${STAGE3_BESTPROXY_HARD_EVAL:-data/processed/stage3_subtype_rescue_bestproxy_hard_eval.json}"
 export STAGE3_BESTPROXY_ALL_EVAL="${STAGE3_BESTPROXY_ALL_EVAL:-data/processed/stage3_subtype_rescue_bestproxy_all_eval.json}"
 export STAGE3_BESTPROXY_SELECTION_JSON="${STAGE3_BESTPROXY_SELECTION_JSON:-data/processed/stage3_subtype_rescue_best_checkpoint_selection.json}"
+export STAGE3_BESTPROXY_WORKDIR="${STAGE3_BESTPROXY_WORKDIR:-artifacts/_proxy_checkpoint_scratch/stage3_subtype_rescue}"
 
 export REPAIR_TRAIN_SUBSET="${REPAIR_TRAIN_SUBSET:-data/processed/stage3_subtype_rescue_subset_train.jsonl}"
 export REPLAY_TRAIN_SUBSET="${REPLAY_TRAIN_SUBSET:-data/processed/stage3_subtype_rescue_replay_pool_train.jsonl}"

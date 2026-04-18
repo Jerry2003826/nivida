@@ -78,7 +78,11 @@ Run the pre-wired stage3 scaffold:
 bash scripts/train_stage3_subtype_rescue.sh
 ```
 
-This writes to isolated branch paths and does not overwrite canonical stage3.
+The scaffold reads `data/processed/stage2_subtype_rescue_promotion.json` by
+default and refuses to proceed unless that JSON says `"promote": true`.
+Set `ALLOW_UNPROMOTED_SUBTYPE_STAGE3=1` only for a deliberate manual override.
+All outputs stay on isolated branch paths and do not overwrite canonical
+stage3.
 
 ## If the Branch Loses
 

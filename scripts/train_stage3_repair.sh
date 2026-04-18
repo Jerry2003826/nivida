@@ -7,6 +7,7 @@ set -euo pipefail
 TOKENIZER_PATH="${TOKENIZER_PATH:-artifacts/_tokenizer_cache/metric_nemotron-3-nano-30b-a3b-bf16_transformers_default}"
 
 STAGE2_ADAPTER_DIR="${STAGE2_ADAPTER_DIR:-artifacts/adapter_stage2_bestproxy}"
+STAGE2_INFERENCE_CONFIG="${STAGE2_INFERENCE_CONFIG:-configs/train_stage2_selected_trace.yaml}"
 STAGE2_BESTPROXY_HARD_EVAL="${STAGE2_BESTPROXY_HARD_EVAL:-data/processed/stage2_bestproxy_hard_eval.json}"
 STAGE2_BESTPROXY_ALL_EVAL="${STAGE2_BESTPROXY_ALL_EVAL:-data/processed/stage2_bestproxy_all_eval.json}"
 STAGE3_CONFIG_TEMPLATE="${STAGE3_CONFIG_TEMPLATE:-configs/train_stage3_repair.yaml}"
@@ -15,6 +16,7 @@ STAGE3_BESTPROXY_DIR="${STAGE3_BESTPROXY_DIR:-artifacts/adapter_stage3_bestproxy
 STAGE3_BESTPROXY_HARD_EVAL="${STAGE3_BESTPROXY_HARD_EVAL:-data/processed/stage3_bestproxy_hard_eval.json}"
 STAGE3_BESTPROXY_ALL_EVAL="${STAGE3_BESTPROXY_ALL_EVAL:-data/processed/stage3_bestproxy_all_eval.json}"
 STAGE3_BESTPROXY_SELECTION_JSON="${STAGE3_BESTPROXY_SELECTION_JSON:-data/processed/stage3_best_checkpoint_selection.json}"
+STAGE3_BESTPROXY_WORKDIR="${STAGE3_BESTPROXY_WORKDIR:-artifacts/_proxy_checkpoint_scratch/stage3_canonical}"
 
 FULL_TRAIN_INPUT="${FULL_TRAIN_INPUT:-data/processed/official_train_tagged.jsonl}"
 
@@ -102,14 +104,14 @@ python scripts/export_split_subset.py \
 # be absent from rule_novelty_all/train; running over the full pool guarantees
 # no hard-triad failure is silently dropped from the stage3 repair artifact.
 python -m src.student.inference \
-  --config configs/train_stage2_selected_trace.yaml \
+  --config "$STAGE2_INFERENCE_CONFIG" \
   --input "$FULL_TRAIN_INPUT" \
   --adapter-dir "$STAGE2_ADAPTER_DIR" \
   --output "$FULL_TRAIN_PREDICTIONS" \
   --max-new-tokens 2048
 
 python -m src.student.inference \
-  --config configs/train_stage2_selected_trace.yaml \
+  --config "$STAGE2_INFERENCE_CONFIG" \
   --input "$VALID_SUBSET" \
   --adapter-dir "$STAGE2_ADAPTER_DIR" \
   --output "$VALID_PREDICTIONS" \
@@ -290,6 +292,7 @@ else
     --stage-output-dir "$FINAL_STAGE3_ADAPTER_DIR" \
     --hard-proxy-input "$VALID_SUBSET" \
     --all-proxy-input "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+    --workdir "$STAGE3_BESTPROXY_WORKDIR" \
     --output-best-dir "$STAGE3_BESTPROXY_DIR" \
     --output-hard-eval "$STAGE3_BESTPROXY_HARD_EVAL" \
     --output-all-eval "$STAGE3_BESTPROXY_ALL_EVAL" \

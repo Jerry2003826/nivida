@@ -26,6 +26,7 @@ set -euo pipefail
 TOKENIZER_PATH="${TOKENIZER_PATH:-artifacts/_tokenizer_cache/metric_nemotron-3-nano-30b-a3b-bf16_transformers_default}"
 STAGE1_ADAPTER_DIR="${STAGE1_ADAPTER_DIR:-artifacts/adapter_stage1_format}"
 STAGE2_CONFIG_TEMPLATE="${STAGE2_CONFIG_TEMPLATE:-configs/train_stage2_selected_trace_subtype_rescue.yaml}"
+REFRESH_SUBTYPE_RESCUE_INPUTS="${REFRESH_SUBTYPE_RESCUE_INPUTS:-0}"
 
 # Isolated report / dataset / adapter paths so this branch never collides
 # with canonical stage2 outputs.
@@ -38,6 +39,8 @@ STAGE2_VALID_DATASET="${STAGE2_VALID_DATASET:-data/processed/stage2_subtype_resc
 STAGE2_TRAIN_OFFICIAL_SUBSET="${STAGE2_TRAIN_OFFICIAL_SUBSET:-data/processed/stage2_official_train_no_hard_valid.jsonl}"
 STAGE2_VALID_OFFICIAL_SUBSET="${STAGE2_VALID_OFFICIAL_SUBSET:-data/processed/stage2_official_valid_hard_triad.jsonl}"
 ALL_FAMILY_PROXY_VALID_SUBSET="${ALL_FAMILY_PROXY_VALID_SUBSET:-data/processed/proxy_all_family_valid.jsonl}"
+SYNTH_HARD_TRIADS_PATH="${SYNTH_HARD_TRIADS_PATH:-data/synthetic/synth_hard_triads.jsonl}"
+SYNTH_HARD_TRIADS_SUMMARY_PATH="${SYNTH_HARD_TRIADS_SUMMARY_PATH:-data/synthetic/synth_hard_triads_summary.json}"
 
 STAGE2_ADAPTER_DIR="${STAGE2_ADAPTER_DIR:-artifacts/adapter_stage2_subtype_rescue}"
 STAGE2_PROXY_VALID_PREDICTIONS="${STAGE2_PROXY_VALID_PREDICTIONS:-data/processed/stage2_subtype_rescue_proxy_valid_predictions.jsonl}"
@@ -49,6 +52,7 @@ STAGE2_BESTPROXY_DIR="${STAGE2_BESTPROXY_DIR:-artifacts/adapter_stage2_subtype_r
 STAGE2_BESTPROXY_HARD_EVAL="${STAGE2_BESTPROXY_HARD_EVAL:-data/processed/stage2_subtype_rescue_bestproxy_hard_eval.json}"
 STAGE2_BESTPROXY_ALL_EVAL="${STAGE2_BESTPROXY_ALL_EVAL:-data/processed/stage2_subtype_rescue_bestproxy_all_eval.json}"
 STAGE2_BESTPROXY_SELECTION_JSON="${STAGE2_BESTPROXY_SELECTION_JSON:-data/processed/stage2_subtype_rescue_best_checkpoint_selection.json}"
+STAGE2_BESTPROXY_WORKDIR="${STAGE2_BESTPROXY_WORKDIR:-artifacts/_proxy_checkpoint_scratch/stage2_subtype_rescue}"
 
 if [[ ! -d "$STAGE1_ADAPTER_DIR" ]]; then
   echo "Missing stage1 adapter: $STAGE1_ADAPTER_DIR" >&2
@@ -56,48 +60,84 @@ if [[ ! -d "$STAGE1_ADAPTER_DIR" ]]; then
 fi
 
 # The canonical prepare_data + synth_hard_triads outputs are shared between
-# canonical stage2 and this branch; no reason to regenerate them here unless
-# they are missing.
+# canonical stage2 and this branch. Regenerate them only when missing, or when
+# REFRESH_SUBTYPE_RESCUE_INPUTS=1 is set for an intentional refresh.
 if [[ ! -f "data/processed/official_train_tagged.jsonl" ]]; then
   python scripts/prepare_data.py --config configs/data_official.yaml
 fi
-if [[ ! -f "data/synthetic/synth_hard_triads.jsonl" ]]; then
-  python -m src.teacher.synth_generator --config configs/synth_hard_triads.yaml
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" == "1" || ! -f "$SYNTH_HARD_TRIADS_PATH" ]]; then
+  mkdir -p "$(dirname "$SYNTH_HARD_TRIADS_PATH")" "$(dirname "$SYNTH_HARD_TRIADS_SUMMARY_PATH")"
+  synth_tmp_output="$(mktemp "${SYNTH_HARD_TRIADS_PATH}.tmp.XXXXXX")"
+  synth_tmp_summary="$(mktemp "${SYNTH_HARD_TRIADS_SUMMARY_PATH}.tmp.XXXXXX")"
+  synth_tmp_config="$(mktemp "${TMPDIR:-/tmp}/synth_hard_triads.XXXXXX.yaml")"
+  python - "configs/synth_hard_triads.yaml" "$synth_tmp_config" "$synth_tmp_output" "$synth_tmp_summary" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+template_path, config_path, output_path, summary_path = sys.argv[1:5]
+payload = yaml.safe_load(Path(template_path).read_text(encoding="utf-8")) or {}
+payload["output_path"] = output_path
+payload["summary_path"] = summary_path
+Path(config_path).write_text(
+    yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+    encoding="utf-8",
+)
+PY
+  python -m src.teacher.synth_generator --config "$synth_tmp_config"
+  mv "$synth_tmp_output" "$SYNTH_HARD_TRIADS_PATH"
+  mv "$synth_tmp_summary" "$SYNTH_HARD_TRIADS_SUMMARY_PATH"
+  rm -f "$synth_tmp_config"
+else
+  echo "[stage2-subtype] Reusing existing input: $SYNTH_HARD_TRIADS_PATH (set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to regenerate)."
 fi
 
 # The three split subsets below mirror canonical stage2 exactly; regenerate
-# only when missing so sibling runs share a stable definition of train / valid.
-if [[ ! -f "$STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then
+# only when missing, or when REFRESH_SUBTYPE_RESCUE_INPUTS=1 is set, so sibling
+# runs share a stable definition of train / valid.
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" == "1" || ! -f "$STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then
+  stage2_train_subset_tmp="$(mktemp "${STAGE2_TRAIN_OFFICIAL_SUBSET}.tmp.XXXXXX")"
   python scripts/export_split_subset.py \
     --input data/processed/official_train_tagged.jsonl \
-    --output "$STAGE2_TRAIN_OFFICIAL_SUBSET" \
+    --output "$stage2_train_subset_tmp" \
     --split-file data/splits/official/splits.json \
     --split-name rule_novelty_all \
     --split-role train \
     --exclude-split-file data/splits/official/splits.json \
     --exclude-split-name hard_triad_rule_novelty \
     --exclude-split-role valid
+  mv "$stage2_train_subset_tmp" "$STAGE2_TRAIN_OFFICIAL_SUBSET"
+else
+  echo "[stage2-subtype] Reusing existing input: $STAGE2_TRAIN_OFFICIAL_SUBSET (set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to regenerate)."
 fi
 
-if [[ ! -f "$STAGE2_VALID_OFFICIAL_SUBSET" ]]; then
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" == "1" || ! -f "$STAGE2_VALID_OFFICIAL_SUBSET" ]]; then
+  stage2_valid_subset_tmp="$(mktemp "${STAGE2_VALID_OFFICIAL_SUBSET}.tmp.XXXXXX")"
   python scripts/export_split_subset.py \
     --input data/processed/official_train_tagged.jsonl \
-    --output "$STAGE2_VALID_OFFICIAL_SUBSET" \
+    --output "$stage2_valid_subset_tmp" \
     --split-file data/splits/official/splits.json \
     --split-name hard_triad_rule_novelty \
     --split-role valid
+  mv "$stage2_valid_subset_tmp" "$STAGE2_VALID_OFFICIAL_SUBSET"
+else
+  echo "[stage2-subtype] Reusing existing input: $STAGE2_VALID_OFFICIAL_SUBSET (set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to regenerate)."
 fi
 
-if [[ ! -f "$ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" == "1" || ! -f "$ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then
+  all_family_proxy_subset_tmp="$(mktemp "${ALL_FAMILY_PROXY_VALID_SUBSET}.tmp.XXXXXX")"
   python scripts/export_split_subset.py \
     --input data/processed/official_train_tagged.jsonl \
-    --output "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+    --output "$all_family_proxy_subset_tmp" \
     --split-file data/splits/official/splits.json \
     --split-name rule_novelty_all \
     --split-role valid \
     --exclude-split-file data/splits/official/splits.json \
     --exclude-split-name hard_triad_rule_novelty \
     --exclude-split-role train
+  mv "$all_family_proxy_subset_tmp" "$ALL_FAMILY_PROXY_VALID_SUBSET"
+else
+  echo "[stage2-subtype] Reusing existing input: $ALL_FAMILY_PROXY_VALID_SUBSET (set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to regenerate)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -110,7 +150,7 @@ fi
 # gated on v1 beating the baseline on the hard-triad proxy.
 # ---------------------------------------------------------------------------
 python -m src.student.sft_dataset_builder \
-  --input "$STAGE2_TRAIN_OFFICIAL_SUBSET,data/synthetic/synth_hard_triads.jsonl" \
+  --input "$STAGE2_TRAIN_OFFICIAL_SUBSET,$SYNTH_HARD_TRIADS_PATH" \
   --output "$STAGE2_TRAIN_DATASET" \
   --selection-profile stage2 \
   --prompt-mode chat_thinking \
@@ -328,6 +368,7 @@ python scripts/select_best_proxy_checkpoint.py \
   --stage-output-dir "$STAGE2_ADAPTER_DIR" \
   --hard-proxy-input "$STAGE2_VALID_OFFICIAL_SUBSET" \
   --all-proxy-input "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+  --workdir "$STAGE2_BESTPROXY_WORKDIR" \
   --output-best-dir "$STAGE2_BESTPROXY_DIR" \
   --output-hard-eval "$STAGE2_BESTPROXY_HARD_EVAL" \
   --output-all-eval "$STAGE2_BESTPROXY_ALL_EVAL" \
