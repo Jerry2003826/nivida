@@ -149,7 +149,8 @@ def test_analyze_proxy_results_rejects_branch_skipped_and_branch_evals_together(
     write_json(branch_skipped, {"skipped": True, "reason": "stale artifact"})
 
     with pytest.raises(
-        SystemExit, match="branch: bestproxy evals should not coexist with a skipped artifact"
+        SystemExit,
+        match="stale subtype-rescue outputs from a previous successful run",
     ):
         analyze_proxy_results(
             stage2_hard_eval=stage2_hard,

@@ -36,6 +36,7 @@ STAGE2_REPORT="${STAGE2_REPORT:-data/processed/stage2_subtype_rescue_report.json
 STAGE2_VALID_REPORT="${STAGE2_VALID_REPORT:-data/processed/stage2_subtype_rescue_valid_report.json}"
 STAGE2_INPUT_MANIFEST="${STAGE2_INPUT_MANIFEST:-data/processed/stage2_subtype_rescue_input_manifest.json}"
 STAGE2_SKIPPED_ARTIFACT="${STAGE2_SKIPPED_ARTIFACT:-data/processed/stage2_subtype_rescue_skipped.json}"
+CLEAN_SUBTYPE_RESCUE_OUTPUTS="${CLEAN_SUBTYPE_RESCUE_OUTPUTS:-1}"
 
 STAGE2_TRAIN_DATASET="${STAGE2_TRAIN_DATASET:-data/processed/stage2_subtype_rescue_train.jsonl}"
 STAGE2_VALID_DATASET="${STAGE2_VALID_DATASET:-data/processed/stage2_subtype_rescue_valid.jsonl}"
@@ -211,6 +212,21 @@ output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="u
 PY
 }
 
+clean_stale_branch_outputs() {
+  if [[ "$CLEAN_SUBTYPE_RESCUE_OUTPUTS" != "1" ]]; then
+    return
+  fi
+  rm -f \
+    "$STAGE2_SKIPPED_ARTIFACT" \
+    "$STAGE2_PROXY_VALID_PREDICTIONS" \
+    "$STAGE2_PROXY_VALID_EVAL" \
+    "$STAGE2_PROXY_ALL_VALID_PREDICTIONS" \
+    "$STAGE2_PROXY_ALL_VALID_EVAL" \
+    "$STAGE2_BESTPROXY_HARD_EVAL" \
+    "$STAGE2_BESTPROXY_ALL_EVAL" \
+    "$STAGE2_BESTPROXY_SELECTION_JSON"
+}
+
 # Materialize branch-local inputs. By default, reuse canonical stabilized inputs
 # by copying them into subtype-rescue-specific paths. REFRESH_SUBTYPE_RESCUE_INPUTS
 # rematerializes branch-local files but still prefers copying canonical inputs.
@@ -381,6 +397,7 @@ else
 fi
 
 write_input_manifest
+clean_stale_branch_outputs
 
 # ---------------------------------------------------------------------------
 # Build the stage2 subtype-rescue TRAIN dataset.

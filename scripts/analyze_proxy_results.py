@@ -204,7 +204,10 @@ def analyze_proxy_results(
     )
     if branch is not None and branch_skipped is not None:
         raise SystemExit(
-            "branch: bestproxy evals should not coexist with a skipped artifact"
+            "branch: bestproxy evals should not coexist with a skipped artifact. "
+            "This usually means stale subtype-rescue outputs from a previous successful run. "
+            "Delete the branch bestproxy evals or rerun train_stage2_subtype_rescue.sh with "
+            "CLEAN_SUBTYPE_RESCUE_OUTPUTS=1."
         )
 
     missing_groups = [

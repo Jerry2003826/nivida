@@ -200,7 +200,9 @@ def test_subtype_rescue_script_writes_input_manifest_and_skip_artifact() -> None
     )
     assert 'STAGE2_INPUT_MANIFEST="${STAGE2_INPUT_MANIFEST:-data/processed/stage2_subtype_rescue_input_manifest.json}"' in text
     assert 'STAGE2_SKIPPED_ARTIFACT="${STAGE2_SKIPPED_ARTIFACT:-data/processed/stage2_subtype_rescue_skipped.json}"' in text
+    assert 'CLEAN_SUBTYPE_RESCUE_OUTPUTS="${CLEAN_SUBTYPE_RESCUE_OUTPUTS:-1}"' in text
     assert "write_input_manifest" in text
+    assert "clean_stale_branch_outputs" in text
     assert '"source_type": source_type' in text
     assert '"sha256": sha256(path)' in text
     assert '"canonical_equivalent_path"' in text
@@ -220,6 +222,18 @@ def test_subtype_rescue_script_requires_canonical_inputs_or_explicit_override() 
     assert "ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS=1" in text
     assert "FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS=1" in text
     assert "standalone forced regeneration" in text
+
+
+def test_subtype_rescue_script_cleans_stale_branch_outputs_by_default() -> None:
+    text = (REPO_ROOT / "scripts" / "train_stage2_subtype_rescue.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'CLEAN_SUBTYPE_RESCUE_OUTPUTS="${CLEAN_SUBTYPE_RESCUE_OUTPUTS:-1}"' in text
+    assert 'if [[ "$CLEAN_SUBTYPE_RESCUE_OUTPUTS" != "1" ]]; then' in text
+    assert '"$STAGE2_BESTPROXY_HARD_EVAL"' in text
+    assert '"$STAGE2_BESTPROXY_ALL_EVAL"' in text
+    assert '"$STAGE2_BESTPROXY_SELECTION_JSON"' in text
+    assert "clean_stale_branch_outputs" in text
 
 
 def test_subtype_rescue_prepare_data_only_appears_in_regeneration_helper() -> None:
