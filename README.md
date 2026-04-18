@@ -59,8 +59,16 @@ python -m src.student.sft_dataset_builder \
   --tokenizer-path artifacts/_tokenizer_cache/metric_nemotron-3-nano-30b-a3b-bf16_transformers_default \
   --split-file data/splits/official/splits.json \
   --split-name rule_novelty_all \
-  --split-role train
+  --split-role train \
+  --exclude-split-file data/splits/official/splits.json \
+  --exclude-split-name hard_triad_rule_novelty \
+  --exclude-split-role valid
 ```
+
+Because `rule_novelty_all` and `hard_triad_rule_novelty` are built
+independently (different seeds, different subsets), stage1 train explicitly
+excludes `hard_triad_rule_novelty/valid` so later hard-triad validation stays
+unseen across the full staged pipeline (`stage1 -> stage2 init_adapter_dir=stage1 -> stage3 init_adapter_dir=stage2`).
 
 Stage2 build with family balancing and stronger teacher search:
 
@@ -105,9 +113,9 @@ python -m src.student.sft_dataset_builder \
 
 Stage3 failure / success buckets are produced by `scripts/train_stage3_repair.sh`:
 
-- repair failures come from `hard_triad_rule_novelty/train` — the stage2 adapter
+- repair failures come from `hard_triad_rule_novelty/train` - the stage2 adapter
   predictions that missed on the hard triad, the only samples we want to correct
-- replay successes come from `rule_novelty_all/train` — the stage2 adapter
+- replay successes come from `rule_novelty_all/train` - the stage2 adapter
   predictions that were correct across all six families, so replay can keep
   easy-triad families anchored and avoid catastrophic forgetting
 - the builder receives `data/processed/official_train_tagged.jsonl` as input so

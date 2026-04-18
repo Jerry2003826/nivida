@@ -53,11 +53,15 @@ python -m src.student.sft_dataset_builder \
   --beam-width 10 \
   --max-depth 3 \
   --top-k 3 \
+  --oversample-hard-triad \
   --balance-by-family \
   --hard-triad-repeat-factor 2 \
   --max-per-signature-bucket 64 \
   --report-output "$STAGE2_REPORT"
 
+# Stage2 valid must stay unweighted: no family scheduling, no hard-triad
+# duplication, no per-signature cap. All those transforms belong to train
+# only; applying them to valid would reshape the evaluation distribution.
 python -m src.student.sft_dataset_builder \
   --input "$STAGE2_VALID_OFFICIAL_SUBSET" \
   --output data/processed/stage2_distill_valid.jsonl \
@@ -68,10 +72,43 @@ python -m src.student.sft_dataset_builder \
   --beam-width 10 \
   --max-depth 3 \
   --top-k 3 \
-  --balance-by-family \
-  --hard-triad-repeat-factor 2 \
-  --max-per-signature-bucket 64 \
+  --no-balance-by-family \
+  --hard-triad-repeat-factor 1 \
+  --max-per-signature-bucket 0 \
   --report-output "$STAGE2_VALID_REPORT"
+
+# Fail fast if the reports show that oversampling did not materialise on
+# train, or that valid accidentally ended up with duplicated records.
+python - "$STAGE2_REPORT" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if report.get("num_records", 0) <= 0:
+    raise SystemExit("stage2 train dataset is empty")
+if report.get("duplication_ratio", 0.0) <= 0.0:
+    raise SystemExit(
+        "stage2 train report shows duplication_ratio <= 0.0; "
+        "hard-triad oversampling did not materialise. "
+        "Check that --oversample-hard-triad is passed and hard_triad_repeat_factor > 1."
+    )
+PY
+
+python - "$STAGE2_VALID_REPORT" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if report.get("num_records", 0) <= 0:
+    raise SystemExit("stage2 valid dataset is empty")
+duplication = report.get("duplication_ratio", 0.0)
+if duplication > 0.0:
+    raise SystemExit(
+        f"stage2 valid dataset should be unweighted, got duplication_ratio={duplication}"
+    )
+PY
 
 STAGE2_RUNTIME_CONFIG="$(mktemp)"
 trap 'rm -f "$STAGE2_RUNTIME_CONFIG"' EXIT

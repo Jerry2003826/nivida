@@ -394,6 +394,44 @@ def _truncate_by_signature_bucket(
     return kept
 
 
+def _oversample_hard_triad_records(
+    records: list[dict[str, Any]],
+    *,
+    repeat_factor: int,
+) -> list[dict[str, Any]]:
+    """Duplicate hard-triad records ``repeat_factor`` times.
+
+    Unlike :func:`_balance_records_by_family`, which only reorders records
+    along a family schedule, this helper produces a longer list: each
+    hard-triad (``bit`` / ``cipher`` / ``equation``) record appears
+    ``repeat_factor`` times, easy-triad records stay as single copies.
+
+    Duplicated records keep their original ``id`` so downstream reports can
+    count them as duplications; when the record has a ``metadata`` dict, the
+    duplicate copies carry an ``oversample_repeat_index`` marker in
+    ``metadata.extras`` for traceability.
+    """
+    factor = max(1, int(repeat_factor))
+    if factor <= 1:
+        return list(records)
+
+    expanded: list[dict[str, Any]] = []
+    for record in records:
+        family = _family_for_record(record)
+        repeats = factor if family in HARD_TRIAD_FAMILIES else 1
+        for repeat_index in range(repeats):
+            clone = dict(record)
+            if repeat_index > 0 and isinstance(clone.get("metadata"), dict):
+                metadata = dict(clone["metadata"])
+                extras_in = metadata.get("extras")
+                extras = dict(extras_in) if isinstance(extras_in, dict) else {}
+                extras["oversample_repeat_index"] = repeat_index
+                metadata["extras"] = extras
+                clone["metadata"] = metadata
+            expanded.append(clone)
+    return expanded
+
+
 def _balance_records_by_family(
     records: list[dict[str, Any]],
     *,
@@ -448,8 +486,15 @@ def summarise_selected_sft(records: list[dict[str, Any]]) -> dict[str, Any]:
     )
     source_dataset_counts = Counter(_record_source_dataset(record) for record in records)
     hard_triad_records = sum(_family_for_record(record) in HARD_TRIAD_FAMILIES for record in records)
+    unique_ids = {
+        str(record.get("id"))
+        for record in records
+        if record.get("id") is not None
+    }
     return {
         "num_records": len(records),
+        "num_unique_ids": len(unique_ids),
+        "duplication_ratio": 0.0 if not records else 1.0 - (len(unique_ids) / len(records)),
         "family_counts": dict(sorted(family_counts.items())),
         "subtype_counts": dict(sorted(subtype_counts.items())),
         "source_dataset_counts": dict(sorted(source_dataset_counts.items())),
@@ -498,6 +543,7 @@ def build_selected_sft(
     top_k: int = 2,
     balance_by_family: bool = True,
     hard_triad_repeat_factor: int = 2,
+    oversample_hard_triad: bool = False,
     max_per_signature_bucket: int = 64,
     tokenizer: Any | None = None,
 ) -> list[dict[str, Any]]:
@@ -531,10 +577,22 @@ def build_selected_sft(
                 tokenizer=tokenizer,
             )
         )
+
+    # Real hard-triad oversampling happens here, before family scheduling.
+    # _balance_records_by_family only reorders records along a schedule; it
+    # does not duplicate samples. When oversample_hard_triad is True we
+    # materialise the duplication explicitly, then pass hard_triad_repeat_factor=1
+    # down to the scheduler so the same weighting is not applied twice.
+    if oversample_hard_triad and hard_triad_repeat_factor > 1:
+        records = _oversample_hard_triad_records(
+            records,
+            repeat_factor=hard_triad_repeat_factor,
+        )
+
     if balance_by_family:
         return _balance_records_by_family(
             records,
-            hard_triad_repeat_factor=hard_triad_repeat_factor,
+            hard_triad_repeat_factor=1,
             max_per_signature_bucket=max_per_signature_bucket,
         )
     return _truncate_by_signature_bucket(records, max_per_signature_bucket=max_per_signature_bucket)
@@ -813,6 +871,16 @@ def main() -> None:
     parser.add_argument("--no-balance-by-family", dest="balance_by_family", action="store_false")
     parser.set_defaults(balance_by_family=True)
     parser.add_argument("--hard-triad-repeat-factor", type=int, default=2)
+    parser.add_argument(
+        "--oversample-hard-triad",
+        action="store_true",
+        help=(
+            "Materialise hard-triad duplication as real repeated records in "
+            "the stage2 output (stage2 train only). Without this flag, "
+            "--hard-triad-repeat-factor only affects family-round-robin "
+            "ordering and does not actually increase hard-triad sample count."
+        ),
+    )
     parser.add_argument("--max-per-signature-bucket", type=int, default=64)
     parser.add_argument("--report-output")
     parser.add_argument(
@@ -867,6 +935,7 @@ def main() -> None:
             top_k=args.top_k,
             balance_by_family=args.balance_by_family,
             hard_triad_repeat_factor=args.hard_triad_repeat_factor,
+            oversample_hard_triad=args.oversample_hard_triad,
             max_per_signature_bucket=args.max_per_signature_bucket,
             tokenizer=tokenizer,
         )

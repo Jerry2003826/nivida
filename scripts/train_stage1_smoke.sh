@@ -11,6 +11,9 @@ fi
 
 mkdir -p data/processed/smoke artifacts/smoke
 
+# Mirror the canonical stage1 script: exclude hard_triad_rule_novelty/valid
+# from stage1 train so the smoke adapter is representative of a leak-free
+# staged pipeline (stage1 -> stage2 -> stage3).
 python -m src.student.sft_dataset_builder \
   --input data/processed/official_train_tagged.jsonl \
   --output data/processed/smoke/stage1_format_align_train.jsonl \
@@ -19,7 +22,10 @@ python -m src.student.sft_dataset_builder \
   --tokenizer-path "$TOKENIZER_PATH" \
   --split-file data/splits/official/splits.json \
   --split-name rule_novelty_all \
-  --split-role train
+  --split-role train \
+  --exclude-split-file data/splits/official/splits.json \
+  --exclude-split-name hard_triad_rule_novelty \
+  --exclude-split-role valid
 
 python -m src.student.sft_dataset_builder \
   --input data/processed/official_train_tagged.jsonl \

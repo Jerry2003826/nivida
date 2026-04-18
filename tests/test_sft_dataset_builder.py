@@ -12,12 +12,14 @@ from src.competition.schema import PuzzleExample, PuzzleMetadata, PuzzlePair
 from src.student.sft_dataset_builder import (
     PROMPT_MODE_GENERIC,
     RepairArtifactSchemaError,
+    _oversample_hard_triad_records,
     build_repair_set,
     build_selected_sft,
     build_sft_record,
     build_stage1_sft,
     export_split_subset,
     summarise_repair_sft,
+    summarise_selected_sft,
     summarise_selected_sft,
 )
 from tests.test_harness_prompt import FakeNemotronTokenizer
@@ -431,3 +433,118 @@ def test_build_repair_set_adds_replay_records_from_success_artifact(tmp_path: Pa
     report = summarise_repair_sft(dataset)
     assert report["repair_count"] == 2
     assert report["replay_count"] == 1
+
+
+# --- hard-triad oversampling (stage2 train only) -----------------------------
+
+
+def test_oversample_hard_triad_records_repeats_only_hard_families() -> None:
+    records = [
+        {"id": "a", "official_family": "bit"},
+        {"id": "b", "official_family": "numeral"},
+        {"id": "c", "official_family": "cipher"},
+        {"id": "d", "official_family": "equation"},
+        {"id": "e", "official_family": "gravity"},
+    ]
+    out = _oversample_hard_triad_records(records, repeat_factor=2)
+    ids = [row["id"] for row in out]
+    assert ids.count("a") == 2
+    assert ids.count("c") == 2
+    assert ids.count("d") == 2
+    assert ids.count("b") == 1
+    assert ids.count("e") == 1
+    assert len(out) == len(records) + 3  # three hard-triad records doubled
+
+
+def test_oversample_hard_triad_records_factor_one_is_noop() -> None:
+    records = [
+        {"id": "a", "official_family": "bit"},
+        {"id": "b", "official_family": "cipher"},
+    ]
+    out = _oversample_hard_triad_records(records, repeat_factor=1)
+    assert [row["id"] for row in out] == ["a", "b"]
+
+
+def test_oversample_hard_triad_records_marks_repeat_index_in_metadata() -> None:
+    records = [
+        {"id": "a", "official_family": "cipher", "metadata": {"extras": {"seed": 1}}},
+    ]
+    out = _oversample_hard_triad_records(records, repeat_factor=3)
+    # First copy is the original record, extras unchanged.
+    assert out[0]["metadata"]["extras"] == {"seed": 1}
+    # Duplicates carry an oversample_repeat_index marker.
+    assert out[1]["metadata"]["extras"]["oversample_repeat_index"] == 1
+    assert out[2]["metadata"]["extras"]["oversample_repeat_index"] == 2
+    # Original record must not be mutated in place.
+    assert records[0]["metadata"]["extras"] == {"seed": 1}
+
+
+def test_summarise_selected_sft_reports_duplication_ratio() -> None:
+    records = [
+        {"id": "a", "official_family": "bit"},
+        {"id": "a", "official_family": "bit"},
+        {"id": "b", "official_family": "numeral"},
+    ]
+    report = summarise_selected_sft(records)
+    assert report["num_records"] == 3
+    assert report["num_unique_ids"] == 2
+    assert report["duplication_ratio"] == pytest.approx(1.0 / 3.0)
+
+
+def test_summarise_selected_sft_duplication_ratio_zero_when_all_unique() -> None:
+    records = [
+        {"id": "a", "official_family": "bit"},
+        {"id": "b", "official_family": "numeral"},
+    ]
+    report = summarise_selected_sft(records)
+    assert report["num_records"] == 2
+    assert report["num_unique_ids"] == 2
+    assert report["duplication_ratio"] == 0.0
+
+
+def test_build_selected_sft_oversample_flag_produces_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    example_a = _make_example(
+        "hard-a",
+        source="official",
+        signature="sig-hard-a",
+    )
+    example_b = _make_example(
+        "hard-b",
+        source="official",
+        signature="sig-hard-b",
+    )
+    dataset = build_selected_sft(
+        [example_a, example_b],
+        prompt_mode=PROMPT_MODE_GENERIC,
+        trace_style="token_trace",
+        balance_by_family=False,
+        hard_triad_repeat_factor=2,
+        oversample_hard_triad=True,
+        max_per_signature_bucket=0,
+    )
+    ids = [row["id"] for row in dataset]
+    # Both cipher records (hard triad) must appear twice.
+    assert ids.count("hard-a") == 2
+    assert ids.count("hard-b") == 2
+
+
+def test_build_selected_sft_oversample_disabled_by_default() -> None:
+    example = _make_example(
+        "hard-a",
+        source="official",
+        signature="sig-hard-a",
+    )
+    dataset = build_selected_sft(
+        [example],
+        prompt_mode=PROMPT_MODE_GENERIC,
+        trace_style="token_trace",
+        balance_by_family=False,
+        hard_triad_repeat_factor=2,
+        max_per_signature_bucket=0,
+    )
+    ids = [row["id"] for row in dataset]
+    # Default behaviour must not duplicate; hard_triad_repeat_factor alone
+    # is only a scheduling hint until oversample_hard_triad is set.
+    assert ids.count("hard-a") == 1
