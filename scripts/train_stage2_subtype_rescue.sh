@@ -184,7 +184,7 @@ require_canonical_input_or_override "stage2 all-family proxy subset" "$CANONICAL
 require_canonical_input_or_override "hard-triad synth input" "$CANONICAL_SYNTH_HARD_TRIADS_PATH"
 require_canonical_input_or_override "hard-triad synth summary" "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH"
 
-if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$SYNTH_HARD_TRIADS_PATH" ]]; then
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$SYNTH_HARD_TRIADS_PATH" && -f "$SYNTH_HARD_TRIADS_SUMMARY_PATH" ]]; then
   if [[ -f "$CANONICAL_SYNTH_HARD_TRIADS_PATH" && -f "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" ]]; then
     assert_branch_local_matches_canonical "$CANONICAL_SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_PATH" "branch-local synth input"
     assert_branch_local_matches_canonical "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" "$SYNTH_HARD_TRIADS_SUMMARY_PATH" "branch-local synth summary"
@@ -194,6 +194,9 @@ if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$SYNTH_HARD_TRIADS_PATH" ]]
   SYNTH_HARD_TRIADS_SUMMARY_SOURCE_TYPE="reused_branch_local"
   SYNTH_HARD_TRIADS_SUMMARY_SOURCE_PATH="$SYNTH_HARD_TRIADS_SUMMARY_PATH"
   echo "[stage2-subtype] Reusing existing branch-local input: $SYNTH_HARD_TRIADS_PATH"
+elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && ( -f "$SYNTH_HARD_TRIADS_PATH" || -f "$SYNTH_HARD_TRIADS_SUMMARY_PATH" ) ]]; then
+  echo "Partial branch-local synth artifacts found; set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to recopy canonical inputs." >&2
+  exit 1
 elif [[ -f "$CANONICAL_SYNTH_HARD_TRIADS_PATH" && -f "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then
   copy_into_branch_path "$CANONICAL_SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_PATH"
   copy_into_branch_path "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" "$SYNTH_HARD_TRIADS_SUMMARY_PATH"
