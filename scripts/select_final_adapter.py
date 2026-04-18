@@ -1,64 +1,37 @@
 """Pick the final adapter (stage2 or stage3) for submission.
 
-Compares stage2 / stage3 proxy eval artifacts and copies the winning adapter
-into ``--output-adapter-dir``. The selection is resolution-aware: small deltas
-within half-sample tolerance are treated as ties and fall back to hard-triad
-tie-break, otherwise prefer stage2.
-
-Selection logic
----------------
-
-- Primary metric: all-family proxy ``competition_correct_rate``.
-  Tolerance ``0.5 / num_examples`` (half a sample at the proxy's
-  resolution). If ``|all_delta|`` exceeds the tolerance, the winner is
-  taken directly from the all-family proxy.
-- Tie-break: hard-triad proxy ``competition_correct_rate`` with the same
-  half-sample tolerance. Only applies when the all-family proxies are
-  within tolerance.
-- Default on complete ties: stage2. Stage2 is the safer choice because
-  stage3 repair can overfit to hard-triad failure modes.
-
-The coverage of both proxies is checked on load; any missing / unexpected /
-duplicate id causes a SystemExit so a corrupted proxy cannot silently swing
-the decision.
+Thin wrapper over :mod:`src.student.proxy_selection`. The selection logic
+(all-family primary / hard-triad tiebreak / prefer stage2 on complete tie)
+lives in that module so the stage-internal checkpoint selector can reuse it
+without forking.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
+from src.student.proxy_selection import (  # noqa: E402
+    compare_proxy_pairs,
+    copy_adapter_dir,
+    load_proxy_eval,
+)
+
+
+# Backward-compat aliases. External callers (and existing tests) import these
+# names directly from the script module.
 def load_eval(path: str) -> dict[str, Any]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise SystemExit(f"{path}: expected a JSON object")
+    return load_proxy_eval(path)
 
-    coverage = payload.get("coverage", {})
-    if not isinstance(coverage, dict):
-        raise SystemExit(f"{path}: 'coverage' must be a dict")
 
-    for field in ("num_missing", "num_unexpected", "num_duplicate"):
-        value = coverage.get(field, 0)
-        if value != 0:
-            raise SystemExit(
-                f"{path}: coverage.{field} = {value}, refusing to select from a "
-                "proxy artifact whose prediction coverage is not complete."
-            )
-
-    if "competition_correct_rate" not in payload:
-        raise SystemExit(f"{path}: missing 'competition_correct_rate'")
-    if "num_examples" not in payload:
-        raise SystemExit(f"{path}: missing 'num_examples'")
-
-    return {
-        "path": str(path),
-        "competition_correct_rate": float(payload["competition_correct_rate"]),
-        "num_examples": int(payload["num_examples"]),
-        "coverage": coverage,
-    }
+def copy_adapter(src: str, dst: str) -> None:
+    copy_adapter_dir(src, dst)
 
 
 def choose_adapter(
@@ -67,51 +40,22 @@ def choose_adapter(
     stage2_hard: dict[str, Any],
     stage3_hard: dict[str, Any],
 ) -> dict[str, Any]:
-    if stage2_all["num_examples"] != stage3_all["num_examples"]:
-        raise SystemExit(
-            "stage2 / stage3 all-family proxy num_examples mismatch: "
-            f"stage2={stage2_all['num_examples']} vs stage3={stage3_all['num_examples']}"
-        )
-    if stage2_hard["num_examples"] != stage3_hard["num_examples"]:
-        raise SystemExit(
-            "stage2 / stage3 hard-triad proxy num_examples mismatch: "
-            f"stage2={stage2_hard['num_examples']} vs stage3={stage3_hard['num_examples']}"
-        )
-
-    all_tol = 0.5 / max(1, stage2_all["num_examples"])
-    hard_tol = 0.5 / max(1, stage2_hard["num_examples"])
-
-    all_delta = (
-        stage3_all["competition_correct_rate"] - stage2_all["competition_correct_rate"]
+    """Stage2 vs stage3 decision, tiebreak prefers stage2 (safer)."""
+    decision = compare_proxy_pairs(
+        left_name="stage2",
+        left_all=stage2_all,
+        left_hard=stage2_hard,
+        right_name="stage3",
+        right_all=stage3_all,
+        right_hard=stage3_hard,
+        tiebreak_default="stage2",
     )
-    hard_delta = (
-        stage3_hard["competition_correct_rate"] - stage2_hard["competition_correct_rate"]
-    )
-
-    base = {
-        "all_delta": all_delta,
-        "hard_delta": hard_delta,
-        "all_tol": all_tol,
-        "hard_tol": hard_tol,
-    }
-
-    if all_delta > all_tol:
-        return {"selected_stage": "stage3", "rule": "all_family_primary", **base}
-    if all_delta < -all_tol:
-        return {"selected_stage": "stage2", "rule": "all_family_primary", **base}
-    if hard_delta > hard_tol:
-        return {"selected_stage": "stage3", "rule": "hard_triad_tiebreak", **base}
-    return {"selected_stage": "stage2", "rule": "prefer_stage2_on_tie", **base}
-
-
-def copy_adapter(src: str, dst: str) -> None:
-    src_path = Path(src)
-    if not src_path.is_dir():
-        raise SystemExit(f"adapter source not found: {src}")
-    dst_path = Path(dst)
-    if dst_path.exists():
-        shutil.rmtree(dst_path)
-    shutil.copytree(src_path, dst_path)
+    # Map to the legacy key/value names the rest of this script and its tests
+    # rely on.
+    decision["selected_stage"] = decision.pop("winner")
+    if decision["rule"] == "prefer_default_on_tie":
+        decision["rule"] = "prefer_stage2_on_tie"
+    return decision
 
 
 def main() -> None:

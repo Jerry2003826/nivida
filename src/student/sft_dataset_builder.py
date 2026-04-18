@@ -330,18 +330,85 @@ def build_stage1_sft(
     return records
 
 
-def _select_official_stage2(example: PuzzleExample) -> bool:
+STAGE2_REJECTION_REASONS: tuple[str, ...] = (
+    "missing_target_or_query",
+    "low_teacher_confidence",
+    "not_solver_verifiable",
+    "partial_support_coverage",
+    "missing_program_signature",
+)
+
+STAGE2_SILVER_FAMILY_PRIORITY: tuple[str, ...] = ("equation", "cipher", "bit")
+
+
+def _select_official_stage2_strict(
+    example: PuzzleExample,
+) -> tuple[bool, str | None]:
+    """Strict stage2 gate. Returns ``(accepted, rejection_reason_or_None)``.
+
+    ``rejection_reason`` is ``None`` when the example is not an official
+    sample (there is nothing to reject), and otherwise one of
+    :data:`STAGE2_REJECTION_REASONS`.
+    """
+    if _source_kind(example) != "official":
+        return False, None
+    if example.target_answer is None or not example.query:
+        return False, "missing_target_or_query"
+    if float(_metadata_value(example, "teacher_confidence", 0.0) or 0.0) < 0.80:
+        return False, "low_teacher_confidence"
+    if not bool(example.metadata.extras.get("solver_verifiable")):
+        return False, "not_solver_verifiable"
+    if float(example.metadata.extras.get("support_coverage", 0.0) or 0.0) < 1.0:
+        return False, "partial_support_coverage"
+    if not _metadata_value(example, "program_signature"):
+        return False, "missing_program_signature"
+    return True, None
+
+
+def _select_official_stage2_silver(
+    example: PuzzleExample,
+    *,
+    hard_confidence: float = 0.65,
+    hard_support: float = 0.67,
+) -> bool:
+    """Silver stage2 gate. Train-only. Broadens the strict gate for hard-triad
+    official samples so stage2 sees more of the real-distribution coverage.
+
+    Requirements:
+
+    - official sample
+    - non-empty target_answer and query
+    - family in HARD_TRIAD_FAMILIES
+    - teacher_confidence >= ``hard_confidence`` (default 0.65)
+    - support_coverage >= ``hard_support`` (default 0.67)
+    - at least one of program_signature present / solver_verifiable
+
+    Silver samples are intended to contribute prompt distribution + final
+    answer supervision only; callers should pair this with ``answer_only``
+    trace style so a weak teacher does not inject unreliable traces.
+    """
     if _source_kind(example) != "official":
         return False
     if example.target_answer is None or not example.query:
         return False
-    if float(_metadata_value(example, "teacher_confidence", 0.0) or 0.0) < 0.80:
+    family = _metadata_value(example, "official_family")
+    if family not in HARD_TRIAD_FAMILIES:
         return False
-    if not bool(example.metadata.extras.get("solver_verifiable")):
+    if float(_metadata_value(example, "teacher_confidence", 0.0) or 0.0) < float(hard_confidence):
         return False
-    if float(example.metadata.extras.get("support_coverage", 0.0) or 0.0) < 1.0:
+    if float(example.metadata.extras.get("support_coverage", 0.0) or 0.0) < float(hard_support):
         return False
-    return bool(_metadata_value(example, "program_signature"))
+    has_signature = bool(_metadata_value(example, "program_signature"))
+    solver_ok = bool(example.metadata.extras.get("solver_verifiable"))
+    if not (has_signature or solver_ok):
+        return False
+    return True
+
+
+def _select_official_stage2(example: PuzzleExample) -> bool:
+    """Backward-compatible bool-only wrapper around the strict gate."""
+    ok, _ = _select_official_stage2_strict(example)
+    return ok
 
 
 def _select_synth_stage2(example: PuzzleExample, *, official_signatures: set[str]) -> bool:
@@ -532,7 +599,7 @@ def summarise_repair_sft(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_selected_sft(
+def build_selected_sft_with_report(
     examples: list[PuzzleExample],
     *,
     prompt_mode: str = PROMPT_MODE_RAW_WITH_GUARD,
@@ -546,43 +613,129 @@ def build_selected_sft(
     oversample_hard_triad: bool = False,
     max_per_signature_bucket: int = 64,
     tokenizer: Any | None = None,
-) -> list[dict[str, Any]]:
+    enable_silver_official: bool = False,
+    silver_hard_confidence: float = 0.65,
+    silver_hard_support: float = 0.67,
+    silver_max_fraction: float = 0.25,
+    silver_max_absolute: int = 800,
+) -> dict[str, Any]:
+    """Build the stage2 SFT dataset and return both records and selection report.
+
+    ``records`` is the final ordered list of SFT records.
+    ``selection_counts`` breaks down how many samples came from each bucket.
+    ``official_rejection_diagnostics`` records per-family rejection reasons
+    from ``_select_official_stage2_strict`` so the next training iteration can
+    tell whether hard-triad official samples were blocked by confidence, by
+    missing program_signature, etc.
+
+    When ``enable_silver_official`` is True, hard-triad official samples that
+    miss the strict gate but satisfy the silver gate are added to the training
+    pool, capped by ``min(silver_max_fraction * (strict + synth), silver_max_absolute)``
+    and sampled round-robin in priority order ``equation -> cipher -> bit``.
+    Silver samples are always recorded with ``trace_style="answer_only"`` so a
+    weak teacher does not inject unreliable traces.
+    """
     annotated = _annotate_examples(
         examples,
         beam_width=beam_width,
         max_depth=max_depth,
         top_k=top_k,
     )
-    selected_official = [example for example in annotated if _select_official_stage2(example)]
-    official_signatures = {
+
+    # Phase 1: strict official + silver candidates + rejection diagnostics
+    selected_strict: list[PuzzleExample] = []
+    rejection_counter: dict[str, dict[str, int]] = {}
+    silver_candidates_by_family: dict[str, list[PuzzleExample]] = {
+        family: [] for family in STAGE2_SILVER_FAMILY_PRIORITY
+    }
+    for example in annotated:
+        if _source_kind(example) != "official":
+            continue
+        ok_strict, reason = _select_official_stage2_strict(example)
+        if ok_strict:
+            selected_strict.append(example)
+            continue
+        family = str(_metadata_value(example, "official_family") or "unknown")
+        if reason is not None:
+            bucket = rejection_counter.setdefault(family, {})
+            bucket[reason] = bucket.get(reason, 0) + 1
+        if enable_silver_official and family in silver_candidates_by_family:
+            if _select_official_stage2_silver(
+                example,
+                hard_confidence=silver_hard_confidence,
+                hard_support=silver_hard_support,
+            ):
+                silver_candidates_by_family[family].append(example)
+
+    # Phase 2: synth selection uses strict officials' signatures as a dedup
+    # reference; silver signatures are intentionally excluded so a low-confidence
+    # silver match does not suppress a higher-quality synth sample.
+    strict_signatures = {
         str(_metadata_value(example, "program_signature"))
-        for example in selected_official
+        for example in selected_strict
         if _metadata_value(example, "program_signature")
     }
-    selected_synth = [example for example in annotated if _select_synth_stage2(example, official_signatures=official_signatures)]
+    selected_synth = [
+        example
+        for example in annotated
+        if _select_synth_stage2(example, official_signatures=strict_signatures)
+    ]
+
+    # Phase 3: silver cap (fraction and absolute, whichever is smaller), then
+    # round-robin sample in equation -> cipher -> bit priority order.
+    silver_selected: list[PuzzleExample] = []
+    if enable_silver_official:
+        base_count = len(selected_strict) + len(selected_synth)
+        fraction_cap = int(float(silver_max_fraction) * max(1, base_count))
+        cap = min(max(0, fraction_cap), max(0, int(silver_max_absolute)))
+        if cap > 0:
+            indices = {family: 0 for family in STAGE2_SILVER_FAMILY_PRIORITY}
+            while len(silver_selected) < cap:
+                made_progress = False
+                for family in STAGE2_SILVER_FAMILY_PRIORITY:
+                    if len(silver_selected) >= cap:
+                        break
+                    bucket = silver_candidates_by_family[family]
+                    idx = indices[family]
+                    if idx >= len(bucket):
+                        continue
+                    silver_selected.append(bucket[idx])
+                    indices[family] += 1
+                    made_progress = True
+                if not made_progress:
+                    break
+
+    # Phase 4: dedupe + render records. Silver samples use answer_only; strict
+    # and synth samples use the caller-provided trace_style.
     dedupe_keys: set[tuple[str, Any, Any]] = set()
     records: list[dict[str, Any]] = []
-    for example in selected_official + selected_synth:
-        key = (example.query, example.target_answer, _metadata_value(example, "program_signature"))
+    for example, bucket_name in (
+        [(example, "strict") for example in selected_strict]
+        + [(example, "synth") for example in selected_synth]
+        + [(example, "silver") for example in silver_selected]
+    ):
+        key = (
+            example.query,
+            example.target_answer,
+            _metadata_value(example, "program_signature"),
+        )
         if key in dedupe_keys:
             continue
         dedupe_keys.add(key)
+        per_record_trace = "answer_only" if bucket_name == "silver" else trace_style
         records.append(
             build_sft_record(
                 example,
                 stage="stage2",
                 prompt_mode=prompt_mode,
-                trace_style=trace_style,
+                trace_style=per_record_trace,
                 include_metadata=include_metadata,
                 tokenizer=tokenizer,
             )
         )
 
-    # Real hard-triad oversampling happens here, before family scheduling.
-    # _balance_records_by_family only reorders records along a schedule; it
-    # does not duplicate samples. When oversample_hard_triad is True we
-    # materialise the duplication explicitly, then pass hard_triad_repeat_factor=1
-    # down to the scheduler so the same weighting is not applied twice.
+    # Phase 5: oversample hard-triad records (train-side weighting), then
+    # family-balance with hard_triad_repeat_factor=1 to avoid double-counting.
     if oversample_hard_triad and hard_triad_repeat_factor > 1:
         records = _oversample_hard_triad_records(
             records,
@@ -590,12 +743,36 @@ def build_selected_sft(
         )
 
     if balance_by_family:
-        return _balance_records_by_family(
+        ordered = _balance_records_by_family(
             records,
             hard_triad_repeat_factor=1,
             max_per_signature_bucket=max_per_signature_bucket,
         )
-    return _truncate_by_signature_bucket(records, max_per_signature_bucket=max_per_signature_bucket)
+    else:
+        ordered = _truncate_by_signature_bucket(
+            records, max_per_signature_bucket=max_per_signature_bucket
+        )
+
+    return {
+        "records": ordered,
+        "selection_counts": {
+            "official_strict": len(selected_strict),
+            "official_silver": len(silver_selected),
+            "synth": len(selected_synth),
+        },
+        "official_rejection_diagnostics": {
+            family: dict(sorted(reasons.items()))
+            for family, reasons in sorted(rejection_counter.items())
+        },
+    }
+
+
+def build_selected_sft(
+    examples: list[PuzzleExample],
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
+    """Backward-compatible shim: returns just the records list."""
+    return build_selected_sft_with_report(examples, **kwargs)["records"]
 
 
 def _repair_bucket(example: PuzzleExample, failure_row: dict[str, Any]) -> str:
@@ -884,6 +1061,43 @@ def main() -> None:
     parser.add_argument("--max-per-signature-bucket", type=int, default=64)
     parser.add_argument("--report-output")
     parser.add_argument(
+        "--stage2-enable-silver-official",
+        action="store_true",
+        help=(
+            "Broaden stage2 official hard-triad coverage by also admitting "
+            "samples that satisfy the silver gate (weaker confidence/support "
+            "thresholds). Train-only; silver samples are always emitted with "
+            "trace_style=answer_only."
+        ),
+    )
+    parser.add_argument(
+        "--stage2-silver-hard-confidence",
+        type=float,
+        default=0.65,
+        help="Min teacher_confidence required for a silver hard-triad sample.",
+    )
+    parser.add_argument(
+        "--stage2-silver-hard-support",
+        type=float,
+        default=0.67,
+        help="Min support_coverage required for a silver hard-triad sample.",
+    )
+    parser.add_argument(
+        "--stage2-silver-max-fraction",
+        type=float,
+        default=0.25,
+        help=(
+            "Silver sample count is capped at "
+            "fraction * (strict_official + synth)."
+        ),
+    )
+    parser.add_argument(
+        "--stage2-silver-max-absolute",
+        type=int,
+        default=800,
+        help="Absolute upper bound on the number of silver samples.",
+    )
+    parser.add_argument(
         "--tokenizer-path",
         help=(
             "Local directory for the tokenizer used by prompt_mode=chat_thinking. "
@@ -925,7 +1139,7 @@ def main() -> None:
         report = {"num_records": len(dataset)}
         default_output = "data/processed/stage1_format_align.jsonl"
     elif args.selection_profile == "stage2":
-        dataset = build_selected_sft(
+        stage2_bundle = build_selected_sft_with_report(
             examples,
             prompt_mode=prompt_mode,
             trace_style=trace_style,
@@ -938,8 +1152,16 @@ def main() -> None:
             oversample_hard_triad=args.oversample_hard_triad,
             max_per_signature_bucket=args.max_per_signature_bucket,
             tokenizer=tokenizer,
+            enable_silver_official=args.stage2_enable_silver_official,
+            silver_hard_confidence=args.stage2_silver_hard_confidence,
+            silver_hard_support=args.stage2_silver_hard_support,
+            silver_max_fraction=args.stage2_silver_max_fraction,
+            silver_max_absolute=args.stage2_silver_max_absolute,
         )
+        dataset = stage2_bundle["records"]
         report = summarise_selected_sft(dataset)
+        report["selection_counts"] = stage2_bundle["selection_counts"]
+        report["official_rejection_diagnostics"] = stage2_bundle["official_rejection_diagnostics"]
         default_output = "data/processed/stage2_distill.jsonl"
     else:
         if not args.repair_artifact:

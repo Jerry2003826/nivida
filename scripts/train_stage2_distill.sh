@@ -86,6 +86,11 @@ python -m src.student.sft_dataset_builder \
   --balance-by-family \
   --hard-triad-repeat-factor 2 \
   --max-per-signature-bucket 64 \
+  --stage2-enable-silver-official \
+  --stage2-silver-hard-confidence 0.65 \
+  --stage2-silver-hard-support 0.67 \
+  --stage2-silver-max-fraction 0.25 \
+  --stage2-silver-max-absolute 800 \
   --report-output "$STAGE2_REPORT"
 
 # Stage2 valid must stay unweighted: no family scheduling, no hard-triad
@@ -220,6 +225,43 @@ print(json.dumps(
         "competition_correct_rate": payload.get("competition_correct_rate"),
         "num_examples": payload.get("num_examples"),
         "coverage": payload.get("coverage", {}),
+    },
+    ensure_ascii=False,
+    indent=2,
+))
+PY
+
+# Stage2 bestproxy selection: evaluate every saved checkpoint (and the final
+# adapter) against hard-triad and all-family proxies, then copy the winner
+# plus its proxy evals to stable paths that downstream scripts consume.
+STAGE2_BESTPROXY_DIR="${STAGE2_BESTPROXY_DIR:-artifacts/adapter_stage2_bestproxy}"
+STAGE2_BESTPROXY_HARD_EVAL="${STAGE2_BESTPROXY_HARD_EVAL:-data/processed/stage2_bestproxy_hard_eval.json}"
+STAGE2_BESTPROXY_ALL_EVAL="${STAGE2_BESTPROXY_ALL_EVAL:-data/processed/stage2_bestproxy_all_eval.json}"
+STAGE2_BESTPROXY_SELECTION_JSON="${STAGE2_BESTPROXY_SELECTION_JSON:-data/processed/stage2_best_checkpoint_selection.json}"
+
+python scripts/select_best_proxy_checkpoint.py \
+  --config "$STAGE2_RUNTIME_CONFIG" \
+  --stage-output-dir "$STAGE2_ADAPTER_DIR" \
+  --hard-proxy-input "$STAGE2_VALID_OFFICIAL_SUBSET" \
+  --all-proxy-input "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+  --output-best-dir "$STAGE2_BESTPROXY_DIR" \
+  --output-hard-eval "$STAGE2_BESTPROXY_HARD_EVAL" \
+  --output-all-eval "$STAGE2_BESTPROXY_ALL_EVAL" \
+  --output-json "$STAGE2_BESTPROXY_SELECTION_JSON" \
+  --max-new-tokens 2048
+
+python - "$STAGE2_BESTPROXY_SELECTION_JSON" "$STAGE2_BESTPROXY_HARD_EVAL" "$STAGE2_BESTPROXY_ALL_EVAL" <<'PY'
+from pathlib import Path
+import json, sys
+
+selection = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+hard = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+all_family = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+print(json.dumps(
+    {
+        "selected_candidate": selection.get("selected_candidate"),
+        "hard_triad_correct_rate": hard.get("competition_correct_rate"),
+        "all_family_correct_rate": all_family.get("competition_correct_rate"),
     },
     ensure_ascii=False,
     indent=2,

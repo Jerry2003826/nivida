@@ -91,7 +91,12 @@ def test_choose_adapter_prefers_stage2_on_complete_tie() -> None:
 
 
 def test_choose_adapter_hard_triad_degradation_within_all_tol_still_picks_stage2() -> None:
-    """Stage3 does not win the tiebreak unless its hard-triad proxy actually exceeds stage2."""
+    """Stage3 does not win the tiebreak unless its hard-triad proxy actually exceeds stage2.
+
+    The hard-triad tiebreak is symmetric: a clear degradation on hard-triad
+    (``hard_delta < -hard_tol``) is also recognised as a hard-triad decision in
+    stage2's favour, which is strictly stronger than ``prefer_stage2_on_tie``.
+    """
     stage2_all = _eval_payload(0.5000, num_examples=400)
     stage3_all = _eval_payload(0.5005, num_examples=400)  # within tol
     stage2_hard = _eval_payload(0.420, num_examples=300)
@@ -99,7 +104,7 @@ def test_choose_adapter_hard_triad_degradation_within_all_tol_still_picks_stage2
 
     decision = choose_adapter(stage2_all, stage3_all, stage2_hard, stage3_hard)
     assert decision["selected_stage"] == "stage2"
-    assert decision["rule"] == "prefer_stage2_on_tie"
+    assert decision["rule"] == "hard_triad_tiebreak"
 
 
 def test_choose_adapter_raises_on_num_examples_mismatch() -> None:

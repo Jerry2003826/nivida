@@ -6,9 +6,15 @@ set -euo pipefail
 
 TOKENIZER_PATH="${TOKENIZER_PATH:-artifacts/_tokenizer_cache/metric_nemotron-3-nano-30b-a3b-bf16_transformers_default}"
 
-STAGE2_ADAPTER_DIR="${STAGE2_ADAPTER_DIR:-artifacts/adapter_stage2_selected_trace}"
+STAGE2_ADAPTER_DIR="${STAGE2_ADAPTER_DIR:-artifacts/adapter_stage2_bestproxy}"
+STAGE2_BESTPROXY_HARD_EVAL="${STAGE2_BESTPROXY_HARD_EVAL:-data/processed/stage2_bestproxy_hard_eval.json}"
+STAGE2_BESTPROXY_ALL_EVAL="${STAGE2_BESTPROXY_ALL_EVAL:-data/processed/stage2_bestproxy_all_eval.json}"
 STAGE3_CONFIG_TEMPLATE="${STAGE3_CONFIG_TEMPLATE:-configs/train_stage3_repair.yaml}"
 FINAL_STAGE3_ADAPTER_DIR="${FINAL_STAGE3_ADAPTER_DIR:-artifacts/adapter_stage3_repair}"
+STAGE3_BESTPROXY_DIR="${STAGE3_BESTPROXY_DIR:-artifacts/adapter_stage3_bestproxy}"
+STAGE3_BESTPROXY_HARD_EVAL="${STAGE3_BESTPROXY_HARD_EVAL:-data/processed/stage3_bestproxy_hard_eval.json}"
+STAGE3_BESTPROXY_ALL_EVAL="${STAGE3_BESTPROXY_ALL_EVAL:-data/processed/stage3_bestproxy_all_eval.json}"
+STAGE3_BESTPROXY_SELECTION_JSON="${STAGE3_BESTPROXY_SELECTION_JSON:-data/processed/stage3_best_checkpoint_selection.json}"
 
 FULL_TRAIN_INPUT="${FULL_TRAIN_INPUT:-data/processed/official_train_tagged.jsonl}"
 
@@ -219,12 +225,23 @@ Path(output_path).write_text(
 PY
 
 if [[ "$STAGE3_SKIP" == "1" ]]; then
-  # Stage2 was strong enough that no hard-triad train failures remain;
-  # reuse the stage2 adapter as the canonical stage3 output so downstream
-  # packaging / validation / proxy eval can stay oblivious to the skip.
+  # Stage2 was strong enough that no hard-triad train failures remain; reuse
+  # the stage2 adapter as the canonical stage3 output so downstream packaging
+  # / validation / proxy eval can stay oblivious to the skip. We copy both
+  # the weights and the proxy eval artifacts so select_final_adapter.py sees
+  # matching (adapter_stage3_bestproxy, stage3_bestproxy_*_eval.json) pairs.
   rm -rf "$FINAL_STAGE3_ADAPTER_DIR"
   mkdir -p "$FINAL_STAGE3_ADAPTER_DIR"
   cp -a "$STAGE2_ADAPTER_DIR"/. "$FINAL_STAGE3_ADAPTER_DIR"/
+
+  rm -rf "$STAGE3_BESTPROXY_DIR"
+  mkdir -p "$STAGE3_BESTPROXY_DIR"
+  cp -a "$STAGE2_ADAPTER_DIR"/. "$STAGE3_BESTPROXY_DIR"/
+
+  mkdir -p "$(dirname "$STAGE3_BESTPROXY_HARD_EVAL")" \
+           "$(dirname "$STAGE3_BESTPROXY_ALL_EVAL")"
+  cp "$STAGE2_BESTPROXY_HARD_EVAL" "$STAGE3_BESTPROXY_HARD_EVAL"
+  cp "$STAGE2_BESTPROXY_ALL_EVAL"  "$STAGE3_BESTPROXY_ALL_EVAL"
 
   python - "$STAGE3_DECISION" "$FINAL_STAGE3_ADAPTER_DIR/stage3_skipped.json" "$STAGE2_ADAPTER_DIR" <<'PY'
 from pathlib import Path
@@ -240,8 +257,42 @@ Path(output_path).write_text(
     encoding="utf-8",
 )
 PY
+
+  python - "$STAGE3_BESTPROXY_SELECTION_JSON" "$STAGE2_ADAPTER_DIR" "$STAGE3_BESTPROXY_DIR" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+out_path, reused, final_dir = sys.argv[1:4]
+payload = {
+    "stage_output_dir": final_dir,
+    "selected_candidate": "reused_stage2_bestproxy",
+    "selected_adapter_dir": final_dir,
+    "reused_adapter_dir": reused,
+    "reason": "stage3 repair skipped; stage2 bestproxy adapter reused as stage3 bestproxy",
+}
+Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+Path(out_path).write_text(
+    json.dumps(payload, ensure_ascii=False, indent=2),
+    encoding="utf-8",
+)
+PY
 else
   python -m src.student.lora_train --config "$STAGE3_RUNTIME_CONFIG" --force-train
+
+  # Stage3 bestproxy selection: pick the best checkpoint inside the stage3
+  # output directory using the same rule as stage2 (all-family primary,
+  # hard-triad tiebreak, prefer final on complete tie).
+  python scripts/select_best_proxy_checkpoint.py \
+    --config "$STAGE3_RUNTIME_CONFIG" \
+    --stage-output-dir "$FINAL_STAGE3_ADAPTER_DIR" \
+    --hard-proxy-input "$VALID_SUBSET" \
+    --all-proxy-input "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+    --output-best-dir "$STAGE3_BESTPROXY_DIR" \
+    --output-hard-eval "$STAGE3_BESTPROXY_HARD_EVAL" \
+    --output-all-eval "$STAGE3_BESTPROXY_ALL_EVAL" \
+    --output-json "$STAGE3_BESTPROXY_SELECTION_JSON" \
+    --max-new-tokens 2048
 fi
 
 # Stage3 proxy eval: evaluate the final adapter (real stage3, or the stage2

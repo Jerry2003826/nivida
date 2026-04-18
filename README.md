@@ -135,16 +135,13 @@ Stage3 failure / success buckets are produced by `scripts/train_stage3_repair.sh
 - stage2 / stage3 local inference defaults to `max_new_tokens: 2048` to avoid truncating `chat_thinking` generations
 - `max_depth=3` is intentionally more expensive for stage2 selection; expect noticeably higher CPU time than `max_depth=2`
 - `stage2_distill_valid.jsonl` is the SFT **loss monitor** (teacher-solvable subset); it is not the hard-triad headline metric. Trust the proxy eval artifacts below instead.
-- after stage2 and stage3 training the canonical scripts write **two** competition-proxy artifact pairs:
-  - hard-triad proxy (headline for the hard families):
-    - `data/processed/stage2_proxy_valid_eval.json`
-    - `data/processed/stage3_proxy_valid_eval.json`
-  - all-family proxy (leak-free, `rule_novelty_all/valid` minus `hard_triad_rule_novelty/train`):
-    - `data/processed/stage2_proxy_all_valid_eval.json`
-    - `data/processed/stage3_proxy_all_valid_eval.json`
-  Both proxies run via `src.student.inference` + `eval_competition_replica --require-complete-coverage`. Stage3 repair can boost the hard-triad proxy while eroding the easy-triad anchors, so the all-family proxy is the primary signal for final selection and the hard-triad proxy is the tie-breaker.
-- final adapter selection is **automated** by `scripts/select_final_adapter.py`: it compares the two proxy pairs at half-sample tolerance (primary: all-family; tie-break: hard-triad; default on complete tie: stage2) and copies the winner into `artifacts/adapter_final_selected/`. It also writes `data/processed/final_adapter_selection.json` with the full decision trace. **Package submission.zip from `artifacts/adapter_final_selected/`, not from the per-stage adapter directories.**
-- stage3 can **skip itself** when stage2 produced zero hard-triad train failures. In that case `scripts/train_stage3_repair.sh` copies the stage2 adapter to `artifacts/adapter_stage3_repair/` and writes `stage3_skipped.json` next to the weights so downstream packaging / validation does not need to branch. See `data/processed/stage3_decision.json` for the gate outcome.
+- after stage2 and stage3 training the canonical scripts run a per-stage **bestproxy selector** (`scripts/select_best_proxy_checkpoint.py`). It iterates over every ``checkpoint-*`` plus the final adapter, scores each against hard-triad and all-family proxies, and writes the winner to `artifacts/adapter_stage{2,3}_bestproxy/`. The canonical artifact pairs consumed by `select_final_adapter.py` are:
+  - hard-triad proxy: `data/processed/stage{2,3}_bestproxy_hard_eval.json`
+  - all-family proxy (leak-free, `rule_novelty_all/valid` minus `hard_triad_rule_novelty/train`): `data/processed/stage{2,3}_bestproxy_all_eval.json`
+  The stage-root proxy eval artifacts still exist (`stage{2,3}_proxy_valid_eval.json` / `stage{2,3}_proxy_all_valid_eval.json`) as monitoring signals for comparing "final step" vs "bestproxy", but the submission path reads the bestproxy pair.
+- final adapter selection is **automated** by `scripts/select_final_adapter.py`: it compares the two bestproxy pairs at half-sample tolerance (primary: all-family; tie-break: hard-triad; default on complete tie: stage2) and copies the winner into `artifacts/adapter_final_selected/`. It also writes `data/processed/final_adapter_selection.json` with the full decision trace. **Package submission.zip from `artifacts/adapter_final_selected/`, not from the per-stage adapter directories.**
+- stage2 enables a **silver hard-triad official pool** by default (`--stage2-enable-silver-official`): official hard-triad (bit/cipher/equation) samples that fail the strict gate but satisfy weaker thresholds (teacher_confidence >= 0.65, support_coverage >= 0.67) are admitted to the train set with `trace_style=answer_only`, capped at `min(0.25 * (strict + synth), 800)` and sampled `equation -> cipher -> bit`. The stage2 build report now carries `selection_counts` and `official_rejection_diagnostics` so the next iteration can decide whether to tune the silver thresholds.
+- stage3 can **skip itself** when stage2 produced zero hard-triad train failures. In that case `scripts/train_stage3_repair.sh` copies the stage2 bestproxy adapter to `artifacts/adapter_stage3_repair/` and `artifacts/adapter_stage3_bestproxy/`, reuses the stage2 bestproxy eval JSONs, and writes `stage3_skipped.json` next to the weights so downstream packaging / validation does not need to branch. See `data/processed/stage3_decision.json` and `data/processed/stage3_best_checkpoint_selection.json` for the gate outcome.
 
 ## Smoke and Validation
 
@@ -171,12 +168,12 @@ bash scripts/train_stage2_distill.sh
 bash scripts/train_stage3_repair.sh
 
 python scripts/select_final_adapter.py \
-  --stage2-hard-eval data/processed/stage2_proxy_valid_eval.json \
-  --stage2-all-eval  data/processed/stage2_proxy_all_valid_eval.json \
-  --stage2-adapter-dir artifacts/adapter_stage2_selected_trace \
-  --stage3-hard-eval data/processed/stage3_proxy_valid_eval.json \
-  --stage3-all-eval  data/processed/stage3_proxy_all_valid_eval.json \
-  --stage3-adapter-dir artifacts/adapter_stage3_repair \
+  --stage2-hard-eval data/processed/stage2_bestproxy_hard_eval.json \
+  --stage2-all-eval  data/processed/stage2_bestproxy_all_eval.json \
+  --stage2-adapter-dir artifacts/adapter_stage2_bestproxy \
+  --stage3-hard-eval data/processed/stage3_bestproxy_hard_eval.json \
+  --stage3-all-eval  data/processed/stage3_bestproxy_all_eval.json \
+  --stage3-adapter-dir artifacts/adapter_stage3_bestproxy \
   --output-adapter-dir artifacts/adapter_final_selected \
   --output-json        data/processed/final_adapter_selection.json
 
@@ -189,6 +186,17 @@ python scripts/validate_submission.py \
   --max-new-tokens 2048 \
   --package-output submission.zip
 ```
+
+Inside each stage, `scripts/select_best_proxy_checkpoint.py` iterates over
+every ``checkpoint-*`` directory plus the final adapter, runs the hard-triad
+and all-family proxy evals, and materialises the winner at
+``artifacts/adapter_stage{2,3}_bestproxy``. The selector uses the shared
+rule from ``src/student/proxy_selection.py`` (all-family primary,
+hard-triad tie-break, prefer the final checkpoint on complete tie) so the
+same comparison logic is used at both the checkpoint level and the
+stage2-vs-stage3 level. Expect roughly **1.5-2.5h extra H100 time per stage
+for the selector passes**; budget 3-5h total on top of the 24-36h training
+run.
 
 The validator hard-fails when:
 
