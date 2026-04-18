@@ -24,12 +24,17 @@ training. It also writes:
 - `data/processed/stage2_subtype_rescue_input_manifest.json`
 
 Use that manifest to confirm the branch-local train subset, valid subset,
-all-family proxy subset, and synth file came from the expected sources. Set
+all-family proxy subset, and synth file came from the expected sources. The
+manifest also records canonical-equivalent paths, hash matches, dependency
+hashes, and the current git commit for later A/B audits. Set
 `ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS=1` only for a deliberate standalone
 experiment where canonical inputs are unavailable. `REFRESH_SUBTYPE_RESCUE_INPUTS=1`
 re-materializes the branch-local copies but still prefers copying canonical
 inputs when they exist; only `FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS=1` skips
 both branch-local reuse and canonical recopy, forcing branch-local regeneration.
+If you intentionally want a standalone forced regeneration, set both
+`ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS=1` and
+`FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS=1`.
 
 ## Promotion Rule
 
@@ -82,7 +87,9 @@ python scripts/analyze_proxy_results.py --allow-partial
 ```
 
 That allows missing stage3 / branch groups, but it still hard-fails on
-coverage problems in any eval file that is present.
+coverage problems in any eval file that is present. If
+`data/processed/stage2_subtype_rescue_skipped.json` exists, the analyzer will
+surface that the branch was intentionally skipped before GPU training.
 
 ## If the Branch Wins
 

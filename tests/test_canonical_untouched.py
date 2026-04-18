@@ -203,6 +203,11 @@ def test_subtype_rescue_script_writes_input_manifest_and_skip_artifact() -> None
     assert "write_input_manifest" in text
     assert '"source_type": source_type' in text
     assert '"sha256": sha256(path)' in text
+    assert '"canonical_equivalent_path"' in text
+    assert '"canonical_sha256"' in text
+    assert '"matches_canonical"' in text
+    assert '"git_head": git_head' in text
+    assert '"dependencies": dependencies' in text
     assert 'rm -f "$STAGE2_SKIPPED_ARTIFACT"' in text
 
 
@@ -213,6 +218,8 @@ def test_subtype_rescue_script_requires_canonical_inputs_or_explicit_override() 
     assert 'require_canonical_input_or_override "stage2 train subset" "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET"' in text
     assert 'require_canonical_input_or_override "hard-triad synth input" "$CANONICAL_SYNTH_HARD_TRIADS_PATH"' in text
     assert "ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS=1" in text
+    assert "FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS=1" in text
+    assert "standalone forced regeneration" in text
 
 
 def test_subtype_rescue_prepare_data_only_appears_in_regeneration_helper() -> None:

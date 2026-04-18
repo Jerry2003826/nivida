@@ -85,6 +85,7 @@ require_canonical_input_or_override() {
   if [[ ! -f "$canonical_path" && "$ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then
     echo "Missing canonical $label: $canonical_path" >&2
     echo "Run canonical stage2 first, or set ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS=1 for a deliberate standalone experiment." >&2
+    echo "If you intentionally want a standalone forced regeneration, set both ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS=1 and FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS=1." >&2
     exit 1
   fi
 }
@@ -93,6 +94,7 @@ ensure_official_inputs_for_regeneration() {
   if [[ ! -f "data/processed/official_train_tagged.jsonl" ]]; then
     if [[ "$ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then
       echo "Missing data/processed/official_train_tagged.jsonl, but subtype-rescue regeneration is not allowed." >&2
+      echo "Set ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS=1 to permit standalone regeneration; combine it with FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS=1 when you want to bypass canonical recopy deliberately." >&2
       exit 1
     fi
     python scripts/prepare_data.py --config configs/data_official.yaml
@@ -128,15 +130,16 @@ PY
 
 write_input_manifest() {
   python - "$STAGE2_INPUT_MANIFEST" \
-    "$SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_SOURCE_TYPE" "$SYNTH_HARD_TRIADS_SOURCE_PATH" \
-    "$SYNTH_HARD_TRIADS_SUMMARY_PATH" "$SYNTH_HARD_TRIADS_SUMMARY_SOURCE_TYPE" "$SYNTH_HARD_TRIADS_SUMMARY_SOURCE_PATH" \
-    "$STAGE2_TRAIN_OFFICIAL_SUBSET" "$STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_TYPE" "$STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_PATH" \
-    "$STAGE2_VALID_OFFICIAL_SUBSET" "$STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_TYPE" "$STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_PATH" \
-    "$ALL_FAMILY_PROXY_VALID_SUBSET" "$ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_TYPE" "$ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_PATH" <<'PY'
+    "$SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_SOURCE_TYPE" "$SYNTH_HARD_TRIADS_SOURCE_PATH" "$CANONICAL_SYNTH_HARD_TRIADS_PATH" \
+    "$SYNTH_HARD_TRIADS_SUMMARY_PATH" "$SYNTH_HARD_TRIADS_SUMMARY_SOURCE_TYPE" "$SYNTH_HARD_TRIADS_SUMMARY_SOURCE_PATH" "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" \
+    "$STAGE2_TRAIN_OFFICIAL_SUBSET" "$STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_TYPE" "$STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_PATH" "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" \
+    "$STAGE2_VALID_OFFICIAL_SUBSET" "$STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_TYPE" "$STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_PATH" "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" \
+    "$ALL_FAMILY_PROXY_VALID_SUBSET" "$ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_TYPE" "$ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_PATH" "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
 import json
+import subprocess
 import sys
 
 def sha256(path: Path) -> str:
@@ -147,24 +150,60 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 output = Path(sys.argv[1])
-triples = sys.argv[2:]
-if len(triples) % 3 != 0:
-    raise SystemExit("write_input_manifest expected path/source_type/source_path triples")
+quads = sys.argv[2:]
+if len(quads) % 4 != 0:
+    raise SystemExit("write_input_manifest expected path/source_type/source_path/canonical_path quads")
 
 files: dict[str, dict[str, object]] = {}
-for index in range(0, len(triples), 3):
-    path = Path(triples[index])
-    source_type = triples[index + 1]
-    source_path = triples[index + 2]
-    files[str(path)] = {
+for index in range(0, len(quads), 4):
+    path = Path(quads[index])
+    source_type = quads[index + 1]
+    source_path = quads[index + 2]
+    canonical_path = Path(quads[index + 3])
+    payload = {
         "source_type": source_type,
         "source_path": source_path,
         "sha256": sha256(path),
         "size_bytes": path.stat().st_size,
     }
+    payload["canonical_equivalent_path"] = str(canonical_path)
+    if canonical_path.is_file():
+        canonical_sha256 = sha256(canonical_path)
+        payload["canonical_sha256"] = canonical_sha256
+        payload["matches_canonical"] = canonical_sha256 == payload["sha256"]
+    else:
+        payload["canonical_sha256"] = None
+        payload["matches_canonical"] = None
+    files[str(path)] = payload
+
+dependencies: dict[str, dict[str, object]] = {}
+for dependency in (
+    Path("configs/synth_hard_triads.yaml"),
+    Path("data/processed/official_train_tagged.jsonl"),
+    Path("data/splits/official/splits.json"),
+):
+    if dependency.is_file():
+        dependencies[str(dependency)] = {
+            "sha256": sha256(dependency),
+            "size_bytes": dependency.stat().st_size,
+        }
+
+git_head = None
+git_result = subprocess.run(
+    ["git", "rev-parse", "HEAD"],
+    check=False,
+    capture_output=True,
+    text=True,
+)
+if git_result.returncode == 0:
+    candidate = git_result.stdout.strip()
+    if candidate:
+        git_head = candidate
 
 payload = {
     "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+    "git_head": git_head,
+    "dependencies": dependencies,
     "files": files,
 }
 output.parent.mkdir(parents=True, exist_ok=True)

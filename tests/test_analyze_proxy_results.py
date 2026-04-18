@@ -103,6 +103,65 @@ def test_analyze_proxy_results_allow_partial_accepts_missing_stage3_and_branch(t
     assert any("branch artifacts are still missing" in rec for rec in payload["recommendations"])
 
 
+def test_analyze_proxy_results_accepts_branch_skipped_artifact(tmp_path: Path) -> None:
+    stage2_hard = _write_eval(tmp_path / "stage2_hard.json", rate=0.51)
+    stage2_all = _write_eval(tmp_path / "stage2_all.json", rate=0.81)
+    stage3_hard = _write_eval(tmp_path / "stage3_hard.json", rate=0.53)
+    stage3_all = _write_eval(tmp_path / "stage3_all.json", rate=0.82)
+    branch_skipped = tmp_path / "branch_skipped.json"
+    write_json(
+        branch_skipped,
+        {
+            "skipped": True,
+            "reason": "zero equation rescue_promoted_with_hint",
+            "equation_attempted": 12,
+            "equation_promoted": 0,
+        },
+    )
+
+    payload = analyze_proxy_results(
+        stage2_hard_eval=stage2_hard,
+        stage2_all_eval=stage2_all,
+        stage3_hard_eval=stage3_hard,
+        stage3_all_eval=stage3_all,
+        branch_hard_eval=tmp_path / "missing_branch_hard.json",
+        branch_all_eval=tmp_path / "missing_branch_all.json",
+        branch_skipped_json=branch_skipped,
+    )
+
+    assert payload["status"] == "complete"
+    assert payload["missing_groups"] == []
+    assert payload["branch"] is None
+    assert payload["branch_skipped"]["reason"] == "zero equation rescue_promoted_with_hint"
+    assert any("Do not run stage3_subtype_rescue" in rec for rec in payload["recommendations"])
+
+
+def test_analyze_proxy_results_rejects_branch_skipped_and_branch_evals_together(
+    tmp_path: Path,
+) -> None:
+    stage2_hard = _write_eval(tmp_path / "stage2_hard.json", rate=0.51)
+    stage2_all = _write_eval(tmp_path / "stage2_all.json", rate=0.81)
+    stage3_hard = _write_eval(tmp_path / "stage3_hard.json", rate=0.53)
+    stage3_all = _write_eval(tmp_path / "stage3_all.json", rate=0.82)
+    branch_hard = _write_eval(tmp_path / "branch_hard.json", rate=0.54)
+    branch_all = _write_eval(tmp_path / "branch_all.json", rate=0.80)
+    branch_skipped = tmp_path / "branch_skipped.json"
+    write_json(branch_skipped, {"skipped": True, "reason": "stale artifact"})
+
+    with pytest.raises(
+        SystemExit, match="branch: bestproxy evals should not coexist with a skipped artifact"
+    ):
+        analyze_proxy_results(
+            stage2_hard_eval=stage2_hard,
+            stage2_all_eval=stage2_all,
+            stage3_hard_eval=stage3_hard,
+            stage3_all_eval=stage3_all,
+            branch_hard_eval=branch_hard,
+            branch_all_eval=branch_all,
+            branch_skipped_json=branch_skipped,
+        )
+
+
 def test_analyze_proxy_results_still_hard_fails_on_coverage_problems_in_partial_mode(
     tmp_path: Path,
 ) -> None:

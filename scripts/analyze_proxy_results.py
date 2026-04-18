@@ -49,6 +49,15 @@ def _maybe_load_optional(path: Path | None) -> dict[str, Any] | None:
     return _load_json_object(path)
 
 
+def _load_skipped_artifact(path: Path | None) -> dict[str, Any] | None:
+    payload = _maybe_load_optional(path)
+    if payload is None:
+        return None
+    if payload.get("skipped") is not True:
+        raise SystemExit(f"{path}: expected skipped=true")
+    return payload
+
+
 def _promotion_ready_eval(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         **payload,
@@ -83,6 +92,7 @@ def _build_recommendations(
     stage2: dict[str, Any],
     stage3: dict[str, Any] | None,
     branch: dict[str, Any] | None,
+    branch_skipped: dict[str, Any] | None,
     final_selection: dict[str, Any] | None,
     missing_groups: list[str],
 ) -> tuple[list[str], dict[str, Any] | None]:
@@ -136,6 +146,12 @@ def _build_recommendations(
             recommendations.append(
                 "subtype-rescue branch stays stage2-only under the current proxy deltas."
             )
+    elif branch_skipped is not None:
+        reason = branch_skipped.get("reason", "unknown reason")
+        recommendations.append(
+            "subtype-rescue branch was skipped before GPU training because the hint path "
+            f"had zero treatment effect ({reason}). Do not run stage3_subtype_rescue."
+        )
 
     if "stage3" in missing_groups:
         recommendations.append(
@@ -160,6 +176,7 @@ def analyze_proxy_results(
     stage2_selection_json: str | Path | None = None,
     stage3_selection_json: str | Path | None = None,
     branch_selection_json: str | Path | None = None,
+    branch_skipped_json: str | Path | None = None,
     final_selection_json: str | Path | None = None,
     allow_partial: bool = False,
 ) -> dict[str, Any]:
@@ -176,17 +193,25 @@ def analyze_proxy_results(
         all_path=Path(stage3_all_eval),
         allow_missing_group=allow_partial,
     )
+    branch_skipped = _load_skipped_artifact(
+        None if branch_skipped_json is None else Path(branch_skipped_json)
+    )
     branch = _load_eval_group(
         name="branch",
         hard_path=Path(branch_hard_eval),
         all_path=Path(branch_all_eval),
-        allow_missing_group=allow_partial,
+        allow_missing_group=allow_partial or branch_skipped is not None,
     )
+    if branch is not None and branch_skipped is not None:
+        raise SystemExit(
+            "branch: bestproxy evals should not coexist with a skipped artifact"
+        )
 
     missing_groups = [
         name
         for name, group in (("stage3", stage3), ("branch", branch))
         if group is None
+        and not (name == "branch" and branch_skipped is not None)
     ]
     status = "partial" if missing_groups else "complete"
     final_selection = _maybe_load_optional(
@@ -215,6 +240,7 @@ def analyze_proxy_results(
                 None if branch_selection_json is None else Path(branch_selection_json)
             ),
         },
+        branch_skipped=branch_skipped,
         final_selection=final_selection,
         missing_groups=missing_groups,
     )
@@ -248,6 +274,7 @@ def analyze_proxy_results(
         "stage2": stage2_payload,
         "stage3": stage3_payload,
         "branch": branch_payload,
+        "branch_skipped": branch_skipped,
         "branch_promotion_preview": branch_promotion,
         "final_selection": final_selection,
         "recommendations": recommendations,
@@ -295,6 +322,10 @@ def main() -> None:
         default="data/processed/stage2_subtype_rescue_best_checkpoint_selection.json",
     )
     parser.add_argument(
+        "--branch-skipped-json",
+        default="data/processed/stage2_subtype_rescue_skipped.json",
+    )
+    parser.add_argument(
         "--final-selection-json",
         default="data/processed/final_adapter_selection.json",
     )
@@ -312,6 +343,7 @@ def main() -> None:
         stage2_selection_json=args.stage2_selection_json,
         stage3_selection_json=args.stage3_selection_json,
         branch_selection_json=args.branch_selection_json,
+        branch_skipped_json=args.branch_skipped_json,
         final_selection_json=args.final_selection_json,
         allow_partial=args.allow_partial,
     )
