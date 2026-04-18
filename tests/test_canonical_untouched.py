@@ -229,11 +229,21 @@ def test_subtype_rescue_script_cleans_stale_branch_outputs_by_default() -> None:
         encoding="utf-8"
     )
     assert 'CLEAN_SUBTYPE_RESCUE_OUTPUTS="${CLEAN_SUBTYPE_RESCUE_OUTPUTS:-1}"' in text
+    assert 'CLEAN_SUBTYPE_RESCUE_ADAPTERS="${CLEAN_SUBTYPE_RESCUE_ADAPTERS:-1}"' in text
+    assert 'CLEAN_SUBTYPE_RESCUE_SCRATCH="${CLEAN_SUBTYPE_RESCUE_SCRATCH:-1}"' in text
+    assert 'STAGE2_PROMOTION_JSON="${STAGE2_PROMOTION_JSON:-data/processed/stage2_subtype_rescue_promotion.json}"' in text
     assert 'if [[ "$CLEAN_SUBTYPE_RESCUE_OUTPUTS" != "1" ]]; then' in text
+    assert '"$STAGE2_PROMOTION_JSON"' in text
     assert '"$STAGE2_BESTPROXY_HARD_EVAL"' in text
     assert '"$STAGE2_BESTPROXY_ALL_EVAL"' in text
     assert '"$STAGE2_BESTPROXY_SELECTION_JSON"' in text
     assert "clean_stale_branch_outputs" in text
+    assert "assert_subtype_path()" in text
+    assert 'assert_subtype_path "$STAGE2_ADAPTER_DIR" "STAGE2_ADAPTER_DIR"' in text
+    assert 'assert_subtype_path "$STAGE2_BESTPROXY_DIR" "STAGE2_BESTPROXY_DIR"' in text
+    assert 'assert_subtype_path "$STAGE2_BESTPROXY_WORKDIR" "STAGE2_BESTPROXY_WORKDIR"' in text
+    assert 'rm -rf "$STAGE2_ADAPTER_DIR" "$STAGE2_BESTPROXY_DIR"' in text
+    assert 'rm -rf "$STAGE2_BESTPROXY_WORKDIR"' in text
 
 
 def test_subtype_rescue_prepare_data_only_appears_in_regeneration_helper() -> None:

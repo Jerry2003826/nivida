@@ -36,7 +36,10 @@ STAGE2_REPORT="${STAGE2_REPORT:-data/processed/stage2_subtype_rescue_report.json
 STAGE2_VALID_REPORT="${STAGE2_VALID_REPORT:-data/processed/stage2_subtype_rescue_valid_report.json}"
 STAGE2_INPUT_MANIFEST="${STAGE2_INPUT_MANIFEST:-data/processed/stage2_subtype_rescue_input_manifest.json}"
 STAGE2_SKIPPED_ARTIFACT="${STAGE2_SKIPPED_ARTIFACT:-data/processed/stage2_subtype_rescue_skipped.json}"
+STAGE2_PROMOTION_JSON="${STAGE2_PROMOTION_JSON:-data/processed/stage2_subtype_rescue_promotion.json}"
 CLEAN_SUBTYPE_RESCUE_OUTPUTS="${CLEAN_SUBTYPE_RESCUE_OUTPUTS:-1}"
+CLEAN_SUBTYPE_RESCUE_ADAPTERS="${CLEAN_SUBTYPE_RESCUE_ADAPTERS:-1}"
+CLEAN_SUBTYPE_RESCUE_SCRATCH="${CLEAN_SUBTYPE_RESCUE_SCRATCH:-1}"
 
 STAGE2_TRAIN_DATASET="${STAGE2_TRAIN_DATASET:-data/processed/stage2_subtype_rescue_train.jsonl}"
 STAGE2_VALID_DATASET="${STAGE2_VALID_DATASET:-data/processed/stage2_subtype_rescue_valid.jsonl}"
@@ -212,12 +215,22 @@ output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="u
 PY
 }
 
+assert_subtype_path() {
+  local path="$1"
+  local label="$2"
+  if [[ -z "$path" || "$path" != *"subtype_rescue"* ]]; then
+    echo "Refusing to clean $label because it does not look subtype-rescue-specific: $path" >&2
+    exit 1
+  fi
+}
+
 clean_stale_branch_outputs() {
   if [[ "$CLEAN_SUBTYPE_RESCUE_OUTPUTS" != "1" ]]; then
     return
   fi
   rm -f \
     "$STAGE2_SKIPPED_ARTIFACT" \
+    "$STAGE2_PROMOTION_JSON" \
     "$STAGE2_PROXY_VALID_PREDICTIONS" \
     "$STAGE2_PROXY_VALID_EVAL" \
     "$STAGE2_PROXY_ALL_VALID_PREDICTIONS" \
@@ -225,6 +238,17 @@ clean_stale_branch_outputs() {
     "$STAGE2_BESTPROXY_HARD_EVAL" \
     "$STAGE2_BESTPROXY_ALL_EVAL" \
     "$STAGE2_BESTPROXY_SELECTION_JSON"
+
+  if [[ "$CLEAN_SUBTYPE_RESCUE_ADAPTERS" == "1" ]]; then
+    assert_subtype_path "$STAGE2_ADAPTER_DIR" "STAGE2_ADAPTER_DIR"
+    assert_subtype_path "$STAGE2_BESTPROXY_DIR" "STAGE2_BESTPROXY_DIR"
+    rm -rf "$STAGE2_ADAPTER_DIR" "$STAGE2_BESTPROXY_DIR"
+  fi
+
+  if [[ "$CLEAN_SUBTYPE_RESCUE_SCRATCH" == "1" ]]; then
+    assert_subtype_path "$STAGE2_BESTPROXY_WORKDIR" "STAGE2_BESTPROXY_WORKDIR"
+    rm -rf "$STAGE2_BESTPROXY_WORKDIR"
+  fi
 }
 
 # Materialize branch-local inputs. By default, reuse canonical stabilized inputs
