@@ -36,6 +36,8 @@ export VALID_FAILURES="${VALID_FAILURES:-data/processed/stage2_subtype_rescue_mo
 
 export STAGE3_TRAIN_REPORT="${STAGE3_TRAIN_REPORT:-data/processed/stage3_subtype_rescue_train_report.json}"
 export STAGE3_VALID_REPORT="${STAGE3_VALID_REPORT:-data/processed/stage3_subtype_rescue_valid_report.json}"
+export REPAIR_STAGE3_TRAIN_DATASET="${REPAIR_STAGE3_TRAIN_DATASET:-data/processed/stage3_subtype_rescue_train.jsonl}"
+export REPAIR_STAGE3_VALID_DATASET="${REPAIR_STAGE3_VALID_DATASET:-data/processed/stage3_subtype_rescue_valid.jsonl}"
 
 export STAGE3_DECISION="${STAGE3_DECISION:-data/processed/stage3_subtype_rescue_decision.json}"
 export STAGE3_PROXY_VALID_PREDICTIONS="${STAGE3_PROXY_VALID_PREDICTIONS:-data/processed/stage3_subtype_rescue_proxy_valid_predictions.jsonl}"

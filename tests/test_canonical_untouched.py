@@ -89,3 +89,20 @@ def test_stage3_subtype_rescue_script_does_not_reference_canonical_stage3_output
     )
     for token in forbidden:
         assert token not in text, f"stage3 subtype-rescue scaffold leaked canonical path {token!r}"
+
+
+def test_stage3_branch_scaffold_exports_dataset_overrides() -> None:
+    canonical_text = (REPO_ROOT / "scripts" / "train_stage3_repair.sh").read_text(
+        encoding="utf-8"
+    )
+    branch_text = (REPO_ROOT / "scripts" / "train_stage3_subtype_rescue.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'REPAIR_STAGE3_TRAIN_DATASET="${REPAIR_STAGE3_TRAIN_DATASET:-data/processed/stage3_repair_train.jsonl}"' in canonical_text
+    assert 'REPAIR_STAGE3_VALID_DATASET="${REPAIR_STAGE3_VALID_DATASET:-data/processed/stage3_repair_valid.jsonl}"' in canonical_text
+    assert '--output "$REPAIR_STAGE3_TRAIN_DATASET"' in canonical_text
+    assert '--output "$REPAIR_STAGE3_VALID_DATASET"' in canonical_text
+
+    assert 'export REPAIR_STAGE3_TRAIN_DATASET="${REPAIR_STAGE3_TRAIN_DATASET:-data/processed/stage3_subtype_rescue_train.jsonl}"' in branch_text
+    assert 'export REPAIR_STAGE3_VALID_DATASET="${REPAIR_STAGE3_VALID_DATASET:-data/processed/stage3_subtype_rescue_valid.jsonl}"' in branch_text

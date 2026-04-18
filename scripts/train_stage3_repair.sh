@@ -34,6 +34,8 @@ VALID_FAILURES="${VALID_FAILURES:-data/processed/stage2_model_failures_valid.jso
 
 STAGE3_TRAIN_REPORT="${STAGE3_TRAIN_REPORT:-data/processed/stage3_repair_train_report.json}"
 STAGE3_VALID_REPORT="${STAGE3_VALID_REPORT:-data/processed/stage3_repair_valid_report.json}"
+REPAIR_STAGE3_TRAIN_DATASET="${REPAIR_STAGE3_TRAIN_DATASET:-data/processed/stage3_repair_train.jsonl}"
+REPAIR_STAGE3_VALID_DATASET="${REPAIR_STAGE3_VALID_DATASET:-data/processed/stage3_repair_valid.jsonl}"
 
 STAGE3_DECISION="${STAGE3_DECISION:-data/processed/stage3_decision.json}"
 STAGE3_PROXY_VALID_PREDICTIONS="${STAGE3_PROXY_VALID_PREDICTIONS:-data/processed/stage3_proxy_valid_predictions.jsonl}"
@@ -171,7 +173,7 @@ PY
 if [[ "$STAGE3_SKIP" != "1" ]]; then
   python -m src.student.sft_dataset_builder \
     --input "$FULL_TRAIN_INPUT" \
-    --output data/processed/stage3_repair_train.jsonl \
+    --output "$REPAIR_STAGE3_TRAIN_DATASET" \
     --selection-profile stage3 \
     --prompt-mode chat_thinking \
     --tokenizer-path "$TOKENIZER_PATH" \
@@ -187,7 +189,7 @@ if [[ "$STAGE3_SKIP" != "1" ]]; then
   if [[ "$STAGE3_DISABLE_EVAL" != "1" ]]; then
     python -m src.student.sft_dataset_builder \
       --input "$VALID_SUBSET" \
-      --output data/processed/stage3_repair_valid.jsonl \
+      --output "$REPAIR_STAGE3_VALID_DATASET" \
       --selection-profile stage3 \
       --prompt-mode chat_thinking \
       --tokenizer-path "$TOKENIZER_PATH" \
