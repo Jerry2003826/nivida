@@ -27,11 +27,14 @@ TOKENIZER_PATH="${TOKENIZER_PATH:-artifacts/_tokenizer_cache/metric_nemotron-3-n
 STAGE1_ADAPTER_DIR="${STAGE1_ADAPTER_DIR:-artifacts/adapter_stage1_format}"
 STAGE2_CONFIG_TEMPLATE="${STAGE2_CONFIG_TEMPLATE:-configs/train_stage2_selected_trace_subtype_rescue.yaml}"
 REFRESH_SUBTYPE_RESCUE_INPUTS="${REFRESH_SUBTYPE_RESCUE_INPUTS:-0}"
+ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS="${ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS:-0}"
 
 # Isolated report / dataset / adapter paths so this branch never collides
 # with canonical stage2 outputs.
 STAGE2_REPORT="${STAGE2_REPORT:-data/processed/stage2_subtype_rescue_report.json}"
 STAGE2_VALID_REPORT="${STAGE2_VALID_REPORT:-data/processed/stage2_subtype_rescue_valid_report.json}"
+STAGE2_INPUT_MANIFEST="${STAGE2_INPUT_MANIFEST:-data/processed/stage2_subtype_rescue_input_manifest.json}"
+STAGE2_SKIPPED_ARTIFACT="${STAGE2_SKIPPED_ARTIFACT:-data/processed/stage2_subtype_rescue_skipped.json}"
 
 STAGE2_TRAIN_DATASET="${STAGE2_TRAIN_DATASET:-data/processed/stage2_subtype_rescue_train.jsonl}"
 STAGE2_VALID_DATASET="${STAGE2_VALID_DATASET:-data/processed/stage2_subtype_rescue_valid.jsonl}"
@@ -75,6 +78,89 @@ copy_into_branch_path() {
   mv "$target_tmp" "$target_path"
 }
 
+require_canonical_input_or_override() {
+  local label="$1"
+  local canonical_path="$2"
+  if [[ ! -f "$canonical_path" && "$ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then
+    echo "Missing canonical $label: $canonical_path" >&2
+    echo "Run canonical stage2 first, or set ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS=1 for a deliberate standalone experiment." >&2
+    exit 1
+  fi
+}
+
+assert_branch_local_matches_canonical() {
+  local canonical_path="$1"
+  local branch_path="$2"
+  local label="$3"
+  python - "$canonical_path" "$branch_path" "$label" <<'PY'
+from pathlib import Path
+import hashlib
+import sys
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+canonical_path, branch_path, label = sys.argv[1:4]
+canonical = Path(canonical_path)
+branch = Path(branch_path)
+if sha256(canonical) != sha256(branch):
+    raise SystemExit(
+        f"{label} differs from canonical source: {branch}. "
+        "Set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to recopy/regenerate deliberately."
+    )
+PY
+}
+
+write_input_manifest() {
+  python - "$STAGE2_INPUT_MANIFEST" \
+    "$SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_SOURCE_TYPE" "$SYNTH_HARD_TRIADS_SOURCE_PATH" \
+    "$SYNTH_HARD_TRIADS_SUMMARY_PATH" "$SYNTH_HARD_TRIADS_SUMMARY_SOURCE_TYPE" "$SYNTH_HARD_TRIADS_SUMMARY_SOURCE_PATH" \
+    "$STAGE2_TRAIN_OFFICIAL_SUBSET" "$STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_TYPE" "$STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_PATH" \
+    "$STAGE2_VALID_OFFICIAL_SUBSET" "$STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_TYPE" "$STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_PATH" \
+    "$ALL_FAMILY_PROXY_VALID_SUBSET" "$ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_TYPE" "$ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_PATH" <<'PY'
+from datetime import datetime, timezone
+from pathlib import Path
+import hashlib
+import json
+import sys
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+output = Path(sys.argv[1])
+triples = sys.argv[2:]
+if len(triples) % 3 != 0:
+    raise SystemExit("write_input_manifest expected path/source_type/source_path triples")
+
+files: dict[str, dict[str, object]] = {}
+for index in range(0, len(triples), 3):
+    path = Path(triples[index])
+    source_type = triples[index + 1]
+    source_path = triples[index + 2]
+    files[str(path)] = {
+        "source_type": source_type,
+        "source_path": source_path,
+        "sha256": sha256(path),
+        "size_bytes": path.stat().st_size,
+    }
+
+payload = {
+    "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+    "files": files,
+}
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+}
+
 # Materialize branch-local inputs. By default, reuse canonical stabilized inputs
 # by copying them into subtype-rescue-specific paths; only regenerate when the
 # canonical artifact is absent or when REFRESH_SUBTYPE_RESCUE_INPUTS=1 requests
@@ -82,11 +168,30 @@ copy_into_branch_path() {
 if [[ ! -f "data/processed/official_train_tagged.jsonl" ]]; then
   python scripts/prepare_data.py --config configs/data_official.yaml
 fi
+
+require_canonical_input_or_override "stage2 train subset" "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET"
+require_canonical_input_or_override "stage2 valid subset" "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET"
+require_canonical_input_or_override "stage2 all-family proxy subset" "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET"
+require_canonical_input_or_override "hard-triad synth input" "$CANONICAL_SYNTH_HARD_TRIADS_PATH"
+require_canonical_input_or_override "hard-triad synth summary" "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH"
+
 if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$SYNTH_HARD_TRIADS_PATH" ]]; then
+  if [[ -f "$CANONICAL_SYNTH_HARD_TRIADS_PATH" && -f "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" ]]; then
+    assert_branch_local_matches_canonical "$CANONICAL_SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_PATH" "branch-local synth input"
+    assert_branch_local_matches_canonical "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" "$SYNTH_HARD_TRIADS_SUMMARY_PATH" "branch-local synth summary"
+  fi
+  SYNTH_HARD_TRIADS_SOURCE_TYPE="reused_branch_local"
+  SYNTH_HARD_TRIADS_SOURCE_PATH="$SYNTH_HARD_TRIADS_PATH"
+  SYNTH_HARD_TRIADS_SUMMARY_SOURCE_TYPE="reused_branch_local"
+  SYNTH_HARD_TRIADS_SUMMARY_SOURCE_PATH="$SYNTH_HARD_TRIADS_SUMMARY_PATH"
   echo "[stage2-subtype] Reusing existing branch-local input: $SYNTH_HARD_TRIADS_PATH"
 elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$CANONICAL_SYNTH_HARD_TRIADS_PATH" && -f "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" ]]; then
   copy_into_branch_path "$CANONICAL_SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_PATH"
   copy_into_branch_path "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" "$SYNTH_HARD_TRIADS_SUMMARY_PATH"
+  SYNTH_HARD_TRIADS_SOURCE_TYPE="copied_from_canonical"
+  SYNTH_HARD_TRIADS_SOURCE_PATH="$CANONICAL_SYNTH_HARD_TRIADS_PATH"
+  SYNTH_HARD_TRIADS_SUMMARY_SOURCE_TYPE="copied_from_canonical"
+  SYNTH_HARD_TRIADS_SUMMARY_SOURCE_PATH="$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH"
   echo "[stage2-subtype] Copied canonical synth inputs into branch-local paths."
 else
   mkdir -p "$(dirname "$SYNTH_HARD_TRIADS_PATH")" "$(dirname "$SYNTH_HARD_TRIADS_SUMMARY_PATH")"
@@ -111,14 +216,25 @@ PY
   mv "$synth_tmp_output" "$SYNTH_HARD_TRIADS_PATH"
   mv "$synth_tmp_summary" "$SYNTH_HARD_TRIADS_SUMMARY_PATH"
   rm -f "$synth_tmp_config"
+  SYNTH_HARD_TRIADS_SOURCE_TYPE="regenerated_branch_local"
+  SYNTH_HARD_TRIADS_SOURCE_PATH="configs/synth_hard_triads.yaml"
+  SYNTH_HARD_TRIADS_SUMMARY_SOURCE_TYPE="regenerated_branch_local"
+  SYNTH_HARD_TRIADS_SUMMARY_SOURCE_PATH="configs/synth_hard_triads.yaml"
 fi
 
 # The three split subsets below mirror canonical stage2 exactly, but they live
 # under branch-local names so subtype-rescue never overwrites canonical inputs.
 if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then
+  if [[ -f "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then
+    assert_branch_local_matches_canonical "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" "$STAGE2_TRAIN_OFFICIAL_SUBSET" "branch-local train subset"
+  fi
+  STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_TYPE="reused_branch_local"
+  STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_PATH="$STAGE2_TRAIN_OFFICIAL_SUBSET"
   echo "[stage2-subtype] Reusing existing branch-local input: $STAGE2_TRAIN_OFFICIAL_SUBSET"
 elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then
   copy_into_branch_path "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" "$STAGE2_TRAIN_OFFICIAL_SUBSET"
+  STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_TYPE="copied_from_canonical"
+  STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_PATH="$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET"
   echo "[stage2-subtype] Copied canonical train subset into branch-local path."
 else
   mkdir -p "$(dirname "$STAGE2_TRAIN_OFFICIAL_SUBSET")"
@@ -133,12 +249,21 @@ else
     --exclude-split-name hard_triad_rule_novelty \
     --exclude-split-role valid
   mv "$stage2_train_subset_tmp" "$STAGE2_TRAIN_OFFICIAL_SUBSET"
+  STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_TYPE="regenerated_branch_local"
+  STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_PATH="data/processed/official_train_tagged.jsonl"
 fi
 
 if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$STAGE2_VALID_OFFICIAL_SUBSET" ]]; then
+  if [[ -f "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" ]]; then
+    assert_branch_local_matches_canonical "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" "$STAGE2_VALID_OFFICIAL_SUBSET" "branch-local valid subset"
+  fi
+  STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_TYPE="reused_branch_local"
+  STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_PATH="$STAGE2_VALID_OFFICIAL_SUBSET"
   echo "[stage2-subtype] Reusing existing branch-local input: $STAGE2_VALID_OFFICIAL_SUBSET"
 elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" ]]; then
   copy_into_branch_path "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" "$STAGE2_VALID_OFFICIAL_SUBSET"
+  STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_TYPE="copied_from_canonical"
+  STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_PATH="$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET"
   echo "[stage2-subtype] Copied canonical valid subset into branch-local path."
 else
   mkdir -p "$(dirname "$STAGE2_VALID_OFFICIAL_SUBSET")"
@@ -150,12 +275,21 @@ else
     --split-name hard_triad_rule_novelty \
     --split-role valid
   mv "$stage2_valid_subset_tmp" "$STAGE2_VALID_OFFICIAL_SUBSET"
+  STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_TYPE="regenerated_branch_local"
+  STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_PATH="data/processed/official_train_tagged.jsonl"
 fi
 
 if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then
+  if [[ -f "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then
+    assert_branch_local_matches_canonical "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" "$ALL_FAMILY_PROXY_VALID_SUBSET" "branch-local all-family proxy subset"
+  fi
+  ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_TYPE="reused_branch_local"
+  ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_PATH="$ALL_FAMILY_PROXY_VALID_SUBSET"
   echo "[stage2-subtype] Reusing existing branch-local input: $ALL_FAMILY_PROXY_VALID_SUBSET"
 elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then
   copy_into_branch_path "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" "$ALL_FAMILY_PROXY_VALID_SUBSET"
+  ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_TYPE="copied_from_canonical"
+  ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_PATH="$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET"
   echo "[stage2-subtype] Copied canonical all-family proxy subset into branch-local path."
 else
   mkdir -p "$(dirname "$ALL_FAMILY_PROXY_VALID_SUBSET")"
@@ -170,7 +304,11 @@ else
     --exclude-split-name hard_triad_rule_novelty \
     --exclude-split-role train
   mv "$all_family_proxy_subset_tmp" "$ALL_FAMILY_PROXY_VALID_SUBSET"
+  ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_TYPE="regenerated_branch_local"
+  ALL_FAMILY_PROXY_VALID_SUBSET_SOURCE_PATH="data/processed/official_train_tagged.jsonl"
 fi
+
+write_input_manifest
 
 # ---------------------------------------------------------------------------
 # Build the stage2 subtype-rescue TRAIN dataset.
@@ -230,7 +368,8 @@ python -m src.student.sft_dataset_builder \
 # Fail fast: oversample must have materialised on train, and valid must stay
 # unweighted. These mirror the canonical stage2 gates; failing here means the
 # experimental builder drifted from canonical conventions.
-python - "$STAGE2_REPORT" <<'PY'
+rm -f "$STAGE2_SKIPPED_ARTIFACT"
+python - "$STAGE2_REPORT" "$STAGE2_SKIPPED_ARTIFACT" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -266,6 +405,19 @@ equation_attempted = int(rescue_hint_attempted.get("equation", 0) or 0)
 equation_promoted = int(rescue_promoted_with_hint.get("equation", 0) or 0)
 
 if equation_attempted <= 0:
+    skip_artifact = Path(sys.argv[2])
+    skip_payload = {
+        "skipped": True,
+        "reason": "zero equation rescue_hint_attempted",
+        "equation_attempted": equation_attempted,
+        "equation_promoted": equation_promoted,
+        "report": sys.argv[1],
+    }
+    skip_artifact.parent.mkdir(parents=True, exist_ok=True)
+    skip_artifact.write_text(
+        json.dumps(skip_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     raise SystemExit(
         "stage2 subtype-rescue branch has zero equation rescue_hint_attempted. "
         "No equation sample had a valid subtype hint to apply, so the rescue "
@@ -274,6 +426,19 @@ if equation_attempted <= 0:
     )
 
 if equation_promoted <= 0:
+    skip_artifact = Path(sys.argv[2])
+    skip_payload = {
+        "skipped": True,
+        "reason": "zero equation rescue_promoted_with_hint",
+        "equation_attempted": equation_attempted,
+        "equation_promoted": equation_promoted,
+        "report": sys.argv[1],
+    }
+    skip_artifact.parent.mkdir(parents=True, exist_ok=True)
+    skip_artifact.write_text(
+        json.dumps(skip_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     raise SystemExit(
         "stage2 subtype-rescue branch has zero equation rescue_promoted_with_hint "
         f"(attempted={equation_attempted}). The hint triggered the second pass "

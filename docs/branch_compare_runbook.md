@@ -17,6 +17,17 @@ This document explains how to compare canonical stage2 against the
 - `data/processed/stage2_subtype_rescue_bestproxy_all_eval.json`
 - `artifacts/adapter_stage2_subtype_rescue_bestproxy/`
 
+By default, `scripts/train_stage2_subtype_rescue.sh` expects the canonical
+stage2 inputs to already exist and copies them into branch-local paths before
+training. It also writes:
+
+- `data/processed/stage2_subtype_rescue_input_manifest.json`
+
+Use that manifest to confirm the branch-local train subset, valid subset,
+all-family proxy subset, and synth file came from the expected sources. Set
+`ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS=1` only for a deliberate standalone
+experiment where canonical inputs are unavailable.
+
 ## Promotion Rule
 
 The branch advances only when both conditions are true:
