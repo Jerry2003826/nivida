@@ -3,7 +3,10 @@ num_samples: 2000
 output_path: data/synthetic/synth_hard_triads.jsonl
 summary_path: data/synthetic/synth_hard_triads_summary.json
 max_chain_length: 3
-hard_negative_ratio: 0.1
+hard_negative_ratio: 0.0  # No downstream consumer; kept 0 to avoid producing
+                           # metadata.extras.hard_negative / negative_answer
+                           # fields that nothing reads. Re-enable only when a
+                           # real consumer (loss, dataset filter, etc.) lands.
 dedupe_against_real: data/processed/official_train_tagged.jsonl
 family_weights:
   bit: 1.4

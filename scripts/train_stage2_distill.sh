@@ -91,6 +91,11 @@ python -m src.student.sft_dataset_builder \
   --stage2-silver-hard-support 0.67 \
   --stage2-silver-max-fraction 0.25 \
   --stage2-silver-max-absolute 800 \
+  --stage2-second-pass-hard-triad \
+  --stage2-rescue-families equation \
+  --stage2-second-pass-beam-width 12 \
+  --stage2-second-pass-max-depth 4 \
+  --stage2-second-pass-top-k 3 \
   --report-output "$STAGE2_REPORT"
 
 # Stage2 valid must stay unweighted: no family scheduling, no hard-triad

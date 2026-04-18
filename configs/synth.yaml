@@ -3,7 +3,7 @@ num_samples: 128
 output_path: data/synthetic/stage2_synth.jsonl
 summary_path: data/synthetic/synth_summary.json
 max_chain_length: 3
-hard_negative_ratio: 0.1
+hard_negative_ratio: 0.0  # See configs/synth_hard_triads.yaml for the rationale.
 dedupe_against_real: data/processed/official_train_tagged.jsonl
 family_weights:
   bit: 1.0

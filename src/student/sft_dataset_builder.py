@@ -68,6 +68,9 @@ def _load_examples(input_paths: list[str]) -> list[PuzzleExample]:
     return examples
 
 
+HARD_TRIAD_RESCUE_FAMILIES: frozenset[str] = frozenset({"equation", "cipher", "bit"})
+
+
 def _annotate_examples(
     examples: list[PuzzleExample],
     *,
@@ -83,6 +86,125 @@ def _annotate_examples(
         candidates = engine.solve_example(example, top_k=top_k)
         annotate_example_from_candidates(example, candidates)
     return examples
+
+
+def _annotation_quality_tuple(example: PuzzleExample) -> tuple:
+    """Comparable tuple used to decide whether a rescue pass improved annotation.
+
+    Ordering (lexicographic, higher-is-better):
+
+    1. ``solver_verifiable`` (bool)
+    2. ``support_coverage`` (float, 0..1)
+    3. presence of a non-empty ``program_signature`` (bool)
+    4. ``teacher_confidence`` (float)
+    5. ``top1_top2_margin`` (float)
+    """
+    extras = example.metadata.extras or {}
+    return (
+        bool(extras.get("solver_verifiable", False)),
+        float(extras.get("support_coverage", 0.0) or 0.0),
+        bool(example.metadata.program_signature),
+        float(example.metadata.teacher_confidence or 0.0),
+        float(extras.get("top1_top2_margin", 0.0) or 0.0),
+    )
+
+
+def _rescue_official_hard_triad_examples(
+    examples: list[PuzzleExample],
+    *,
+    families: frozenset[str] | set[str] = HARD_TRIAD_RESCUE_FAMILIES,
+    beam_width: int = 12,
+    max_depth: int = 4,
+    top_k: int = 3,
+) -> dict[str, Any]:
+    """Second-pass stronger chain-search over official hard-triad samples that
+    failed the strict stage2 gate.
+
+    Runs only on ``official`` samples whose ``official_family`` is in ``families``
+    and which did *not* pass ``_select_official_stage2_strict`` on the first
+    pass. For each rescue candidate the current annotation is snapshotted, a
+    deeper search is run, and the new annotation is promoted **only if the
+    quality tuple strictly improves**. Otherwise the original annotation is
+    restored so rescue cannot degrade any candidate.
+
+    Promoted examples gain ``extras.second_pass_rescue_applied=True`` plus a
+    ``second_pass_settings`` snapshot for traceability.
+
+    Returns per-family ``rescue_attempted`` / ``rescue_promoted`` counters so
+    the stage2 report can tell at a glance how many samples the rescue pass
+    recovered for each hard-triad family.
+    """
+    allowed_families = set(families) if not isinstance(families, set) else families
+    rescue_attempted: dict[str, int] = {}
+    rescue_promoted: dict[str, int] = {}
+    if not allowed_families:
+        return {
+            "rescue_families": [],
+            "rescue_settings": {
+                "beam_width": beam_width,
+                "max_depth": max_depth,
+                "top_k": top_k,
+            },
+            "rescue_attempted": {},
+            "rescue_promoted": {},
+        }
+
+    engine = ChainSearchEngine(beam_width=beam_width, max_depth=max_depth)
+    for example in examples:
+        if _source_kind(example) != "official":
+            continue
+        family = _metadata_value(example, "official_family")
+        if family not in allowed_families:
+            continue
+        if example.target_answer is None or not example.query:
+            continue
+        ok_strict, _reason = _select_official_stage2_strict(example)
+        if ok_strict:
+            continue
+        family_key = str(family)
+        rescue_attempted[family_key] = rescue_attempted.get(family_key, 0) + 1
+
+        old_quality = _annotation_quality_tuple(example)
+        snapshot = {
+            "program_signature": example.metadata.program_signature,
+            "teacher_confidence": example.metadata.teacher_confidence,
+            "composition_key": example.metadata.composition_key,
+            "extras": dict(example.metadata.extras or {}),
+        }
+
+        candidates = engine.solve_example(example, top_k=top_k)
+        annotate_example_from_candidates(example, candidates)
+        new_quality = _annotation_quality_tuple(example)
+
+        if new_quality > old_quality:
+            rescue_promoted[family_key] = rescue_promoted.get(family_key, 0) + 1
+            example.metadata.extras = {
+                **(example.metadata.extras or {}),
+                "second_pass_rescue_applied": True,
+                "second_pass_settings": {
+                    "beam_width": beam_width,
+                    "max_depth": max_depth,
+                    "top_k": top_k,
+                },
+            }
+        else:
+            # Roll back so a weaker-or-equal rescue result does not overwrite
+            # the first-pass annotation.
+            example.metadata.program_signature = snapshot["program_signature"]
+            example.metadata.teacher_confidence = snapshot["teacher_confidence"]
+            example.metadata.composition_key = snapshot["composition_key"]
+            example.metadata.extras = dict(snapshot["extras"])
+
+    return {
+        "rescue_families": sorted(allowed_families),
+        "rescue_settings": {
+            "beam_width": beam_width,
+            "max_depth": max_depth,
+            "top_k": top_k,
+        },
+        "rescue_attempted": dict(sorted(rescue_attempted.items())),
+        "rescue_promoted": dict(sorted(rescue_promoted.items())),
+    }
 
 
 def _metadata_value(example: PuzzleExample, key: str, default: Any = None) -> Any:
@@ -618,6 +740,11 @@ def build_selected_sft_with_report(
     silver_hard_support: float = 0.67,
     silver_max_fraction: float = 0.25,
     silver_max_absolute: int = 800,
+    rescue_hard_triad: bool = False,
+    rescue_families: frozenset[str] | set[str] | None = None,
+    rescue_beam_width: int = 12,
+    rescue_max_depth: int = 4,
+    rescue_top_k: int = 3,
 ) -> dict[str, Any]:
     """Build the stage2 SFT dataset and return both records and selection report.
 
@@ -641,6 +768,26 @@ def build_selected_sft_with_report(
         max_depth=max_depth,
         top_k=top_k,
     )
+
+    rescue_diagnostics: dict[str, Any] = {
+        "rescue_families": [],
+        "rescue_settings": None,
+        "rescue_attempted": {},
+        "rescue_promoted": {},
+    }
+    if rescue_hard_triad:
+        effective_families = (
+            rescue_families
+            if rescue_families is not None
+            else HARD_TRIAD_RESCUE_FAMILIES
+        )
+        rescue_diagnostics = _rescue_official_hard_triad_examples(
+            annotated,
+            families=effective_families,
+            beam_width=rescue_beam_width,
+            max_depth=rescue_max_depth,
+            top_k=rescue_top_k,
+        )
 
     # Phase 1: strict official + silver candidates + rejection diagnostics
     selected_strict: list[PuzzleExample] = []
@@ -764,6 +911,7 @@ def build_selected_sft_with_report(
             family: dict(sorted(reasons.items()))
             for family, reasons in sorted(rejection_counter.items())
         },
+        "rescue_diagnostics": rescue_diagnostics,
     }
 
 
@@ -1098,6 +1246,41 @@ def main() -> None:
         help="Absolute upper bound on the number of silver samples.",
     )
     parser.add_argument(
+        "--stage2-second-pass-hard-triad",
+        action="store_true",
+        help=(
+            "Enable a second-pass chain search for rejected official hard-triad "
+            "samples. Off by default: shell scripts opt in explicitly."
+        ),
+    )
+    parser.add_argument(
+        "--stage2-rescue-families",
+        default="equation",
+        help=(
+            "Comma-separated list of families the rescue pass runs on. "
+            "Default: equation (the family most consistently missing program_signature "
+            "in the strict rejection diagnostics)."
+        ),
+    )
+    parser.add_argument(
+        "--stage2-second-pass-beam-width",
+        type=int,
+        default=12,
+        help="Beam width for the rescue ChainSearchEngine.",
+    )
+    parser.add_argument(
+        "--stage2-second-pass-max-depth",
+        type=int,
+        default=4,
+        help="Max depth for the rescue ChainSearchEngine.",
+    )
+    parser.add_argument(
+        "--stage2-second-pass-top-k",
+        type=int,
+        default=3,
+        help="Top-k for the rescue annotate_example_from_candidates.",
+    )
+    parser.add_argument(
         "--tokenizer-path",
         help=(
             "Local directory for the tokenizer used by prompt_mode=chat_thinking. "
@@ -1139,6 +1322,11 @@ def main() -> None:
         report = {"num_records": len(dataset)}
         default_output = "data/processed/stage1_format_align.jsonl"
     elif args.selection_profile == "stage2":
+        rescue_families_arg = {
+            token.strip()
+            for token in str(args.stage2_rescue_families or "").split(",")
+            if token.strip()
+        } or None
         stage2_bundle = build_selected_sft_with_report(
             examples,
             prompt_mode=prompt_mode,
@@ -1157,11 +1345,17 @@ def main() -> None:
             silver_hard_support=args.stage2_silver_hard_support,
             silver_max_fraction=args.stage2_silver_max_fraction,
             silver_max_absolute=args.stage2_silver_max_absolute,
+            rescue_hard_triad=args.stage2_second_pass_hard_triad,
+            rescue_families=rescue_families_arg,
+            rescue_beam_width=args.stage2_second_pass_beam_width,
+            rescue_max_depth=args.stage2_second_pass_max_depth,
+            rescue_top_k=args.stage2_second_pass_top_k,
         )
         dataset = stage2_bundle["records"]
         report = summarise_selected_sft(dataset)
         report["selection_counts"] = stage2_bundle["selection_counts"]
         report["official_rejection_diagnostics"] = stage2_bundle["official_rejection_diagnostics"]
+        report["rescue_diagnostics"] = stage2_bundle["rescue_diagnostics"]
         default_output = "data/processed/stage2_distill.jsonl"
     else:
         if not args.repair_artifact:
