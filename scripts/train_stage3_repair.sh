@@ -8,6 +8,7 @@ TOKENIZER_PATH="${TOKENIZER_PATH:-artifacts/_tokenizer_cache/metric_nemotron-3-n
 
 STAGE2_ADAPTER_DIR="${STAGE2_ADAPTER_DIR:-artifacts/adapter_stage2_selected_trace}"
 STAGE3_CONFIG_TEMPLATE="${STAGE3_CONFIG_TEMPLATE:-configs/train_stage3_repair.yaml}"
+FINAL_STAGE3_ADAPTER_DIR="${FINAL_STAGE3_ADAPTER_DIR:-artifacts/adapter_stage3_repair}"
 
 FULL_TRAIN_INPUT="${FULL_TRAIN_INPUT:-data/processed/official_train_tagged.jsonl}"
 
@@ -27,6 +28,10 @@ VALID_FAILURES="${VALID_FAILURES:-data/processed/stage2_model_failures_valid.jso
 
 STAGE3_TRAIN_REPORT="${STAGE3_TRAIN_REPORT:-data/processed/stage3_repair_train_report.json}"
 STAGE3_VALID_REPORT="${STAGE3_VALID_REPORT:-data/processed/stage3_repair_valid_report.json}"
+
+STAGE3_DECISION="${STAGE3_DECISION:-data/processed/stage3_decision.json}"
+STAGE3_PROXY_VALID_PREDICTIONS="${STAGE3_PROXY_VALID_PREDICTIONS:-data/processed/stage3_proxy_valid_predictions.jsonl}"
+STAGE3_PROXY_VALID_EVAL="${STAGE3_PROXY_VALID_EVAL:-data/processed/stage3_proxy_valid_eval.json}"
 
 REPLAY_RATIO="${REPLAY_RATIO:-0.25}"
 
@@ -118,49 +123,139 @@ python scripts/split_eval_artifact.py \
   --restrict-ids "$VALID_SUBSET" \
   --output-failures "$VALID_FAILURES"
 
-python -m src.student.sft_dataset_builder \
-  --input "$FULL_TRAIN_INPUT" \
-  --output data/processed/stage3_repair_train.jsonl \
-  --selection-profile stage3 \
-  --prompt-mode chat_thinking \
-  --tokenizer-path "$TOKENIZER_PATH" \
-  --completion-style short_trace \
-  --beam-width 8 \
-  --max-depth 2 \
-  --top-k 2 \
-  --repair-artifact "$TRAIN_FAILURES" \
-  --replay-input "$TRAIN_SUCCESSES" \
-  --replay-ratio "$REPLAY_RATIO" \
-  --report-output "$STAGE3_TRAIN_REPORT"
+# Stage3 gate: decide whether to skip stage3 entirely and/or disable its eval.
+python scripts/decide_stage3_gate.py \
+  --train-failures "$TRAIN_FAILURES" \
+  --valid-failures "$VALID_FAILURES" \
+  --output "$STAGE3_DECISION"
 
-python -m src.student.sft_dataset_builder \
-  --input "$VALID_SUBSET" \
-  --output data/processed/stage3_repair_valid.jsonl \
-  --selection-profile stage3 \
-  --prompt-mode chat_thinking \
-  --tokenizer-path "$TOKENIZER_PATH" \
-  --completion-style short_trace \
-  --beam-width 8 \
-  --max-depth 2 \
-  --top-k 2 \
-  --repair-artifact "$VALID_FAILURES" \
-  --report-output "$STAGE3_VALID_REPORT"
+STAGE3_SKIP="$(python - "$STAGE3_DECISION" <<'PY'
+from pathlib import Path
+import json, sys
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print("1" if payload.get("skip_stage3") else "0")
+PY
+)"
+
+STAGE3_DISABLE_EVAL="$(python - "$STAGE3_DECISION" <<'PY'
+from pathlib import Path
+import json, sys
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print("1" if payload.get("disable_eval_dataset") else "0")
+PY
+)"
+
+if [[ "$STAGE3_SKIP" != "1" ]]; then
+  python -m src.student.sft_dataset_builder \
+    --input "$FULL_TRAIN_INPUT" \
+    --output data/processed/stage3_repair_train.jsonl \
+    --selection-profile stage3 \
+    --prompt-mode chat_thinking \
+    --tokenizer-path "$TOKENIZER_PATH" \
+    --completion-style short_trace \
+    --beam-width 8 \
+    --max-depth 2 \
+    --top-k 2 \
+    --repair-artifact "$TRAIN_FAILURES" \
+    --replay-input "$TRAIN_SUCCESSES" \
+    --replay-ratio "$REPLAY_RATIO" \
+    --report-output "$STAGE3_TRAIN_REPORT"
+
+  if [[ "$STAGE3_DISABLE_EVAL" != "1" ]]; then
+    python -m src.student.sft_dataset_builder \
+      --input "$VALID_SUBSET" \
+      --output data/processed/stage3_repair_valid.jsonl \
+      --selection-profile stage3 \
+      --prompt-mode chat_thinking \
+      --tokenizer-path "$TOKENIZER_PATH" \
+      --completion-style short_trace \
+      --beam-width 8 \
+      --max-depth 2 \
+      --top-k 2 \
+      --repair-artifact "$VALID_FAILURES" \
+      --report-output "$STAGE3_VALID_REPORT"
+  fi
+fi
 
 STAGE3_RUNTIME_CONFIG="$(mktemp)"
 trap 'rm -f "$STAGE3_RUNTIME_CONFIG"' EXIT
 
-python - "$STAGE3_CONFIG_TEMPLATE" "$STAGE2_ADAPTER_DIR" "$STAGE3_RUNTIME_CONFIG" <<'PY'
+python - "$STAGE3_CONFIG_TEMPLATE" "$STAGE2_ADAPTER_DIR" "$STAGE3_RUNTIME_CONFIG" "$STAGE3_DECISION" <<'PY'
 from pathlib import Path
+import json
 import sys
 import yaml
 
-template_path, init_adapter_dir, output_path = sys.argv[1:4]
+template_path, init_adapter_dir, output_path, decision_path = sys.argv[1:5]
 payload = yaml.safe_load(Path(template_path).read_text(encoding="utf-8")) or {}
-payload.setdefault("training", {})["init_adapter_dir"] = init_adapter_dir
+training = payload.setdefault("training", {})
+training["init_adapter_dir"] = init_adapter_dir
+
+decision = json.loads(Path(decision_path).read_text(encoding="utf-8"))
+if decision.get("disable_eval_dataset", False):
+    training.pop("eval_path", None)
+
 Path(output_path).write_text(
     yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
     encoding="utf-8",
 )
 PY
 
-python -m src.student.lora_train --config "$STAGE3_RUNTIME_CONFIG" --force-train
+if [[ "$STAGE3_SKIP" == "1" ]]; then
+  # Stage2 was strong enough that no hard-triad train failures remain;
+  # reuse the stage2 adapter as the canonical stage3 output so downstream
+  # packaging / validation / proxy eval can stay oblivious to the skip.
+  rm -rf "$FINAL_STAGE3_ADAPTER_DIR"
+  mkdir -p "$FINAL_STAGE3_ADAPTER_DIR"
+  cp -a "$STAGE2_ADAPTER_DIR"/. "$FINAL_STAGE3_ADAPTER_DIR"/
+
+  python - "$STAGE3_DECISION" "$FINAL_STAGE3_ADAPTER_DIR/stage3_skipped.json" "$STAGE2_ADAPTER_DIR" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+decision_path, output_path, reused_adapter_dir = sys.argv[1:4]
+payload = json.loads(Path(decision_path).read_text(encoding="utf-8"))
+payload["reused_adapter_dir"] = reused_adapter_dir
+payload["reason"] = "stage2 produced zero hard-triad train failures; stage3 repair skipped"
+Path(output_path).write_text(
+    json.dumps(payload, ensure_ascii=False, indent=2),
+    encoding="utf-8",
+)
+PY
+else
+  python -m src.student.lora_train --config "$STAGE3_RUNTIME_CONFIG" --force-train
+fi
+
+# Stage3 proxy eval: evaluate the final adapter (real stage3, or the stage2
+# clone in the skip path) against the full hard-triad valid subset. This is
+# the competition_correct_rate we trust for comparing against stage2_proxy
+# and for deciding whether to submit.
+python -m src.student.inference \
+  --config "$STAGE3_RUNTIME_CONFIG" \
+  --input "$VALID_SUBSET" \
+  --adapter-dir "$FINAL_STAGE3_ADAPTER_DIR" \
+  --output "$STAGE3_PROXY_VALID_PREDICTIONS" \
+  --max-new-tokens 2048
+
+python -m src.experiments.eval_competition_replica \
+  --predictions "$STAGE3_PROXY_VALID_PREDICTIONS" \
+  --labels "$VALID_SUBSET" \
+  --output "$STAGE3_PROXY_VALID_EVAL" \
+  --require-complete-coverage
+
+python - "$STAGE3_PROXY_VALID_EVAL" <<'PY'
+from pathlib import Path
+import json, sys
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(json.dumps(
+    {
+        "competition_correct_rate": payload.get("competition_correct_rate"),
+        "num_examples": payload.get("num_examples"),
+        "coverage": payload.get("coverage", {}),
+    },
+    ensure_ascii=False,
+    indent=2,
+))
+PY

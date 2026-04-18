@@ -134,6 +134,12 @@ Stage3 failure / success buckets are produced by `scripts/train_stage3_repair.sh
 - `max_seq_length: auto` uses tokenizer-aware BPE accounting when a tokenizer path is configured
 - stage2 / stage3 local inference defaults to `max_new_tokens: 2048` to avoid truncating `chat_thinking` generations
 - `max_depth=3` is intentionally more expensive for stage2 selection; expect noticeably higher CPU time than `max_depth=2`
+- `stage2_distill_valid.jsonl` is the SFT **loss monitor** (teacher-solvable subset); it is not the hard-triad headline metric. Trust the proxy eval artifacts below instead.
+- after stage2 and stage3 training the canonical scripts write a competition-proxy artifact:
+  - `data/processed/stage2_proxy_valid_eval.json`
+  - `data/processed/stage3_proxy_valid_eval.json`
+  both are produced by running the trained adapter on the full hard-triad valid subset via `src.student.inference` and scoring with `eval_competition_replica --require-complete-coverage`. These are the numbers to compare when deciding "did stage2/3 actually improve".
+- stage3 can **skip itself** when stage2 produced zero hard-triad train failures. In that case `scripts/train_stage3_repair.sh` copies the stage2 adapter to `artifacts/adapter_stage3_repair/` and writes `stage3_skipped.json` next to the weights so downstream packaging / validation does not need to branch. See `data/processed/stage3_decision.json` for the gate outcome.
 
 ## Smoke and Validation
 

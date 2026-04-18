@@ -13,6 +13,14 @@ STAGE2_VALID_REPORT="${STAGE2_VALID_REPORT:-data/processed/stage2_distill_valid_
 STAGE2_TRAIN_OFFICIAL_SUBSET="${STAGE2_TRAIN_OFFICIAL_SUBSET:-data/processed/stage2_official_train_no_hard_valid.jsonl}"
 STAGE2_VALID_OFFICIAL_SUBSET="${STAGE2_VALID_OFFICIAL_SUBSET:-data/processed/stage2_official_valid_hard_triad.jsonl}"
 
+# Proxy eval artifacts. The trainer-side stage2_distill_valid.jsonl is a
+# teacher-solvable subset (loss monitor only); the proxy below is computed
+# against the full hard-triad valid subset so it reflects the real
+# competition_correct_rate on hard_triad_rule_novelty/valid.
+STAGE2_ADAPTER_DIR="${STAGE2_ADAPTER_DIR:-artifacts/adapter_stage2_selected_trace}"
+STAGE2_PROXY_VALID_PREDICTIONS="${STAGE2_PROXY_VALID_PREDICTIONS:-data/processed/stage2_proxy_valid_predictions.jsonl}"
+STAGE2_PROXY_VALID_EVAL="${STAGE2_PROXY_VALID_EVAL:-data/processed/stage2_proxy_valid_eval.json}"
+
 if [[ ! -d "$STAGE1_ADAPTER_DIR" ]]; then
   echo "Missing stage1 adapter: $STAGE1_ADAPTER_DIR" >&2
   exit 1
@@ -128,3 +136,36 @@ Path(output_path).write_text(
 PY
 
 python -m src.student.lora_train --config "$STAGE2_RUNTIME_CONFIG" --force-train
+
+# Stage2 proxy eval: run the trained adapter over the full hard-triad valid
+# subset (not the teacher-solvable loss-monitor set) to obtain the real
+# competition_correct_rate. Use this artifact to decide whether stage2 should
+# proceed to stage3; do not rely on the trainer eval_loss alone.
+python -m src.student.inference \
+  --config "$STAGE2_RUNTIME_CONFIG" \
+  --input "$STAGE2_VALID_OFFICIAL_SUBSET" \
+  --adapter-dir "$STAGE2_ADAPTER_DIR" \
+  --output "$STAGE2_PROXY_VALID_PREDICTIONS" \
+  --max-new-tokens 2048
+
+python -m src.experiments.eval_competition_replica \
+  --predictions "$STAGE2_PROXY_VALID_PREDICTIONS" \
+  --labels "$STAGE2_VALID_OFFICIAL_SUBSET" \
+  --output "$STAGE2_PROXY_VALID_EVAL" \
+  --require-complete-coverage
+
+python - "$STAGE2_PROXY_VALID_EVAL" <<'PY'
+from pathlib import Path
+import json, sys
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(json.dumps(
+    {
+        "competition_correct_rate": payload.get("competition_correct_rate"),
+        "num_examples": payload.get("num_examples"),
+        "coverage": payload.get("coverage", {}),
+    },
+    ensure_ascii=False,
+    indent=2,
+))
+PY
