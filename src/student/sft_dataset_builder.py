@@ -159,7 +159,21 @@ def _infer_subtype_hint_from_top_steps(example: PuzzleExample) -> str | None:
             "evaluate_expression",
             "binary_equation_rule",
         }:
-            return "equation_numeric"
+            # Do NOT return "equation_numeric" here.
+            # ChainSearchEngine._prioritized_op_names routes numeric equation
+            # ops via ``equation_mode == "numeric"`` (decided purely by the
+            # input pattern regex inside ``_equation_mode``), never via
+            # ``subtype == "equation_numeric"``. Returning that string as a
+            # hint would silently fall through to the default SYMBOLIC op
+            # priority (``[position_transducer, operator_template,
+            # delete_characters]``), so the rescue would cost a deeper
+            # beam/depth search without actually changing the op prior.
+            # Worse, any rescue that happened to promote under the deeper
+            # search would be (mis-)attributed to the hint in
+            # ``rescue_promoted_with_hint`` and corrupt the A/B signal.
+            # Emit no hint until chain_search.py learns a dedicated
+            # ``equation_numeric`` branch (deferred; not part of v1 scope).
+            return None
         return None
 
     if family == "cipher":

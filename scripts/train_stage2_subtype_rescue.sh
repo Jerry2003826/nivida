@@ -179,6 +179,37 @@ if not hint_diag.get("enabled"):
         "the experimental hint path did not activate. "
         "Check that --stage2-use-search-subtype-hint is passed."
     )
+
+# Zero-treatment gate: the v1 branch is equation-only, so it only differs
+# from canonical stage2 when (a) at least one equation sample had its
+# subtype temporarily overridden for the rescue search AND (b) at least
+# one of those overrides produced a promoted annotation. If either
+# counter is zero the branch dataset is effectively identical to
+# canonical stage2 data and the 20-28 H100 hours that would follow are
+# wasted. Fail fast BEFORE lora_train so the machine goes back to doing
+# useful work.
+rescue_hint_attempted = hint_diag.get("rescue_hint_attempted") or {}
+rescue_promoted_with_hint = hint_diag.get("rescue_promoted_with_hint") or {}
+equation_attempted = int(rescue_hint_attempted.get("equation", 0) or 0)
+equation_promoted = int(rescue_promoted_with_hint.get("equation", 0) or 0)
+
+if equation_attempted <= 0:
+    raise SystemExit(
+        "stage2 subtype-rescue branch has zero equation rescue_hint_attempted. "
+        "No equation sample had a valid subtype hint to apply, so the rescue "
+        "second pass saw the same subtypes as canonical stage2. "
+        "Skip training this branch: it would consume GPU without any treatment."
+    )
+
+if equation_promoted <= 0:
+    raise SystemExit(
+        "stage2 subtype-rescue branch has zero equation rescue_promoted_with_hint "
+        f"(attempted={equation_attempted}). The hint triggered the second pass "
+        "but the search found no strictly-better candidate under the hinted "
+        "subtype prior, so every attempt was rolled back. The resulting train "
+        "dataset is equivalent to canonical stage2. "
+        "Skip training this branch: it would consume GPU without any treatment."
+    )
 PY
 
 python - "$STAGE2_VALID_REPORT" <<'PY'

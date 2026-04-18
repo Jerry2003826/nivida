@@ -215,14 +215,35 @@ def test_infer_equation_delete_hint() -> None:
     assert _infer_subtype_hint_from_top_steps(example) == "equation_delete"
 
 
-def test_infer_equation_numeric_hint() -> None:
-    example = _make_example(
-        "eq-n",
-        family="equation",
-        subtype="equation_symbolic",
-        top_steps=["add_constant", "multiply_constant"],
-    )
-    assert _infer_subtype_hint_from_top_steps(example) == "equation_numeric"
+def test_equation_numeric_steps_do_not_emit_unsupported_subtype_hint() -> None:
+    """``equation_numeric`` is not recognised by
+    :meth:`ChainSearchEngine._prioritized_op_names` — numeric equation ops
+    are routed via ``equation_mode == "numeric"``, not via the subtype
+    string. Returning ``equation_numeric`` as a hint would silently fall
+    through to the default symbolic op priority and pollute the
+    ``rescue_promoted_with_hint`` diagnostic with deeper-search wins that
+    actually have nothing to do with the hint. The inference function
+    must therefore emit ``None`` whenever it sees numeric-family op
+    evidence, until ``chain_search.py`` grows a dedicated branch.
+    """
+    for top_steps in (
+        ["add_constant"],
+        ["multiply_constant"],
+        ["affine_transform"],
+        ["evaluate_expression"],
+        ["binary_equation_rule"],
+        ["add_constant", "multiply_constant"],
+    ):
+        example = _make_example(
+            "eq-n",
+            family="equation",
+            subtype="equation_symbolic",
+            top_steps=top_steps,
+        )
+        assert _infer_subtype_hint_from_top_steps(example) is None, (
+            f"equation_numeric hint must be disabled until chain_search supports it; "
+            f"got a non-None hint for top_steps={top_steps!r}"
+        )
 
 
 def test_infer_skips_non_fallback_subtype() -> None:
