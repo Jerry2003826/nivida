@@ -192,13 +192,13 @@ def build_sft_record(
     return record
 
 
-def filter_examples_by_split(
-    examples: list[PuzzleExample],
+def _load_split_ids(
     *,
     split_file: str | Path,
     split_name: str,
     split_role: str,
-) -> list[PuzzleExample]:
+) -> set[str]:
+    """Return the set of example ids belonging to ``split_name/split_role``."""
     payload = read_json(split_file)
     if split_name not in payload:
         raise KeyError(f"Split '{split_name}' not found in {split_file}")
@@ -206,10 +206,56 @@ def filter_examples_by_split(
     key = f"{split_role}_ids"
     if key not in split_payload:
         raise KeyError(f"Split role '{split_role}' not found in split '{split_name}'")
-    keep_ids = set(split_payload[key])
+    return {str(item) for item in split_payload[key]}
+
+
+def filter_examples_by_split(
+    examples: list[PuzzleExample],
+    *,
+    split_file: str | Path,
+    split_name: str,
+    split_role: str,
+    exclude_split_file: str | Path | None = None,
+    exclude_split_name: str | None = None,
+    exclude_split_role: str | None = None,
+) -> list[PuzzleExample]:
+    """Filter examples to ``split_name/split_role``, optionally excluding another split.
+
+    The exclude fields let callers produce leak-free train subsets: e.g.,
+    ``rule_novelty_all/train`` minus ``hard_triad_rule_novelty/valid``, which is
+    required because the two splits are built independently (not nested) in
+    :mod:`src.competition.split_builder`.
+
+    All three exclude fields must be provided together or omitted together.
+    """
+    keep_ids = _load_split_ids(
+        split_file=split_file,
+        split_name=split_name,
+        split_role=split_role,
+    )
+
+    exclude_args = (exclude_split_file, exclude_split_name, exclude_split_role)
+    has_any_exclude = any(arg is not None for arg in exclude_args)
+    has_all_exclude = all(arg is not None for arg in exclude_args)
+    if has_any_exclude and not has_all_exclude:
+        raise ValueError(
+            "exclude_split_file / exclude_split_name / exclude_split_role must "
+            "be provided together"
+        )
+
+    exclude_ids: set[str] = set()
+    if has_all_exclude:
+        exclude_ids = _load_split_ids(
+            split_file=exclude_split_file,  # type: ignore[arg-type]
+            split_name=str(exclude_split_name),
+            split_role=str(exclude_split_role),
+        )
+
     filtered: list[PuzzleExample] = []
     for example in examples:
         source_kind = _source_kind(example)
+        if example.id in exclude_ids:
+            continue
         if example.id in keep_ids:
             filtered.append(example)
             continue
@@ -224,6 +270,9 @@ def export_split_subset(
     split_file: str | Path,
     split_name: str,
     split_role: str,
+    exclude_split_file: str | Path | None = None,
+    exclude_split_name: str | None = None,
+    exclude_split_role: str | None = None,
 ) -> list[dict[str, Any]]:
     return [
         example.to_dict()
@@ -232,6 +281,9 @@ def export_split_subset(
             split_file=split_file,
             split_name=split_name,
             split_role=split_role,
+            exclude_split_file=exclude_split_file,
+            exclude_split_name=exclude_split_name,
+            exclude_split_role=exclude_split_role,
         )
     ]
 
@@ -594,12 +646,51 @@ def build_repair_set(
         for row in repair_rows
         if not row["competition_correct"]
     }
+    failure_ids = set(failure_index.keys())
+
+    # Resolve replay rows up front so annotation can be restricted to the
+    # union of failure + success ids. Without this prefilter the caller pays
+    # chain-search cost for every example in the input pool, which is ~10k
+    # for the stage3 full-official-train path even though most of them are
+    # neither repair nor replay candidates.
+    replay_rows: list[dict[str, Any]] = []
+    success_ids: set[str] = set()
+    if replay_input and replay_ratio > 0.0:
+        replay_payload = read_json(replay_input)
+        replay_records_payload: list[Any] = []
+        if isinstance(replay_payload, dict):
+            replay_records_payload = replay_payload.get(
+                "records", replay_payload.get("rows", [])
+            )
+        if replay_records_payload:
+            replay_rows = _validate_repair_artifact(
+                replay_payload, artifact_path=replay_input
+            )
+        success_ids = {
+            str(row["id"])
+            for row in replay_rows
+            if bool(row.get("competition_correct", False))
+        }
+
+    target_ids = failure_ids | success_ids
+    selected_examples = [example for example in examples if example.id in target_ids]
+    present_ids = {example.id for example in selected_examples}
+    missing_target_ids = sorted(target_ids - present_ids)
+    if missing_target_ids:
+        warnings.warn(
+            f"build_repair_set: {len(missing_target_ids)} ids were present in the "
+            "repair/replay artifact but missing from the provided examples input; "
+            "those ids will be skipped.",
+            stacklevel=2,
+        )
+
     annotated = _annotate_examples(
-        examples,
+        selected_examples,
         beam_width=beam_width,
         max_depth=max_depth,
         top_k=top_k,
     )
+
     repair_records: list[dict[str, Any]] = []
     for example in annotated:
         failure_row = failure_index.get(example.id)
@@ -620,20 +711,7 @@ def build_repair_set(
         repair_records.append(_mark_stage3_record(record, source_dataset="repair", repair_source="repair"))
 
     replay_records: list[dict[str, Any]] = []
-    if replay_input and replay_ratio > 0.0:
-        replay_payload = read_json(replay_input)
-        replay_records_payload = []
-        if isinstance(replay_payload, dict):
-            replay_records_payload = replay_payload.get("records", replay_payload.get("rows", []))
-        if replay_records_payload:
-            replay_rows = _validate_repair_artifact(replay_payload, artifact_path=replay_input)
-        else:
-            replay_rows = []
-        success_ids = {
-            str(row["id"])
-            for row in replay_rows
-            if bool(row.get("competition_correct", False))
-        }
+    if success_ids:
         replay_candidates: list[dict[str, Any]] = []
         for example in annotated:
             if example.id not in success_ids:
@@ -713,6 +791,16 @@ def main() -> None:
     parser.add_argument("--split-file")
     parser.add_argument("--split-name")
     parser.add_argument("--split-role", choices=["train", "valid"])
+    parser.add_argument(
+        "--exclude-split-file",
+        help=(
+            "Optional splits.json used to drop example ids that belong to an "
+            "overlapping split (e.g., rule_novelty_all/train minus "
+            "hard_triad_rule_novelty/valid)."
+        ),
+    )
+    parser.add_argument("--exclude-split-name")
+    parser.add_argument("--exclude-split-role", choices=["train", "valid"])
     parser.add_argument("--repair-artifact")
     parser.add_argument("--replay-input")
     parser.add_argument("--replay-ratio", type=float, default=0.0)
@@ -748,6 +836,9 @@ def main() -> None:
             split_file=args.split_file,
             split_name=args.split_name,
             split_role=args.split_role,
+            exclude_split_file=args.exclude_split_file,
+            exclude_split_name=args.exclude_split_name,
+            exclude_split_role=args.exclude_split_role,
         )
     examples = _filter_by_source(examples, args.source_filter)
 

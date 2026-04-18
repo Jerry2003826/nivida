@@ -21,6 +21,15 @@ def main() -> None:
     parser.add_argument("--split-file", required=True)
     parser.add_argument("--split-name", required=True)
     parser.add_argument("--split-role", required=True, choices=["train", "valid"])
+    parser.add_argument(
+        "--exclude-split-file",
+        help=(
+            "Optional splits.json used to drop ids from an overlapping split. "
+            "Supply together with --exclude-split-name and --exclude-split-role."
+        ),
+    )
+    parser.add_argument("--exclude-split-name")
+    parser.add_argument("--exclude-split-role", choices=["train", "valid"])
     args = parser.parse_args()
 
     examples = [PuzzleExample.from_dict(row) for row in load_jsonl(args.input)]
@@ -29,6 +38,9 @@ def main() -> None:
         split_file=args.split_file,
         split_name=args.split_name,
         split_role=args.split_role,
+        exclude_split_file=args.exclude_split_file,
+        exclude_split_name=args.exclude_split_name,
+        exclude_split_role=args.exclude_split_role,
     )
     write_jsonl(args.output, rows)
 

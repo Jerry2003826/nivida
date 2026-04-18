@@ -70,6 +70,7 @@ def validate_submission(
             prediction_path=predictions_path,
             label_path=labels,
             split_path=splits,
+            require_complete_coverage=True,
         )
 
     if package_output:

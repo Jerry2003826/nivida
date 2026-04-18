@@ -125,8 +125,16 @@ def test_validate_submission_packages_after_local_eval(
         Path(output_path).write_text('{"id":"x","prediction":"\\\\boxed{1}"}\n', encoding="utf-8")
         return Path(output_path)
 
-    def _fake_evaluate_replica(*, prediction_path, label_path, split_path=None):
-        eval_calls.append((str(prediction_path), str(label_path)))
+    def _fake_evaluate_replica(
+        *,
+        prediction_path,
+        label_path,
+        split_path=None,
+        require_complete_coverage=False,
+    ):
+        eval_calls.append(
+            (str(prediction_path), str(label_path), require_complete_coverage)
+        )
         return {"competition_correct_rate": 1.0}
 
     monkeypatch.setattr(validate_submission_module, "run_inference", _fake_run_inference)
@@ -146,3 +154,6 @@ def test_validate_submission_packages_after_local_eval(
     assert payload["package_output"] == str(tmp_path / "submission.zip")
     assert run_calls
     assert eval_calls
+    # Validator must enable strict coverage when running local_eval so that
+    # pipeline coverage mismatches surface before packaging.
+    assert all(flag is True for *_, flag in eval_calls)
