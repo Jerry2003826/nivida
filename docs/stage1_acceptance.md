@@ -19,11 +19,14 @@ success.
 ## What It Enforces
 
 - `adapter_model.safetensors` exists
+- `adapter_model.safetensors` is non-empty
 - `adapter_config.json` exists
 - `training_metadata.json` exists
 - `last_run_summary.json` exists
 - `preflight.status == "ok"`
+- `preflight.chat_template_sha16 == EXPECTED_CHAT_TEMPLATE_SHA16`
 - `dataset_stats.length_unit == "bpe_tokens"`
+- `num_train_records > 0`
 - `num_matched_target_modules > 0`
 - if a log path is provided, at least one training progress line was observed
 
@@ -42,8 +45,12 @@ Treat stage1 as accepted only when all of the following are true:
   - The training process died before the final summary write completed.
 - `preflight.status != "ok"`
   - The run ignored or bypassed a training preflight problem.
+- `chat_template_sha16` mismatch
+  - The tokenizer / chat template probe drifted from the harness-aligned contract.
 - `dataset_stats.length_unit != "bpe_tokens"`
   - The run used fallback accounting rather than tokenizer-backed accounting.
+- `num_train_records <= 0`
+  - The stage1 dataset was empty or the metadata write was corrupted.
 - `num_matched_target_modules <= 0`
   - The LoRA target regex did not match the model; the run should be discarded.
 - No progress line in the log

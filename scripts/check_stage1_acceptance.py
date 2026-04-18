@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.common.io import read_json, write_json  # noqa: E402
+from src.competition.harness_prompt import EXPECTED_CHAT_TEMPLATE_SHA16  # noqa: E402
 
 
 REQUIRED_STAGE1_FILES = (
@@ -85,6 +86,8 @@ def check_stage1_acceptance(
         raise SystemExit(
             "stage1 acceptance missing required file(s): " + ", ".join(sorted(missing))
         )
+    if file_paths["adapter_model.safetensors"].stat().st_size <= 0:
+        raise SystemExit("adapter_model.safetensors must be non-empty")
 
     metadata = _load_json_object(
         file_paths["training_metadata.json"], label="training_metadata.json"
@@ -99,6 +102,13 @@ def check_stage1_acceptance(
     if preflight.get("status") != "ok":
         raise SystemExit(
             f"preflight.status must be 'ok', got {preflight.get('status')!r}"
+        )
+    chat_template_sha16 = preflight.get("chat_template_sha16")
+    if chat_template_sha16 != EXPECTED_CHAT_TEMPLATE_SHA16:
+        raise SystemExit(
+            "chat_template_sha16 mismatch: "
+            f"got {chat_template_sha16!r}, expected {EXPECTED_CHAT_TEMPLATE_SHA16!r}. "
+            "Run scripts/probe_chat_template.py and ensure tokenizer_path matches."
         )
 
     dataset_stats = _coalesce(metadata.get("dataset_stats"), summary.get("dataset_stats"))
@@ -123,14 +133,27 @@ def check_stage1_acceptance(
             f"num_matched_target_modules must be > 0, got {num_matched_target_modules}"
         )
 
+    num_train_records = _coalesce(
+        metadata.get("num_train_records"),
+        summary.get("num_train_records"),
+    )
+    try:
+        num_train_records = int(num_train_records)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("num_train_records missing or not an integer") from exc
+    if num_train_records <= 0:
+        raise SystemExit(f"num_train_records must be > 0, got {num_train_records}")
+
     payload: dict[str, Any] = {
         "accepted": True,
         "adapter_dir": str(adapter_path),
         "required_files": {name: str(path) for name, path in file_paths.items()},
         "preflight_status": preflight["status"],
-        "chat_template_sha16": preflight.get("chat_template_sha16"),
+        "chat_template_sha16": chat_template_sha16,
+        "expected_chat_template_sha16": EXPECTED_CHAT_TEMPLATE_SHA16,
         "dataset_length_unit": dataset_stats["length_unit"],
         "num_matched_target_modules": num_matched_target_modules,
+        "num_train_records": num_train_records,
     }
 
     if log_path is not None:
