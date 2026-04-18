@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.common.io import read_json, write_json  # noqa: E402
+
+
+REQUIRED_STAGE1_FILES = (
+    "adapter_model.safetensors",
+    "adapter_config.json",
+    "training_metadata.json",
+    "last_run_summary.json",
+)
+PROGRESS_RE = re.compile(r"(?P<current>\d+)\s*/\s*(?P<total>\d+)")
+CHECKPOINT_RE = re.compile(r"checkpoint-(?P<step>\d+)")
+
+
+def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
+    payload = read_json(path)
+    if not isinstance(payload, dict):
+        raise SystemExit(f"{label} must be a JSON object: {path}")
+    return payload
+
+
+def _coalesce(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def parse_stage1_log(log_path: str | Path) -> dict[str, Any]:
+    source = Path(log_path)
+    if not source.is_file():
+        raise SystemExit(f"log file not found: {source}")
+
+    last_progress: dict[str, int] | None = None
+    last_checkpoint: str | None = None
+    last_eval_line: str | None = None
+    line_count = 0
+
+    for raw_line in source.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line_count += 1
+        for match in PROGRESS_RE.finditer(raw_line):
+            current = int(match.group("current"))
+            total = int(match.group("total"))
+            if total > 0 and current <= total:
+                last_progress = {"current": current, "total": total}
+        checkpoint_match = CHECKPOINT_RE.search(raw_line)
+        if checkpoint_match:
+            last_checkpoint = f"checkpoint-{checkpoint_match.group('step')}"
+        if "eval_" in raw_line or "eval runtime" in raw_line.lower():
+            last_eval_line = raw_line.strip()
+
+    return {
+        "path": str(source),
+        "num_lines": line_count,
+        "last_progress": last_progress,
+        "last_checkpoint": last_checkpoint,
+        "last_eval_line": last_eval_line,
+    }
+
+
+def check_stage1_acceptance(
+    *,
+    adapter_dir: str | Path,
+    log_path: str | Path | None = None,
+) -> dict[str, Any]:
+    adapter_path = Path(adapter_dir)
+    if not adapter_path.is_dir():
+        raise SystemExit(f"adapter_dir not found: {adapter_path}")
+
+    file_paths = {name: adapter_path / name for name in REQUIRED_STAGE1_FILES}
+    missing = [name for name, path in file_paths.items() if not path.is_file()]
+    if missing:
+        raise SystemExit(
+            "stage1 acceptance missing required file(s): " + ", ".join(sorted(missing))
+        )
+
+    metadata = _load_json_object(
+        file_paths["training_metadata.json"], label="training_metadata.json"
+    )
+    summary = _load_json_object(
+        file_paths["last_run_summary.json"], label="last_run_summary.json"
+    )
+
+    preflight = _coalesce(metadata.get("preflight"), summary.get("preflight"))
+    if not isinstance(preflight, dict):
+        raise SystemExit("missing preflight report in training_metadata/last_run_summary")
+    if preflight.get("status") != "ok":
+        raise SystemExit(
+            f"preflight.status must be 'ok', got {preflight.get('status')!r}"
+        )
+
+    dataset_stats = _coalesce(metadata.get("dataset_stats"), summary.get("dataset_stats"))
+    if not isinstance(dataset_stats, dict):
+        raise SystemExit("missing dataset_stats in training_metadata/last_run_summary")
+    if dataset_stats.get("length_unit") != "bpe_tokens":
+        raise SystemExit(
+            "dataset_stats.length_unit must be 'bpe_tokens', "
+            f"got {dataset_stats.get('length_unit')!r}"
+        )
+
+    num_matched_target_modules = _coalesce(
+        metadata.get("num_matched_target_modules"),
+        summary.get("num_matched_target_modules"),
+    )
+    try:
+        num_matched_target_modules = int(num_matched_target_modules)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("num_matched_target_modules missing or not an integer") from exc
+    if num_matched_target_modules <= 0:
+        raise SystemExit(
+            f"num_matched_target_modules must be > 0, got {num_matched_target_modules}"
+        )
+
+    payload: dict[str, Any] = {
+        "accepted": True,
+        "adapter_dir": str(adapter_path),
+        "required_files": {name: str(path) for name, path in file_paths.items()},
+        "preflight_status": preflight["status"],
+        "chat_template_sha16": preflight.get("chat_template_sha16"),
+        "dataset_length_unit": dataset_stats["length_unit"],
+        "num_matched_target_modules": num_matched_target_modules,
+    }
+
+    if log_path is not None:
+        log_summary = parse_stage1_log(log_path)
+        if log_summary["last_progress"] is None:
+            raise SystemExit(
+                "stage1 acceptance log check failed: no training progress line found"
+            )
+        payload["log"] = log_summary
+
+    return payload
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Validate a finished stage1 adapter.")
+    parser.add_argument("--adapter-dir", required=True)
+    parser.add_argument("--log-path")
+    parser.add_argument("--output")
+    args = parser.parse_args()
+
+    payload = check_stage1_acceptance(
+        adapter_dir=args.adapter_dir,
+        log_path=args.log_path,
+    )
+    if args.output:
+        write_json(args.output, payload)
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

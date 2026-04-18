@@ -39,6 +39,9 @@ Literal copy from ``metric/nvidia-nemotron-metric.ipynb`` cell 0, function
 THINKING_CLOSE: str = "</think>"
 """Token sequence that closes the Nemotron thinking segment."""
 
+EXPECTED_CHAT_TEMPLATE_SHA16: str = "ab7813c3abdd9cb6"
+"""Probe-derived SHA16 of the expected Nemotron chat template."""
+
 
 class _SupportsChatTemplate(Protocol):
     """Structural type for any tokenizer exposing ``apply_chat_template``.

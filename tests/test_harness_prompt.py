@@ -15,6 +15,7 @@ in artifacts/chat_template_probe.json drifts, this fake must be updated too.
 from __future__ import annotations
 
 from src.competition.harness_prompt import (
+    EXPECTED_CHAT_TEMPLATE_SHA16,
     HARNESS_GUARD,
     THINKING_CLOSE,
     build_chat_thinking_prompt,
@@ -79,6 +80,10 @@ def test_harness_guard_matches_metric_kernel_literal() -> None:
 
 def test_thinking_close_is_canonical_tag() -> None:
     assert THINKING_CLOSE == "</think>"
+
+
+def test_expected_chat_template_sha16_matches_probe_contract() -> None:
+    assert EXPECTED_CHAT_TEMPLATE_SHA16 == "ab7813c3abdd9cb6"
 
 
 def test_build_user_content_appends_guard_verbatim() -> None:
@@ -162,3 +167,15 @@ def test_fake_tokenizer_enable_thinking_false_matches_probe_output() -> None:
     assert on.endswith("<think>\n")
     assert off.endswith("<think></think>")
     assert on != off
+
+
+def test_probe_artifact_confirms_first_public_sample_budget() -> None:
+    import json
+    from pathlib import Path
+
+    probe_path = Path("artifacts/chat_template_probe.json")
+    assert probe_path.exists(), "probe artifact should be checked into the repo"
+
+    payload = json.loads(probe_path.read_text(encoding="utf-8"))
+    assert payload["chat_template_sha16"] == EXPECTED_CHAT_TEMPLATE_SHA16
+    assert payload["conclusions"]["first_public_sample_fits_budget"] is True
