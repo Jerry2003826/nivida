@@ -89,36 +89,12 @@ For reproducibility, prefer the canonical shell script:
 bash scripts/train_stage2_distill.sh
 ```
 
-If you need the train-side builder step alone, first export the leak-free
-official subset exactly as the canonical script does, then feed that subset
-plus synth into the builder:
-
-```bash
-python scripts/export_split_subset.py \
-  --input data/processed/official_train_tagged.jsonl \
-  --output data/processed/stage2_official_train_no_hard_valid.jsonl \
-  --split-file data/splits/official/splits.json \
-  --split-name rule_novelty_all \
-  --split-role train \
-  --exclude-split-file data/splits/official/splits.json \
-  --exclude-split-name hard_triad_rule_novelty \
-  --exclude-split-role valid
-
-python -m src.student.sft_dataset_builder \
-  --input data/processed/stage2_official_train_no_hard_valid.jsonl,data/synthetic/synth_hard_triads.jsonl \
-  --output data/processed/stage2_distill_train.jsonl \
-  --selection-profile stage2 \
-  --prompt-mode chat_thinking \
-  --tokenizer-path artifacts/_tokenizer_cache/metric_nemotron-3-nano-30b-a3b-bf16_transformers_default \
-  --completion-style token_trace \
-  --beam-width 10 \
-  --max-depth 3 \
-  --top-k 3 \
-  --balance-by-family \
-  --hard-triad-repeat-factor 2 \
-  --max-per-signature-bucket 64 \
-  --report-output data/processed/stage2_distill_report.json
-```
+Manual builder commands are intentionally omitted here. The canonical stage2
+script also materialises the leak-free official subset, applies hard-triad
+oversampling, enables the silver official pool, runs second-pass rescue, and
+finishes with proxy eval plus bestproxy selection. Use
+`bash scripts/train_stage2_distill.sh` unless you are deliberately debugging a
+single preprocessing step.
 
 Stage3 build from stage2 model failures plus all-family replay:
 

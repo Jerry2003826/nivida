@@ -51,6 +51,9 @@ def parse_stage1_log(log_path: str | Path) -> dict[str, Any]:
 
     for raw_line in source.read_text(encoding="utf-8", errors="ignore").splitlines():
         line_count += 1
+        lowered = raw_line.lower()
+        if "loading checkpoint shards" in lowered:
+            continue
         for match in PROGRESS_RE.finditer(raw_line):
             current = int(match.group("current"))
             total = int(match.group("total"))

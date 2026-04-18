@@ -116,6 +116,18 @@ def test_check_stage1_acceptance_requires_progress_when_log_given(tmp_path: Path
         check_stage1_acceptance(adapter_dir=adapter_dir, log_path=log_path)
 
 
+def test_check_stage1_acceptance_ignores_loader_progress_only_log(tmp_path: Path) -> None:
+    adapter_dir = _make_stage1_adapter_dir(tmp_path)
+    log_path = tmp_path / "stage1.log"
+    log_path.write_text(
+        "Loading checkpoint shards: 100%|##########| 13/13\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="no training progress line found"):
+        check_stage1_acceptance(adapter_dir=adapter_dir, log_path=log_path)
+
+
 def test_check_stage1_acceptance_rejects_non_positive_num_train_records(tmp_path: Path) -> None:
     adapter_dir = _make_stage1_adapter_dir(tmp_path)
     write_json(

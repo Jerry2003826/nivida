@@ -72,7 +72,7 @@ def test_readme_never_points_canonical_submission_to_stage3_repair_adapter() -> 
 def test_readme_stage2_example_prefers_canonical_script_and_exported_subset() -> None:
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "bash scripts/train_stage2_distill.sh" in text
-    assert "--input data/processed/stage2_official_train_no_hard_valid.jsonl,data/synthetic/synth_hard_triads.jsonl" in text
+    assert "Manual builder commands are intentionally omitted here." in text
     assert "--input data/processed/official_train_tagged.jsonl,data/synthetic/synth_hard_triads.jsonl" not in text
 
 
@@ -173,6 +173,18 @@ def test_subtype_rescue_defaults_do_not_write_canonical_stage2_inputs() -> None:
     assert 'copy_into_branch_path "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" "$STAGE2_VALID_OFFICIAL_SUBSET"' in text
     assert 'copy_into_branch_path "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" "$ALL_FAMILY_PROXY_VALID_SUBSET"' in text
     assert 'copy_into_branch_path "$CANONICAL_SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_PATH"' in text
+
+
+def test_stage2_subtype_runtime_config_uses_exported_paths() -> None:
+    text = (REPO_ROOT / "scripts" / "train_stage2_subtype_rescue.sh").read_text(
+        encoding="utf-8"
+    )
+    assert '"$STAGE2_ADAPTER_DIR"' in text
+    assert '"$STAGE2_TRAIN_DATASET"' in text
+    assert '"$STAGE2_VALID_DATASET"' in text
+    assert 'training["output_dir"] = adapter_dir' in text
+    assert 'training["dataset_path"] = train_dataset' in text
+    assert 'training["eval_path"] = valid_dataset' in text
 
 
 def test_stage3_subtype_manual_override_requires_second_confirmation() -> None:

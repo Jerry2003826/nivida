@@ -308,14 +308,23 @@ PY
 STAGE2_RUNTIME_CONFIG="$(mktemp)"
 trap 'rm -f "$STAGE2_RUNTIME_CONFIG"' EXIT
 
-python - "$STAGE2_CONFIG_TEMPLATE" "$STAGE1_ADAPTER_DIR" "$STAGE2_RUNTIME_CONFIG" <<'PY'
+python - "$STAGE2_CONFIG_TEMPLATE" \
+  "$STAGE1_ADAPTER_DIR" \
+  "$STAGE2_RUNTIME_CONFIG" \
+  "$STAGE2_ADAPTER_DIR" \
+  "$STAGE2_TRAIN_DATASET" \
+  "$STAGE2_VALID_DATASET" <<'PY'
 from pathlib import Path
 import sys
 import yaml
 
-template_path, init_adapter_dir, output_path = sys.argv[1:4]
+template_path, init_adapter_dir, output_path, adapter_dir, train_dataset, valid_dataset = sys.argv[1:7]
 payload = yaml.safe_load(Path(template_path).read_text(encoding="utf-8")) or {}
-payload.setdefault("training", {})["init_adapter_dir"] = init_adapter_dir
+training = payload.setdefault("training", {})
+training["init_adapter_dir"] = init_adapter_dir
+training["output_dir"] = adapter_dir
+training["dataset_path"] = train_dataset
+training["eval_path"] = valid_dataset
 Path(output_path).write_text(
     yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
     encoding="utf-8",
