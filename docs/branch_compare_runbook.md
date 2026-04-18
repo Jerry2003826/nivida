@@ -29,7 +29,7 @@ all-family proxy subset, and synth file came from the expected sources. Set
 experiment where canonical inputs are unavailable. `REFRESH_SUBTYPE_RESCUE_INPUTS=1`
 re-materializes the branch-local copies but still prefers copying canonical
 inputs when they exist; only `FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS=1` skips
-that recopy path and forces branch-local regeneration.
+both branch-local reuse and canonical recopy, forcing branch-local regeneration.
 
 ## Promotion Rule
 

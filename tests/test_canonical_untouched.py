@@ -181,10 +181,13 @@ def test_subtype_rescue_refresh_prefers_canonical_copy_unless_force_regenerate()
     text = (REPO_ROOT / "scripts" / "train_stage2_subtype_rescue.sh").read_text(
         encoding="utf-8"
     )
-    assert 'if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$SYNTH_HARD_TRIADS_PATH" && -f "$SYNTH_HARD_TRIADS_SUMMARY_PATH" ]]; then' in text
-    assert 'elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && ( -f "$SYNTH_HARD_TRIADS_PATH" || -f "$SYNTH_HARD_TRIADS_SUMMARY_PATH" ) ]]; then' in text
+    assert 'if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" && -f "$SYNTH_HARD_TRIADS_PATH" && -f "$SYNTH_HARD_TRIADS_SUMMARY_PATH" ]]; then' in text
+    assert 'elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" && ( -f "$SYNTH_HARD_TRIADS_PATH" || -f "$SYNTH_HARD_TRIADS_SUMMARY_PATH" ) ]]; then' in text
     assert "Partial branch-local synth artifacts found; set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to recopy canonical inputs." in text
     assert 'elif [[ -f "$CANONICAL_SYNTH_HARD_TRIADS_PATH" && -f "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then' in text
+    assert 'if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" && -f "$STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then' in text
+    assert 'if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" && -f "$STAGE2_VALID_OFFICIAL_SUBSET" ]]; then' in text
+    assert 'if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" && -f "$ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then' in text
     assert 'elif [[ -f "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then' in text
     assert 'elif [[ -f "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then' in text
     assert 'elif [[ -f "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then' in text

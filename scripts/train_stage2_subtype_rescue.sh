@@ -184,7 +184,7 @@ require_canonical_input_or_override "stage2 all-family proxy subset" "$CANONICAL
 require_canonical_input_or_override "hard-triad synth input" "$CANONICAL_SYNTH_HARD_TRIADS_PATH"
 require_canonical_input_or_override "hard-triad synth summary" "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH"
 
-if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$SYNTH_HARD_TRIADS_PATH" && -f "$SYNTH_HARD_TRIADS_SUMMARY_PATH" ]]; then
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" && -f "$SYNTH_HARD_TRIADS_PATH" && -f "$SYNTH_HARD_TRIADS_SUMMARY_PATH" ]]; then
   if [[ -f "$CANONICAL_SYNTH_HARD_TRIADS_PATH" && -f "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" ]]; then
     assert_branch_local_matches_canonical "$CANONICAL_SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_PATH" "branch-local synth input"
     assert_branch_local_matches_canonical "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" "$SYNTH_HARD_TRIADS_SUMMARY_PATH" "branch-local synth summary"
@@ -194,7 +194,7 @@ if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$SYNTH_HARD_TRIADS_PATH" &&
   SYNTH_HARD_TRIADS_SUMMARY_SOURCE_TYPE="reused_branch_local"
   SYNTH_HARD_TRIADS_SUMMARY_SOURCE_PATH="$SYNTH_HARD_TRIADS_SUMMARY_PATH"
   echo "[stage2-subtype] Reusing existing branch-local input: $SYNTH_HARD_TRIADS_PATH"
-elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && ( -f "$SYNTH_HARD_TRIADS_PATH" || -f "$SYNTH_HARD_TRIADS_SUMMARY_PATH" ) ]]; then
+elif [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" && ( -f "$SYNTH_HARD_TRIADS_PATH" || -f "$SYNTH_HARD_TRIADS_SUMMARY_PATH" ) ]]; then
   echo "Partial branch-local synth artifacts found; set REFRESH_SUBTYPE_RESCUE_INPUTS=1 to recopy canonical inputs." >&2
   exit 1
 elif [[ -f "$CANONICAL_SYNTH_HARD_TRIADS_PATH" && -f "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then
@@ -242,7 +242,7 @@ fi
 
 # The three split subsets below mirror canonical stage2 exactly, but they live
 # under branch-local names so subtype-rescue never overwrites canonical inputs.
-if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" && -f "$STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then
   if [[ -f "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" ]]; then
     assert_branch_local_matches_canonical "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" "$STAGE2_TRAIN_OFFICIAL_SUBSET" "branch-local train subset"
   fi
@@ -276,7 +276,7 @@ else
   STAGE2_TRAIN_OFFICIAL_SUBSET_SOURCE_PATH="data/processed/official_train_tagged.jsonl"
 fi
 
-if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$STAGE2_VALID_OFFICIAL_SUBSET" ]]; then
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" && -f "$STAGE2_VALID_OFFICIAL_SUBSET" ]]; then
   if [[ -f "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" ]]; then
     assert_branch_local_matches_canonical "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" "$STAGE2_VALID_OFFICIAL_SUBSET" "branch-local valid subset"
   fi
@@ -307,7 +307,7 @@ else
   STAGE2_VALID_OFFICIAL_SUBSET_SOURCE_PATH="data/processed/official_train_tagged.jsonl"
 fi
 
-if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && -f "$ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then
+if [[ "$REFRESH_SUBTYPE_RESCUE_INPUTS" != "1" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" && -f "$ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then
   if [[ -f "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" ]]; then
     assert_branch_local_matches_canonical "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" "$ALL_FAMILY_PROXY_VALID_SUBSET" "branch-local all-family proxy subset"
   fi
