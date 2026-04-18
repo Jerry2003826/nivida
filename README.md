@@ -135,10 +135,15 @@ Stage3 failure / success buckets are produced by `scripts/train_stage3_repair.sh
 - stage2 / stage3 local inference defaults to `max_new_tokens: 2048` to avoid truncating `chat_thinking` generations
 - `max_depth=3` is intentionally more expensive for stage2 selection; expect noticeably higher CPU time than `max_depth=2`
 - `stage2_distill_valid.jsonl` is the SFT **loss monitor** (teacher-solvable subset); it is not the hard-triad headline metric. Trust the proxy eval artifacts below instead.
-- after stage2 and stage3 training the canonical scripts write a competition-proxy artifact:
-  - `data/processed/stage2_proxy_valid_eval.json`
-  - `data/processed/stage3_proxy_valid_eval.json`
-  both are produced by running the trained adapter on the full hard-triad valid subset via `src.student.inference` and scoring with `eval_competition_replica --require-complete-coverage`. These are the numbers to compare when deciding "did stage2/3 actually improve".
+- after stage2 and stage3 training the canonical scripts write **two** competition-proxy artifact pairs:
+  - hard-triad proxy (headline for the hard families):
+    - `data/processed/stage2_proxy_valid_eval.json`
+    - `data/processed/stage3_proxy_valid_eval.json`
+  - all-family proxy (leak-free, `rule_novelty_all/valid` minus `hard_triad_rule_novelty/train`):
+    - `data/processed/stage2_proxy_all_valid_eval.json`
+    - `data/processed/stage3_proxy_all_valid_eval.json`
+  Both proxies run via `src.student.inference` + `eval_competition_replica --require-complete-coverage`. Stage3 repair can boost the hard-triad proxy while eroding the easy-triad anchors, so the all-family proxy is the primary signal for final selection and the hard-triad proxy is the tie-breaker.
+- final adapter selection is **automated** by `scripts/select_final_adapter.py`: it compares the two proxy pairs at half-sample tolerance (primary: all-family; tie-break: hard-triad; default on complete tie: stage2) and copies the winner into `artifacts/adapter_final_selected/`. It also writes `data/processed/final_adapter_selection.json` with the full decision trace. **Package submission.zip from `artifacts/adapter_final_selected/`, not from the per-stage adapter directories.**
 - stage3 can **skip itself** when stage2 produced zero hard-triad train failures. In that case `scripts/train_stage3_repair.sh` copies the stage2 adapter to `artifacts/adapter_stage3_repair/` and writes `stage3_skipped.json` next to the weights so downstream packaging / validation does not need to branch. See `data/processed/stage3_decision.json` for the gate outcome.
 
 ## Smoke and Validation
@@ -155,12 +160,29 @@ Legacy local smoke entry now forwards to the canonical stage1 smoke script:
 bash scripts/train_smoke_local.sh
 ```
 
-Validate a trained adapter before packaging:
+Canonical training order (run top-to-bottom on an H100 box):
 
 ```bash
+python scripts/probe_chat_template.py
+python scripts/inspect_target_modules.py --config configs/train_stage1_format.yaml
+
+bash scripts/train_stage1_format_align.sh
+bash scripts/train_stage2_distill.sh
+bash scripts/train_stage3_repair.sh
+
+python scripts/select_final_adapter.py \
+  --stage2-hard-eval data/processed/stage2_proxy_valid_eval.json \
+  --stage2-all-eval  data/processed/stage2_proxy_all_valid_eval.json \
+  --stage2-adapter-dir artifacts/adapter_stage2_selected_trace \
+  --stage3-hard-eval data/processed/stage3_proxy_valid_eval.json \
+  --stage3-all-eval  data/processed/stage3_proxy_all_valid_eval.json \
+  --stage3-adapter-dir artifacts/adapter_stage3_repair \
+  --output-adapter-dir artifacts/adapter_final_selected \
+  --output-json        data/processed/final_adapter_selection.json
+
 python scripts/validate_submission.py \
   --config configs/train_stage3_repair.yaml \
-  --adapter-dir artifacts/adapter_stage3_repair \
+  --adapter-dir artifacts/adapter_final_selected \
   --smoke-input data/processed/official_train_tagged.jsonl \
   --labels data/processed/official_train_tagged.jsonl \
   --splits data/splits/official/splits.json \

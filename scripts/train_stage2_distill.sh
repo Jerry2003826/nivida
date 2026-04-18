@@ -14,12 +14,18 @@ STAGE2_TRAIN_OFFICIAL_SUBSET="${STAGE2_TRAIN_OFFICIAL_SUBSET:-data/processed/sta
 STAGE2_VALID_OFFICIAL_SUBSET="${STAGE2_VALID_OFFICIAL_SUBSET:-data/processed/stage2_official_valid_hard_triad.jsonl}"
 
 # Proxy eval artifacts. The trainer-side stage2_distill_valid.jsonl is a
-# teacher-solvable subset (loss monitor only); the proxy below is computed
-# against the full hard-triad valid subset so it reflects the real
-# competition_correct_rate on hard_triad_rule_novelty/valid.
+# teacher-solvable subset (loss monitor only); the proxies below are computed
+# against:
+#   1. the full hard-triad valid subset (hard-triad headline)
+#   2. rule_novelty_all/valid minus hard_triad_rule_novelty/train
+#      (leak-free all-family proxy; the exclude is required because the two
+#      splits are built independently and their valid/train buckets overlap)
 STAGE2_ADAPTER_DIR="${STAGE2_ADAPTER_DIR:-artifacts/adapter_stage2_selected_trace}"
 STAGE2_PROXY_VALID_PREDICTIONS="${STAGE2_PROXY_VALID_PREDICTIONS:-data/processed/stage2_proxy_valid_predictions.jsonl}"
 STAGE2_PROXY_VALID_EVAL="${STAGE2_PROXY_VALID_EVAL:-data/processed/stage2_proxy_valid_eval.json}"
+ALL_FAMILY_PROXY_VALID_SUBSET="${ALL_FAMILY_PROXY_VALID_SUBSET:-data/processed/proxy_all_family_valid.jsonl}"
+STAGE2_PROXY_ALL_VALID_PREDICTIONS="${STAGE2_PROXY_ALL_VALID_PREDICTIONS:-data/processed/stage2_proxy_all_valid_predictions.jsonl}"
+STAGE2_PROXY_ALL_VALID_EVAL="${STAGE2_PROXY_ALL_VALID_EVAL:-data/processed/stage2_proxy_all_valid_eval.json}"
 
 if [[ ! -d "$STAGE1_ADAPTER_DIR" ]]; then
   echo "Missing stage1 adapter: $STAGE1_ADAPTER_DIR" >&2
@@ -50,6 +56,21 @@ python scripts/export_split_subset.py \
   --split-file data/splits/official/splits.json \
   --split-name hard_triad_rule_novelty \
   --split-role valid
+
+# Leak-free all-family proxy subset:
+#   rule_novelty_all/valid minus hard_triad_rule_novelty/train
+# Required because the two splits are constructed independently (different
+# seeds); without the exclude, ~36% of rule_novelty_all/valid overlaps with
+# hard_triad_rule_novelty/train, which stage3 later trains on.
+python scripts/export_split_subset.py \
+  --input data/processed/official_train_tagged.jsonl \
+  --output "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+  --split-file data/splits/official/splits.json \
+  --split-name rule_novelty_all \
+  --split-role valid \
+  --exclude-split-file data/splits/official/splits.json \
+  --exclude-split-name hard_triad_rule_novelty \
+  --exclude-split-role train
 
 python -m src.student.sft_dataset_builder \
   --input "$STAGE2_TRAIN_OFFICIAL_SUBSET,data/synthetic/synth_hard_triads.jsonl" \
@@ -161,6 +182,41 @@ import json, sys
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 print(json.dumps(
     {
+        "proxy_name": "stage2_hard_triad",
+        "competition_correct_rate": payload.get("competition_correct_rate"),
+        "num_examples": payload.get("num_examples"),
+        "coverage": payload.get("coverage", {}),
+    },
+    ensure_ascii=False,
+    indent=2,
+))
+PY
+
+# Stage2 all-family proxy eval: the primary metric for final adapter selection.
+# The hard-triad proxy above tells you how well stage2 does on the three
+# target families; this all-family proxy tells you whether easy-triad anchors
+# have been preserved. scripts/select_final_adapter.py reads both.
+python -m src.student.inference \
+  --config "$STAGE2_RUNTIME_CONFIG" \
+  --input "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+  --adapter-dir "$STAGE2_ADAPTER_DIR" \
+  --output "$STAGE2_PROXY_ALL_VALID_PREDICTIONS" \
+  --max-new-tokens 2048
+
+python -m src.experiments.eval_competition_replica \
+  --predictions "$STAGE2_PROXY_ALL_VALID_PREDICTIONS" \
+  --labels "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+  --output "$STAGE2_PROXY_ALL_VALID_EVAL" \
+  --require-complete-coverage
+
+python - "$STAGE2_PROXY_ALL_VALID_EVAL" <<'PY'
+from pathlib import Path
+import json, sys
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(json.dumps(
+    {
+        "proxy_name": "stage2_all_family",
         "competition_correct_rate": payload.get("competition_correct_rate"),
         "num_examples": payload.get("num_examples"),
         "coverage": payload.get("coverage", {}),

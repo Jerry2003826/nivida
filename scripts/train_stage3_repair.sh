@@ -32,6 +32,9 @@ STAGE3_VALID_REPORT="${STAGE3_VALID_REPORT:-data/processed/stage3_repair_valid_r
 STAGE3_DECISION="${STAGE3_DECISION:-data/processed/stage3_decision.json}"
 STAGE3_PROXY_VALID_PREDICTIONS="${STAGE3_PROXY_VALID_PREDICTIONS:-data/processed/stage3_proxy_valid_predictions.jsonl}"
 STAGE3_PROXY_VALID_EVAL="${STAGE3_PROXY_VALID_EVAL:-data/processed/stage3_proxy_valid_eval.json}"
+ALL_FAMILY_PROXY_VALID_SUBSET="${ALL_FAMILY_PROXY_VALID_SUBSET:-data/processed/proxy_all_family_valid.jsonl}"
+STAGE3_PROXY_ALL_VALID_PREDICTIONS="${STAGE3_PROXY_ALL_VALID_PREDICTIONS:-data/processed/stage3_proxy_all_valid_predictions.jsonl}"
+STAGE3_PROXY_ALL_VALID_EVAL="${STAGE3_PROXY_ALL_VALID_EVAL:-data/processed/stage3_proxy_all_valid_eval.json}"
 
 REPLAY_RATIO="${REPLAY_RATIO:-0.25}"
 
@@ -71,6 +74,20 @@ python scripts/export_split_subset.py \
   --split-file data/splits/official/splits.json \
   --split-name hard_triad_rule_novelty \
   --split-role valid
+
+# Leak-free all-family proxy subset:
+#   rule_novelty_all/valid minus hard_triad_rule_novelty/train
+# Same construction as in stage2; producing it again here keeps stage3
+# independently runnable.
+python scripts/export_split_subset.py \
+  --input "$FULL_TRAIN_INPUT" \
+  --output "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+  --split-file data/splits/official/splits.json \
+  --split-name rule_novelty_all \
+  --split-role valid \
+  --exclude-split-file data/splits/official/splits.json \
+  --exclude-split-name hard_triad_rule_novelty \
+  --exclude-split-role train
 
 # Run stage2 adapter on the FULL official train pool, not only the replay pool.
 # The two splits are not nested in split_builder, so a hard-triad train id can
@@ -251,6 +268,41 @@ import json, sys
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 print(json.dumps(
     {
+        "proxy_name": "stage3_hard_triad",
+        "competition_correct_rate": payload.get("competition_correct_rate"),
+        "num_examples": payload.get("num_examples"),
+        "coverage": payload.get("coverage", {}),
+    },
+    ensure_ascii=False,
+    indent=2,
+))
+PY
+
+# Stage3 all-family proxy eval: feeds into select_final_adapter as the
+# primary metric. A stage3 adapter with better hard-triad proxy but worse
+# all-family proxy is a sign that easy-triad retention was sacrificed; the
+# selector decides from this artifact whether stage3 actually beats stage2.
+python -m src.student.inference \
+  --config "$STAGE3_RUNTIME_CONFIG" \
+  --input "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+  --adapter-dir "$FINAL_STAGE3_ADAPTER_DIR" \
+  --output "$STAGE3_PROXY_ALL_VALID_PREDICTIONS" \
+  --max-new-tokens 2048
+
+python -m src.experiments.eval_competition_replica \
+  --predictions "$STAGE3_PROXY_ALL_VALID_PREDICTIONS" \
+  --labels "$ALL_FAMILY_PROXY_VALID_SUBSET" \
+  --output "$STAGE3_PROXY_ALL_VALID_EVAL" \
+  --require-complete-coverage
+
+python - "$STAGE3_PROXY_ALL_VALID_EVAL" <<'PY'
+from pathlib import Path
+import json, sys
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(json.dumps(
+    {
+        "proxy_name": "stage3_all_family",
         "competition_correct_rate": payload.get("competition_correct_rate"),
         "num_examples": payload.get("num_examples"),
         "coverage": payload.get("coverage", {}),

@@ -154,3 +154,33 @@ def test_export_split_subset_passes_exclude_through(tmp_path: Path) -> None:
         exclude_split_role="valid",
     )
     assert [row["id"] for row in rows] == ["a"]
+
+
+def test_all_family_proxy_construction_has_no_hard_triad_train_overlap(tmp_path: Path) -> None:
+    """The canonical all-family proxy subset is rule_novelty_all/valid minus
+    hard_triad_rule_novelty/train. The two splits are built independently in
+    split_builder, so this exclude must be applied to keep the proxy clean
+    against stage3 repair which trains on hard_triad_rule_novelty/train.
+    """
+    splits = _write_splits(tmp_path / "splits.json")
+    # rule_novelty_all.valid = {c}
+    # hard_triad_rule_novelty.train = {a}
+    # Expected proxy (valid role): {c}, and it must not overlap with {a}.
+    examples = [_example("a"), _example("b"), _example("c"), _example("d")]
+
+    filtered = filter_examples_by_split(
+        examples,
+        split_file=splits,
+        split_name="rule_novelty_all",
+        split_role="valid",
+        exclude_split_file=splits,
+        exclude_split_name="hard_triad_rule_novelty",
+        exclude_split_role="train",
+    )
+
+    proxy_ids = {example.id for example in filtered}
+    hard_train_ids = {"a"}
+    assert proxy_ids.isdisjoint(hard_train_ids), (
+        "all-family proxy must not overlap hard_triad_rule_novelty/train"
+    )
+    assert proxy_ids == {"c"}
