@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.common.io import read_json, write_json  # noqa: E402
+from scripts.decide_subtype_branch_promotion import decide_branch_promotion  # noqa: E402
 from src.student.proxy_selection import load_proxy_eval  # noqa: E402
 
 
@@ -46,6 +47,106 @@ def _maybe_load_optional(path: Path | None) -> dict[str, Any] | None:
     if path is None or not path.is_file():
         return None
     return _load_json_object(path)
+
+
+def _promotion_ready_eval(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **payload,
+        "coverage_summary": {
+            "num_missing": int(payload.get("coverage", {}).get("num_missing", 0)),
+            "num_unexpected": int(payload.get("coverage", {}).get("num_unexpected", 0)),
+            "num_duplicate": int(payload.get("coverage", {}).get("num_duplicate", 0)),
+            "completeness": 1.0,
+        },
+    }
+
+
+def _selected_stage(payload: dict[str, Any] | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    decision = payload.get("decision")
+    if isinstance(decision, dict) and isinstance(decision.get("selected_stage"), str):
+        return decision["selected_stage"]
+    if isinstance(payload.get("selected_stage"), str):
+        return str(payload["selected_stage"])
+    adapter_dir = payload.get("selected_adapter_dir") or payload.get("output_adapter_dir")
+    if isinstance(adapter_dir, str):
+        if "stage3" in adapter_dir:
+            return "stage3"
+        if "stage2" in adapter_dir:
+            return "stage2"
+    return None
+
+
+def _build_recommendations(
+    *,
+    stage2: dict[str, Any],
+    stage3: dict[str, Any] | None,
+    branch: dict[str, Any] | None,
+    final_selection: dict[str, Any] | None,
+    missing_groups: list[str],
+) -> tuple[list[str], dict[str, Any] | None]:
+    recommendations: list[str] = []
+
+    stage2_selection = stage2.get("selection")
+    if isinstance(stage2_selection, dict) and stage2_selection.get("selected_candidate") not in (
+        None,
+        "final",
+    ):
+        recommendations.append(
+            "stage2 bestproxy preferred an intermediate checkpoint; review whether the "
+            "stage2 schedule overtrains after the best proxy step."
+        )
+
+    if stage3 is not None:
+        stage3_selection = stage3.get("selection")
+        if isinstance(stage3_selection, dict) and stage3_selection.get("selected_candidate") not in (
+            None,
+            "final",
+        ):
+            recommendations.append(
+                "stage3 bestproxy preferred an intermediate checkpoint; compare the winning "
+                "checkpoint against the final adapter before tuning the stage3 schedule."
+            )
+
+    selected_stage = _selected_stage(final_selection)
+    if selected_stage == "stage2":
+        recommendations.append(
+            "final selector kept stage2 over stage3; package adapter_final_selected and "
+            "treat stage3 as non-winning on the current proxy pair."
+        )
+    elif selected_stage == "stage3":
+        recommendations.append(
+            "final selector advanced stage3; package adapter_final_selected after validation."
+        )
+
+    branch_promotion: dict[str, Any] | None = None
+    if branch is not None:
+        branch_promotion = decide_branch_promotion(
+            baseline_all=_promotion_ready_eval(stage2["all"]),
+            baseline_hard=_promotion_ready_eval(stage2["hard"]),
+            branch_all=_promotion_ready_eval(branch["all"]),
+            branch_hard=_promotion_ready_eval(branch["hard"]),
+        )
+        if branch_promotion["promote"]:
+            recommendations.append(
+                "subtype-rescue branch clears the stage3 promotion gate."
+            )
+        else:
+            recommendations.append(
+                "subtype-rescue branch stays stage2-only under the current proxy deltas."
+            )
+
+    if "stage3" in missing_groups:
+        recommendations.append(
+            "stage3 artifacts are still missing; rerun this analyzer after canonical stage3 bestproxy completes."
+        )
+    if "branch" in missing_groups:
+        recommendations.append(
+            "branch artifacts are still missing; rerun this analyzer after subtype-rescue stage2 bestproxy completes."
+        )
+
+    return recommendations, branch_promotion
 
 
 def analyze_proxy_results(
@@ -88,17 +189,17 @@ def analyze_proxy_results(
         if group is None
     ]
     status = "partial" if missing_groups else "complete"
-
-    return {
-        "status": status,
-        "missing_groups": missing_groups,
-        "stage2": {
+    final_selection = _maybe_load_optional(
+        None if final_selection_json is None else Path(final_selection_json)
+    )
+    recommendations, branch_promotion = _build_recommendations(
+        stage2={
             **stage2,
             "selection": _maybe_load_optional(
                 None if stage2_selection_json is None else Path(stage2_selection_json)
             ),
         },
-        "stage3": None
+        stage3=None
         if stage3 is None
         else {
             **stage3,
@@ -106,7 +207,7 @@ def analyze_proxy_results(
                 None if stage3_selection_json is None else Path(stage3_selection_json)
             ),
         },
-        "branch": None
+        branch=None
         if branch is None
         else {
             **branch,
@@ -114,9 +215,42 @@ def analyze_proxy_results(
                 None if branch_selection_json is None else Path(branch_selection_json)
             ),
         },
-        "final_selection": _maybe_load_optional(
-            None if final_selection_json is None else Path(final_selection_json)
+        final_selection=final_selection,
+        missing_groups=missing_groups,
+    )
+
+    stage2_payload = {
+        **stage2,
+        "selection": _maybe_load_optional(
+            None if stage2_selection_json is None else Path(stage2_selection_json)
         ),
+    }
+    stage3_payload = None
+    if stage3 is not None:
+        stage3_payload = {
+            **stage3,
+            "selection": _maybe_load_optional(
+                None if stage3_selection_json is None else Path(stage3_selection_json)
+            ),
+        }
+    branch_payload = None
+    if branch is not None:
+        branch_payload = {
+            **branch,
+            "selection": _maybe_load_optional(
+                None if branch_selection_json is None else Path(branch_selection_json)
+            ),
+        }
+
+    return {
+        "status": status,
+        "missing_groups": missing_groups,
+        "stage2": stage2_payload,
+        "stage3": stage3_payload,
+        "branch": branch_payload,
+        "branch_promotion_preview": branch_promotion,
+        "final_selection": final_selection,
+        "recommendations": recommendations,
     }
 
 

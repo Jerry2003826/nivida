@@ -59,6 +59,10 @@ def test_analyze_proxy_results_returns_complete_summary(tmp_path: Path) -> None:
     assert payload["missing_groups"] == []
     assert payload["stage2"]["selection"]["selected_candidate"] == "checkpoint-250"
     assert payload["final_selection"]["decision"]["selected_stage"] == "stage3"
+    assert payload["branch_promotion_preview"]["promote"] is False
+    assert any("stage3; package adapter_final_selected" in rec for rec in payload["recommendations"])
+    assert any("stage2 bestproxy preferred an intermediate checkpoint" in rec for rec in payload["recommendations"])
+    assert any("branch stays stage2-only" in rec for rec in payload["recommendations"])
 
 
 def test_analyze_proxy_results_strict_mode_fails_when_stage3_missing(tmp_path: Path) -> None:
@@ -94,6 +98,9 @@ def test_analyze_proxy_results_allow_partial_accepts_missing_stage3_and_branch(t
 
     assert payload["status"] == "partial"
     assert set(payload["missing_groups"]) == {"stage3", "branch"}
+    assert payload["branch_promotion_preview"] is None
+    assert any("stage3 artifacts are still missing" in rec for rec in payload["recommendations"])
+    assert any("branch artifacts are still missing" in rec for rec in payload["recommendations"])
 
 
 def test_analyze_proxy_results_still_hard_fails_on_coverage_problems_in_partial_mode(

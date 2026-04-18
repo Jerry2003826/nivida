@@ -100,8 +100,12 @@ def decide_branch_promotion(
         "branch_hard_rate": branch_hard["competition_correct_rate"],
         "all_delta": all_delta,
         "hard_delta": hard_delta,
+        "all_delta_examples": all_delta * n_all,
+        "hard_delta_examples": hard_delta * n_hard,
         "all_tol": all_tol,
         "hard_tol": hard_tol,
+        "allowed_all_drop_examples": 0.5,
+        "required_hard_delta_examples": 0.5,
         "n_all": n_all,
         "n_hard": n_hard,
         "coverage": {

@@ -59,6 +59,10 @@ def test_branch_promotion_accepts_exact_half_sample_boundary(tmp_path: Path) -> 
     assert payload["promote"] is True
     assert payload["all_tol"] == pytest.approx(0.005)
     assert payload["hard_tol"] == pytest.approx(0.01)
+    assert payload["allowed_all_drop_examples"] == pytest.approx(0.5)
+    assert payload["required_hard_delta_examples"] == pytest.approx(0.5)
+    assert payload["all_delta_examples"] == pytest.approx(-0.5)
+    assert payload["hard_delta_examples"] == pytest.approx(0.5)
 
 
 def test_branch_promotion_rejects_when_all_family_drops_too_far(tmp_path: Path) -> None:

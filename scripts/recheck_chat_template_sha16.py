@@ -13,7 +13,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.common.io import read_json, write_json  # noqa: E402
 from src.competition.harness_prompt import EXPECTED_CHAT_TEMPLATE_SHA16  # noqa: E402
-from scripts.probe_chat_template import _TOKENIZER_CACHE_DIR, _load_tokenizer  # noqa: E402
+from src.competition.tokenizer_probe_utils import (  # noqa: E402
+    TOKENIZER_CACHE_DIR,
+    load_probe_tokenizer,
+)
 
 
 def _load_probe_payload(path: str | Path) -> dict[str, Any]:
@@ -31,7 +34,7 @@ def _compute_template_sha16(tokenizer) -> str:
 def recheck_chat_template_sha16(
     *,
     probe_json: str | Path,
-    tokenizer_cache_dir: str | Path = _TOKENIZER_CACHE_DIR,
+    tokenizer_cache_dir: str | Path = TOKENIZER_CACHE_DIR,
 ) -> dict[str, Any]:
     probe_payload = _load_probe_payload(probe_json)
     model_handle = str(
@@ -59,7 +62,7 @@ def recheck_chat_template_sha16(
             actual_source_path = str(candidate)
 
     if tokenizer is None:
-        tokenizer, actual_source_path, _download_mode = _load_tokenizer(
+        tokenizer, actual_source_path, _download_mode = load_probe_tokenizer(
             model_handle,
             download_full_model=False,
             cache_dir=Path(tokenizer_cache_dir),
@@ -93,7 +96,7 @@ def main() -> None:
     parser.add_argument("--probe-json", default="artifacts/chat_template_probe.json")
     parser.add_argument(
         "--tokenizer-cache-dir",
-        default=str(_TOKENIZER_CACHE_DIR),
+        default=str(TOKENIZER_CACHE_DIR),
         help="Fallback cache root when the probe's tokenizer_path is missing.",
     )
     parser.add_argument("--output")

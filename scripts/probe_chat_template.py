@@ -51,6 +51,11 @@ import shutil
 import sys
 from pathlib import Path
 
+from src.competition.tokenizer_probe_utils import (
+    TOKENIZER_CACHE_DIR,
+    load_probe_tokenizer,
+)
+
 
 HARNESS_GUARD = (
     "\nPlease put your final answer inside `\\boxed{}`. "
@@ -324,7 +329,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--tokenizer-cache-dir",
-        default=str(_TOKENIZER_CACHE_DIR),
+        default=str(TOKENIZER_CACHE_DIR),
         type=Path,
         help="Local directory to populate with tokenizer files (tokenizer-only mode).",
     )
@@ -336,7 +341,7 @@ def main() -> None:
             "Provide --sample-csv pointing to a csv with 'id' and 'prompt' columns."
         )
 
-    tokenizer, tokenizer_path, download_mode = _load_tokenizer(
+    tokenizer, tokenizer_path, download_mode = load_probe_tokenizer(
         args.model,
         download_full_model=args.download_full_model,
         cache_dir=args.tokenizer_cache_dir,
