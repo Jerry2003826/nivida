@@ -246,6 +246,19 @@ def test_subtype_rescue_script_cleans_stale_branch_outputs_by_default() -> None:
     assert 'rm -rf "$STAGE2_BESTPROXY_WORKDIR"' in text
 
 
+def test_subtype_cleanup_guard_resolves_real_paths_not_substring_only() -> None:
+    text = (REPO_ROOT / "scripts" / "train_stage2_subtype_rescue.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "Path.cwd().resolve()" in text
+    assert "(root / raw_path).resolve()" in text
+    assert "path.relative_to(root)" in text
+    assert 'label in {"STAGE2_ADAPTER_DIR", "STAGE2_BESTPROXY_DIR"}' in text
+    assert 'parts[-1].startswith("adapter_stage2_subtype_rescue")' in text
+    assert 'expected_prefix = Path("artifacts/_proxy_checkpoint_scratch")' in text
+    assert 'scratch_rel.parts[0].startswith("stage2_subtype_rescue")' in text
+
+
 def test_subtype_rescue_prepare_data_only_appears_in_regeneration_helper() -> None:
     text = (REPO_ROOT / "scripts" / "train_stage2_subtype_rescue.sh").read_text(
         encoding="utf-8"

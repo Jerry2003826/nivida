@@ -218,10 +218,51 @@ PY
 assert_subtype_path() {
   local path="$1"
   local label="$2"
-  if [[ -z "$path" || "$path" != *"subtype_rescue"* ]]; then
-    echo "Refusing to clean $label because it does not look subtype-rescue-specific: $path" >&2
-    exit 1
-  fi
+  python - "$path" "$label" <<'PY'
+from pathlib import Path
+import sys
+
+raw_path, label = sys.argv[1:3]
+if not raw_path:
+    raise SystemExit(f"Refusing to clean {label}: empty path")
+
+root = Path.cwd().resolve()
+path = (root / raw_path).resolve()
+
+try:
+    rel = path.relative_to(root)
+except ValueError as exc:
+    raise SystemExit(
+        f"Refusing to clean {label}: path escapes repository root: {raw_path}"
+    ) from exc
+
+parts = rel.parts
+rel_str = str(rel)
+
+if label in {"STAGE2_ADAPTER_DIR", "STAGE2_BESTPROXY_DIR"}:
+    if len(parts) < 2 or parts[0] != "artifacts":
+        raise SystemExit(
+            f"Refusing to clean {label}: expected artifacts/<adapter_stage2_subtype_rescue*> path, got {rel_str}"
+        )
+    if not parts[-1].startswith("adapter_stage2_subtype_rescue"):
+        raise SystemExit(
+            f"Refusing to clean {label}: basename must start with adapter_stage2_subtype_rescue, got {parts[-1]}"
+        )
+elif label == "STAGE2_BESTPROXY_WORKDIR":
+    expected_prefix = Path("artifacts/_proxy_checkpoint_scratch")
+    try:
+        scratch_rel = rel.relative_to(expected_prefix)
+    except ValueError as exc:
+        raise SystemExit(
+            f"Refusing to clean {label}: expected path under {expected_prefix}, got {rel_str}"
+        ) from exc
+    if not scratch_rel.parts or not scratch_rel.parts[0].startswith("stage2_subtype_rescue"):
+        raise SystemExit(
+            f"Refusing to clean {label}: scratch basename must start with stage2_subtype_rescue, got {rel_str}"
+        )
+else:
+    raise SystemExit(f"Unknown cleanup label: {label}")
+PY
 }
 
 clean_stale_branch_outputs() {
