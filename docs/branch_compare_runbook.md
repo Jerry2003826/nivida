@@ -26,7 +26,10 @@ training. It also writes:
 Use that manifest to confirm the branch-local train subset, valid subset,
 all-family proxy subset, and synth file came from the expected sources. Set
 `ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS=1` only for a deliberate standalone
-experiment where canonical inputs are unavailable.
+experiment where canonical inputs are unavailable. `REFRESH_SUBTYPE_RESCUE_INPUTS=1`
+re-materializes the branch-local copies but still prefers copying canonical
+inputs when they exist; only `FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS=1` skips
+that recopy path and forces branch-local regeneration.
 
 ## Promotion Rule
 

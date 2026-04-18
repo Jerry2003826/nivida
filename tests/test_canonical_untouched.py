@@ -155,6 +155,7 @@ def test_subtype_rescue_script_declares_refresh_and_atomic_write_pattern() -> No
     )
     assert 'REFRESH_SUBTYPE_RESCUE_INPUTS="${REFRESH_SUBTYPE_RESCUE_INPUTS:-0}"' in text
     assert 'ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS="${ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS:-0}"' in text
+    assert 'FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS="${FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS:-0}"' in text
     assert "mktemp" in text
     assert "REFRESH_SUBTYPE_RESCUE_INPUTS" in text
 
@@ -176,6 +177,17 @@ def test_subtype_rescue_defaults_do_not_write_canonical_stage2_inputs() -> None:
     assert 'copy_into_branch_path "$CANONICAL_SYNTH_HARD_TRIADS_PATH" "$SYNTH_HARD_TRIADS_PATH"' in text
 
 
+def test_subtype_rescue_refresh_prefers_canonical_copy_unless_force_regenerate() -> None:
+    text = (REPO_ROOT / "scripts" / "train_stage2_subtype_rescue.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'elif [[ -f "$CANONICAL_SYNTH_HARD_TRIADS_PATH" && -f "$CANONICAL_SYNTH_HARD_TRIADS_SUMMARY_PATH" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then' in text
+    assert 'elif [[ -f "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then' in text
+    assert 'elif [[ -f "$CANONICAL_STAGE2_VALID_OFFICIAL_SUBSET" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then' in text
+    assert 'elif [[ -f "$CANONICAL_ALL_FAMILY_PROXY_VALID_SUBSET" && "$FORCE_SUBTYPE_RESCUE_REGENERATE_INPUTS" != "1" ]]; then' in text
+    assert "regenerated_branch_local_forced" in text
+
+
 def test_subtype_rescue_script_writes_input_manifest_and_skip_artifact() -> None:
     text = (REPO_ROOT / "scripts" / "train_stage2_subtype_rescue.sh").read_text(
         encoding="utf-8"
@@ -195,6 +207,15 @@ def test_subtype_rescue_script_requires_canonical_inputs_or_explicit_override() 
     assert 'require_canonical_input_or_override "stage2 train subset" "$CANONICAL_STAGE2_TRAIN_OFFICIAL_SUBSET"' in text
     assert 'require_canonical_input_or_override "hard-triad synth input" "$CANONICAL_SYNTH_HARD_TRIADS_PATH"' in text
     assert "ALLOW_SUBTYPE_RESCUE_REGENERATE_INPUTS=1" in text
+
+
+def test_subtype_rescue_prepare_data_only_appears_in_regeneration_helper() -> None:
+    text = (REPO_ROOT / "scripts" / "train_stage2_subtype_rescue.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "ensure_official_inputs_for_regeneration()" in text
+    assert text.count("ensure_official_inputs_for_regeneration") >= 4
+    assert 'if [[ ! -f "data/processed/official_train_tagged.jsonl" ]]; then\n  python scripts/prepare_data.py --config configs/data_official.yaml\nfi' not in text
 
 
 def test_subtype_rescue_script_checks_branch_local_hash_against_canonical() -> None:
