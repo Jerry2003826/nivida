@@ -65,6 +65,33 @@ def test_nemotron_mamba_projection_dims_are_derived_from_config_fields() -> None
     assert arch["mamba_out_proj_in_features"] == 4_096
 
 
+def test_nemotron_mamba_projection_dims_are_derived_for_synthetic_config() -> None:
+    synthetic = {
+        "model_type": "nemotron_h",
+        "hidden_size": 16,
+        "head_dim": 4,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "num_hidden_layers": 3,
+        "hybrid_override_pattern": "ME*",
+        "n_routed_experts": 1,
+        "n_shared_experts": 1,
+        "moe_intermediate_size": 8,
+        "moe_shared_expert_intermediate_size": 12,
+        "mamba_num_heads": 5,
+        "mamba_head_dim": 7,
+        "n_groups": 3,
+        "ssm_state_size": 11,
+    }
+
+    arch, error = budget_module._nemotron_arch_summary(synthetic)
+
+    assert error is None
+    assert arch is not None
+    assert arch["mamba_in_proj_out_features"] == 141
+    assert arch["mamba_out_proj_in_features"] == 35
+
+
 def test_propose_size_safe_target_modules_reaches_canonical_safe_regex() -> None:
     recommendation = propose_size_safe_target_modules(_nemotron_config())
 

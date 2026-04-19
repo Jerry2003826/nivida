@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 from safetensors import safe_open
+from safetensors.numpy import save_file
 
 import src.student.adapter_submission_budget as budget_module
 from scripts.probe_adapter_submission_size import (
@@ -127,7 +129,8 @@ def test_probe_tiny_mode_json_marks_not_calibration(tmp_path: Path) -> None:
 
     assert payload["tiny_mode_is_not_calibration"] is True
     assert "formula_smoke_ratio_after_entropy_pad" in payload
-    assert "real_adapter_compression_ratio" not in payload
+    assert "real_trained_adapter_compression_ratio" not in payload
+    assert "fresh_peft_structure_compression_ratio" not in payload
 
 
 def test_probe_tiny_mode_respects_shared_expert_size(tmp_path: Path) -> None:
@@ -178,6 +181,23 @@ def test_probe_tiny_mode_uses_realistic_nemotron_peft_key_paths(tmp_path: Path) 
     assert any(".mixer.experts.0.up_proj.lora_A.weight" in key for key in keys)
     assert any(".mixer.shared_experts.up_proj.lora_A.weight" in key for key in keys)
     assert any(".mixer.q_proj.lora_A.weight" in key for key in keys)
+    for key in keys:
+        assert not key.startswith("base_model.model.layers."), (
+            f"found LLaMA-style key missing `backbone.` segment: {key}"
+        )
+        assert ".self_attn." not in key, (
+            f"found self_attn path (should be mixer.q_proj directly): {key}"
+        )
+        assert ".mlp.up_proj" not in key
+        assert ".mlp.down_proj" not in key
+        if ".experts." in key:
+            assert ".mixer.experts." in key, (
+                f"found experts path without mixer prefix: {key}"
+            )
+        if ".shared_experts" in key:
+            assert ".mixer.shared_experts" in key, (
+                f"found shared_experts path without mixer prefix: {key}"
+            )
 
 
 def test_probe_refuses_to_run_with_unsafe_target_modules(tmp_path: Path) -> None:
@@ -194,3 +214,92 @@ def test_probe_refuses_to_run_with_unsafe_target_modules(tmp_path: Path) -> None
             output_path=output_path,
             tiny_mode=True,
         )
+
+
+def test_probe_rejects_tiny_mode_with_adapter_dir(tmp_path: Path) -> None:
+    config_path = _write_probe_config(tmp_path / "probe_config.yaml")
+    output_path = tmp_path / "probe.json"
+    fake_adapter = tmp_path / "some_adapter"
+    fake_adapter.mkdir()
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        probe_adapter_submission_size(
+            config=_probe_config_dict(),
+            config_path=config_path,
+            output_path=output_path,
+            tiny_mode=True,
+            existing_adapter_dir=fake_adapter,
+        )
+
+
+def test_probe_rejects_missing_adapter_dir(tmp_path: Path) -> None:
+    config_path = _write_probe_config(tmp_path / "probe_config.yaml")
+    output_path = tmp_path / "probe.json"
+
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        probe_adapter_submission_size(
+            config=_probe_config_dict(),
+            config_path=config_path,
+            output_path=output_path,
+            existing_adapter_dir=tmp_path / "not_a_dir",
+        )
+
+
+def test_probe_trained_adapter_mode_reads_existing_artifact(tmp_path: Path) -> None:
+    config_path = _write_probe_config(tmp_path / "probe_config.yaml")
+    output_path_tiny = tmp_path / "probe_tiny.json"
+
+    probe_adapter_submission_size(
+        config=_probe_config_dict(),
+        config_path=config_path,
+        output_path=output_path_tiny,
+        tiny_mode=True,
+    )
+    adapter_dir = output_path_tiny.with_name(f"{output_path_tiny.stem}_artifact")
+    assert adapter_dir.is_dir()
+    assert (adapter_dir / "adapter_config.json").is_file()
+
+    adapter_model_path = adapter_dir / "adapter_model.safetensors"
+    with safe_open(adapter_model_path, framework="np") as handle:
+        tensors = {key: handle.get_tensor(key) for key in handle.keys()}
+
+    rng = np.random.default_rng(0)
+    for key, tensor in tensors.items():
+        if key.endswith(".lora_B.weight"):
+            tensors[key] = rng.normal(size=tensor.shape).astype(np.float32)
+    save_file(tensors, str(adapter_model_path))
+
+    output_path_trained = tmp_path / "probe_trained.json"
+    payload = probe_adapter_submission_size(
+        config=_probe_config_dict(),
+        config_path=config_path,
+        output_path=output_path_trained,
+        existing_adapter_dir=adapter_dir,
+    )
+
+    assert payload["probe_mode"] == "trained_adapter"
+    assert payload["peft_weights_are_fresh"] is False
+    assert "real_trained_adapter_compression_ratio" in payload
+    assert "fresh_peft_structure_compression_ratio" not in payload
+    assert payload["lora_b_zero_fraction"] is not None
+    assert payload["lora_b_zero_fraction"] < 0.01
+    assert payload["lora_b_likely_untrained"] is False
+
+
+def test_probe_tiny_mode_reports_lora_b_all_zeros(tmp_path: Path) -> None:
+    config_path = _write_probe_config(tmp_path / "probe_config.yaml")
+    output_path = tmp_path / "probe.json"
+
+    payload = probe_adapter_submission_size(
+        config=_probe_config_dict(),
+        config_path=config_path,
+        output_path=output_path,
+        tiny_mode=True,
+    )
+
+    assert payload["probe_mode"] == "tiny"
+    assert payload["lora_b_zero_fraction"] == 1.0
+    assert payload["lora_b_likely_untrained"] is True
+    assert payload["tiny_mode_is_not_calibration"] is True
+    assert "real_trained_adapter_compression_ratio" not in payload
+    assert "fresh_peft_structure_compression_ratio" not in payload

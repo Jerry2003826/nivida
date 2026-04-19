@@ -161,6 +161,17 @@ def _write_adapter_config(
     )
 
 
+def _read_adapter_config(adapter_dir: Path) -> dict[str, Any]:
+    config_path = adapter_dir / "adapter_config.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"adapter_config.json not found under {adapter_dir}; "
+            "--adapter-dir must point at a PEFT adapter artifact."
+        )
+    with config_path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 def _entropy_bytes(size: int) -> bytes:
     rng = np.random.default_rng(0)
     return rng.integers(0, 256, size=size, dtype=np.uint8).tobytes()
@@ -275,6 +286,43 @@ def _measure_saved_adapter(adapter_model_path: Path) -> dict[str, Any]:
     }
 
 
+def _measure_lora_b_zero_fraction(adapter_model_path: Path) -> dict[str, Any]:
+    """Fraction of lora_B tensor elements that are exactly 0.
+
+    Freshly initialised PEFT adapters keep lora_B at all zeros so the
+    LoRA branch starts as an identity injection. Artifacts whose zero
+    fraction stays near 1.0 therefore compress unrealistically well and
+    must not be treated as trained-adapter calibration samples.
+    """
+    total_elements = 0
+    zero_elements = 0
+    lora_b_keys: list[str] = []
+    with safe_open(adapter_model_path, framework="np") as handle:
+        for key in handle.keys():
+            if not key.endswith(".lora_B.weight"):
+                continue
+            lora_b_keys.append(key)
+            tensor = handle.get_tensor(key)
+            total_elements += int(tensor.size)
+            zero_elements += int(np.count_nonzero(tensor == 0))
+    if total_elements == 0:
+        return {
+            "lora_b_tensor_count": 0,
+            "lora_b_total_elements": 0,
+            "lora_b_zero_element_count": 0,
+            "lora_b_zero_fraction": None,
+            "lora_b_likely_untrained": None,
+        }
+    zero_fraction = zero_elements / total_elements
+    return {
+        "lora_b_tensor_count": len(lora_b_keys),
+        "lora_b_total_elements": total_elements,
+        "lora_b_zero_element_count": zero_elements,
+        "lora_b_zero_fraction": zero_fraction,
+        "lora_b_likely_untrained": bool(zero_fraction > 0.5),
+    }
+
+
 def _generate_tiny_adapter(
     *,
     adapter_dir: Path,
@@ -352,13 +400,22 @@ def _generate_tiny_adapter(
     }
 
 
-def _generate_real_adapter(
+def _generate_fresh_peft_structure_adapter(
     *,
     config: dict[str, Any],
     adapter_dir: Path,
     target_modules: str | list[str],
     rank: int,
 ) -> Path:
+    """Materialise a fresh PEFT LoRA structure around the real base model.
+
+    This runs one forward + backward pass to allocate parameter shapes, but
+    does NOT call optimizer.step(). The resulting lora_B tensors therefore
+    remain at PEFT's standard zero initialisation. The artifact is suitable
+    for verifying key paths and measuring PEFT serialisation overhead, but it
+    is not a trained-adapter compression calibration sample; use
+    --adapter-dir against a trained artifact for that.
+    """
     try:
         import torch
         from peft import LoraConfig, TaskType, get_peft_model
@@ -404,22 +461,50 @@ def probe_adapter_submission_size(
     config_path: str | Path,
     output_path: str | Path,
     tiny_mode: bool = False,
+    existing_adapter_dir: str | Path | None = None,
 ) -> dict[str, Any]:
+    if tiny_mode and existing_adapter_dir is not None:
+        raise ValueError(
+            "tiny_mode and existing_adapter_dir are mutually exclusive; "
+            "pick one calibration mode."
+        )
+
     ensure_submission_budget_safe(config)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stem = output_path.stem
-    adapter_dir = output_path.with_name(f"{stem}_artifact")
     zip_path = output_path.with_name(f"{stem}.zip")
-    if adapter_dir.exists():
-        shutil.rmtree(adapter_dir)
-    adapter_dir.mkdir(parents=True, exist_ok=True)
+    if existing_adapter_dir is not None:
+        adapter_dir = Path(existing_adapter_dir)
+        if not adapter_dir.is_dir():
+            raise FileNotFoundError(f"existing_adapter_dir does not exist: {adapter_dir}")
+        adapter_config = _read_adapter_config(adapter_dir)
+        rank = int(adapter_config.get("r", 0)) or int(
+            dict(config.get("lora", {})).get("rank", 16)
+        )
+        target_modules = adapter_config.get("target_modules")
+        if target_modules is None:
+            target_modules = _normalise_target_modules(config)
+        artifact_config = dict(config)
+        artifact_config["lora"] = dict(artifact_config.get("lora", {}))
+        artifact_config["lora"]["rank"] = rank
+        artifact_config["lora"]["target_modules"] = target_modules
+        ensure_submission_budget_safe(
+            artifact_config,
+            target_modules=target_modules,
+            rank=rank,
+        )
+    else:
+        adapter_dir = output_path.with_name(f"{stem}_artifact")
+        if adapter_dir.exists():
+            shutil.rmtree(adapter_dir)
+        adapter_dir.mkdir(parents=True, exist_ok=True)
+        target_modules = _normalise_target_modules(config)
+        rank = int(dict(config.get("lora", {})).get("rank", 16))
+
     if zip_path.exists():
         zip_path.unlink()
-
-    target_modules = _normalise_target_modules(config)
-    rank = int(dict(config.get("lora", {})).get("rank", 16))
 
     if tiny_mode:
         generated = _generate_tiny_adapter(
@@ -434,8 +519,21 @@ def probe_adapter_submission_size(
             target_zip_bytes=formula["projected_submission_zip_bytes"],
         )
         adapter_model_path = generated["adapter_model_path"]
+    elif existing_adapter_dir is not None:
+        adapter_model_path = adapter_dir / "adapter_model.safetensors"
+        if not adapter_model_path.is_file():
+            raise FileNotFoundError(
+                f"adapter_model.safetensors not found under {adapter_dir}"
+            )
+        formula = budget_module.estimate_submission_budget(
+            config,
+            target_modules=target_modules,
+            rank=rank,
+        )
+        final_zip_size = _build_zip(adapter_dir, zip_path)
+        entropy_pad_bytes = 0
     else:
-        adapter_model_path = _generate_real_adapter(
+        adapter_model_path = _generate_fresh_peft_structure_adapter(
             config=config,
             adapter_dir=adapter_dir,
             target_modules=target_modules,
@@ -450,6 +548,7 @@ def probe_adapter_submission_size(
         entropy_pad_bytes = 0
 
     measured = _measure_saved_adapter(adapter_model_path)
+    lora_b_stats = _measure_lora_b_zero_fraction(adapter_model_path)
     formula_predicted_zip_bytes = int(formula["projected_submission_zip_bytes"])
     formula_error_pct = abs(formula_predicted_zip_bytes - final_zip_size) / max(1, final_zip_size) * 100.0
     adapter_dir_size_bytes = sum(
@@ -461,6 +560,13 @@ def probe_adapter_submission_size(
     payload: dict[str, Any] = {
         "config_path": str(config_path),
         "tiny_mode": bool(tiny_mode),
+        "probe_mode": (
+            "tiny"
+            if tiny_mode
+            else "trained_adapter"
+            if existing_adapter_dir is not None
+            else "fresh_peft_structure"
+        ),
         "artifact_dir": str(adapter_dir),
         "adapter_model_path": str(adapter_model_path),
         "zip_path": str(zip_path),
@@ -485,6 +591,7 @@ def probe_adapter_submission_size(
         "entropy_pad_bytes": int(entropy_pad_bytes),
         "adapter_weight_bytes": ADAPTER_WEIGHT_BYTES,
         "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        **lora_b_stats,
     }
     if tiny_mode:
         payload["expected_analytical_zip_bytes"] = formula_predicted_zip_bytes
@@ -492,10 +599,17 @@ def probe_adapter_submission_size(
             final_zip_size / max(1, int(formula["projected_adapter_bytes"]))
         )
         payload["tiny_mode_is_not_calibration"] = True
-    else:
-        payload["real_adapter_compression_ratio"] = (
+    elif existing_adapter_dir is not None:
+        payload["real_trained_adapter_compression_ratio"] = (
             final_zip_size / max(1, int(formula["projected_adapter_bytes"]))
         )
+        payload["peft_weights_are_fresh"] = False
+    else:
+        payload["fresh_peft_structure_compression_ratio"] = (
+            final_zip_size / max(1, int(formula["projected_adapter_bytes"]))
+        )
+        payload["peft_weights_are_fresh"] = True
+        payload["fresh_peft_structure_is_not_calibration"] = True
 
     write_json(output_path, payload)
     return payload
@@ -507,7 +621,21 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--config", default="configs/train_stage2_selected_trace.yaml")
     parser.add_argument("--output", default="artifacts/adapter_submission_probe.json")
-    parser.add_argument("--tiny-mode", action="store_true")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--tiny-mode",
+        action="store_true",
+        help="Use the self-contained tiny Nemotron-like config (formula smoke only).",
+    )
+    mode_group.add_argument(
+        "--adapter-dir",
+        default=None,
+        help=(
+            "Path to an already-trained PEFT adapter directory "
+            "(must contain adapter_model.safetensors + adapter_config.json). "
+            "Required for real submission-size calibration."
+        ),
+    )
     args = parser.parse_args(argv)
 
     config = read_yaml(args.config)
@@ -516,6 +644,7 @@ def main(argv: list[str] | None = None) -> None:
         config_path=args.config,
         output_path=args.output,
         tiny_mode=bool(args.tiny_mode),
+        existing_adapter_dir=args.adapter_dir,
     )
 
 

@@ -1,6 +1,6 @@
 PYTHON ?= python
 
-.PHONY: test prepare baseline family-report dry-train probe-submission-size
+.PHONY: test prepare baseline family-report dry-train probe-submission-size probe-submission-size-trained
 
 test:
 	$(PYTHON) -m pytest -q
@@ -22,3 +22,12 @@ probe-submission-size:
 	  --config configs/train_stage2_selected_trace.yaml \
 	  --output artifacts/adapter_submission_probe.json \
 	  --tiny-mode
+
+probe-submission-size-trained:
+	@if [ -z "$(ADAPTER_DIR)" ]; then \
+		echo "ERROR: ADAPTER_DIR=path/to/adapter required"; exit 2; \
+	fi
+	$(PYTHON) scripts/probe_adapter_submission_size.py \
+	  --config configs/train_stage2_selected_trace.yaml \
+	  --output artifacts/adapter_submission_probe.json \
+	  --adapter-dir $(ADAPTER_DIR)

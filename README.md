@@ -188,8 +188,40 @@ The physical artifact model matters: peft saves LoRA adapter weights as
 new float32 trainable tensors (`lora_A` / `lora_B`), not at the base
 model's bf16 dtype. The estimator therefore uses
 `ADAPTER_WEIGHT_BYTES = 4` plus a conservative `ZIP_DEFLATED`
-compression ratio of `0.25`, calibrated against a real no-tiny PEFT
-probe artifact. Tiny-mode remains only a formula smoke test.
+compression ratio of `0.25`.
+
+The probe exposes three mutually-exclusive modes so the provenance of
+any observed compression ratio is unambiguous:
+
+1. `--tiny-mode` - self-contained formula smoke test against
+   `TINY_NEMOTRON_LIKE_PAYLOAD`. The `lora_B` tensors are zero-filled
+   numpy arrays. The probe writes `tiny_mode_is_not_calibration: True`
+   and emits neither compression-ratio key. This is the cheapest mode
+   and runs in CI.
+2. Fresh PEFT structure (default, no flag) - materialises a real
+   Nemotron base model, wraps it with `peft.get_peft_model`, runs one
+   forward + backward pass to allocate shapes, and saves the artifact.
+   `optimizer.step()` is **not** called, so `lora_B` remains at PEFT's
+   standard zero init. The output key is
+   `fresh_peft_structure_compression_ratio` plus
+   `peft_weights_are_fresh: True` and
+   `fresh_peft_structure_is_not_calibration: True`. This mode only
+   validates key paths, dtypes, and PEFT serialisation overhead - its
+   zip ratio is a lower bound, not a calibration.
+3. `--adapter-dir artifacts/adapter_final_selected` - the only real
+   calibration mode. The probe reads an already-trained adapter
+   directory (`adapter_model.safetensors` + `adapter_config.json`),
+   re-derives rank and target modules from the artifact's own config,
+   re-runs `ensure_submission_budget_safe` against those, and zips the
+   artifact as-is. The output key is
+   `real_trained_adapter_compression_ratio`. Every probe run also emits
+   `lora_b_zero_fraction` and `lora_b_likely_untrained` so the
+   provenance check is machine-readable.
+
+The headline `NEMOTRON_ZIP_COMPRESSION_RATIO = 0.25` must be reconciled
+against a `--adapter-dir` run on the actual trained adapter before the
+final submission is packaged. Fresh-structure and tiny modes are
+intentionally insufficient for this reconciliation.
 
 Three guards enforce the budget end to end:
 
@@ -202,16 +234,17 @@ Three guards enforce the budget end to end:
    final `submission.zip` size from disk and hard-fails if the physical
    archive exceeds 1GB.
 
-To recalibrate the formula against a real artifact shape, run:
+To run each probe mode:
 
 ```bash
+# Formula smoke (no GPU, no download):
 make probe-submission-size
+# Calibration against the trained adapter (must be run post-training):
+make probe-submission-size-trained ADAPTER_DIR=artifacts/adapter_final_selected
 ```
 
-This runs the self-contained tiny probe and writes
-`artifacts/adapter_submission_probe.json`. Tiny-mode is only a formula
-smoke test; it is not a real compression calibration. Rerun the probe
-without `--tiny-mode` whenever any of the following changes:
+Both commands write `artifacts/adapter_submission_probe.json`. Rerun
+the `--adapter-dir` probe whenever any of the following changes:
 
 - PEFT / Transformers / Safetensors serialization behavior
 - Torch or dtype policy that could change saved LoRA tensor dtypes
