@@ -20,11 +20,15 @@ from src.student.package_submission import (
 from src.student.preflight import requires_mamba_ssm, run_training_preflight
 
 
-def validate_lora_config(config: dict[str, Any]) -> None:
+def validate_lora_config(
+    config: dict[str, Any],
+    *,
+    allow_unknown_model: bool = False,
+) -> None:
     rank = int(config.get("lora", {}).get("rank", 16))
     if rank > 32:
         raise ValueError(f"LoRA rank must be <= 32, got {rank}")
-    ensure_submission_budget_safe(config)
+    ensure_submission_budget_safe(config, allow_unknown_model=allow_unknown_model)
 
 
 def _normalise_dtype(dtype_name: str) -> str:

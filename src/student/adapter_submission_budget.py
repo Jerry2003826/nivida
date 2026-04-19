@@ -8,9 +8,28 @@ from typing import Any
 
 
 KAGGLE_SINGLE_FILE_LIMIT_BYTES = 1_000_000_000
-NEMOTRON_PROJECTED_ZIP_RATIO = 0.25
-NEMOTRON_PROJECTED_ZIP_OVERHEAD_BYTES = 5_000_000
-FLOAT32_BYTES = 4
+
+# peft saves LoRA adapter weights (lora_A, lora_B) as float32 by default:
+# they are new trainable parameters and do not inherit the base model's
+# bf16/fp16 dtype. Verified against adapter_model.safetensors on commit
+# c40b027, where keys such as
+# base_model.model.backbone.layers.0.mixer.in_proj.lora_A.weight carry
+# dtype=float32. Re-calibrate only after rerunning the probe script and its
+# float32 dtype guard.
+ADAPTER_WEIGHT_BYTES = 4
+
+# Empirical zip compression ratio for float32 LoRA weight data packed with
+# ZIP_DEFLATED. Round-1 probe: formula estimate 3_509_624_832 bytes vs
+# measured zip 784_310_174 bytes => implied ratio ~0.2234. We keep 0.25 as a
+# conservative upper bound so the budget guard trips before a real submission
+# can exceed 1 GB.
+NEMOTRON_ZIP_COMPRESSION_RATIO = 0.25
+NEMOTRON_ZIP_OVERHEAD_BYTES = 5_000_000
+
+# Back-compat alias for any external tooling that still imports the old name;
+# prefer NEMOTRON_ZIP_COMPRESSION_RATIO in new code.
+NEMOTRON_PROJECTED_ZIP_RATIO = NEMOTRON_ZIP_COMPRESSION_RATIO
+NEMOTRON_PROJECTED_ZIP_OVERHEAD_BYTES = NEMOTRON_ZIP_OVERHEAD_BYTES
 
 KNOWN_TARGET_SUFFIXES: tuple[str, ...] = (
     "in_proj",
@@ -154,15 +173,52 @@ def _target_suffix_regex(suffixes: list[str]) -> str:
     return r".*\.(" + "|".join(ordered) + r")$"
 
 
-def _nemotron_arch_summary(config_payload: dict[str, Any]) -> dict[str, Any] | None:
+def _parse_nemotron_hybrid_pattern(
+    hybrid_pattern: str,
+    *,
+    num_hidden_layers: int,
+) -> tuple[dict[str, int] | None, str | None]:
+    if not hybrid_pattern:
+        return None, "invalid hybrid pattern: missing hybrid_override_pattern"
+    invalid_chars = sorted({char for char in hybrid_pattern if char not in {"M", "E", "*", "-"}})
+    if invalid_chars:
+        return (
+            None,
+            "invalid hybrid pattern: unsupported characters "
+            + ", ".join(repr(char) for char in invalid_chars),
+        )
+
+    mamba_layers = hybrid_pattern.count("M")
+    moe_layers = hybrid_pattern.count("E")
+    attention_layers = hybrid_pattern.count("*")
+    accounted = mamba_layers + moe_layers + attention_layers
+    if accounted != num_hidden_layers:
+        return (
+            None,
+            "invalid hybrid pattern: accounted "
+            f"{accounted} layers but num_hidden_layers={num_hidden_layers}",
+        )
+
+    return {
+        "mamba_layers": mamba_layers,
+        "moe_layers": moe_layers,
+        "attention_layers": attention_layers,
+    }, None
+
+
+def _nemotron_arch_summary(
+    config_payload: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
     if str(config_payload.get("model_type", "")).lower() != "nemotron_h":
-        return None
+        return None, None
     num_hidden_layers = int(config_payload["num_hidden_layers"])
     hybrid_pattern = str(config_payload.get("hybrid_override_pattern", ""))
-    mamba_layers = hybrid_pattern.count("M") if hybrid_pattern else 0
-    if mamba_layers <= 0 or mamba_layers > num_hidden_layers:
-        return None
-    attention_layers = num_hidden_layers - mamba_layers
+    layer_counts, layer_error = _parse_nemotron_hybrid_pattern(
+        hybrid_pattern,
+        num_hidden_layers=num_hidden_layers,
+    )
+    if layer_counts is None:
+        return None, layer_error
     experts_per_layer = int(config_payload["n_routed_experts"]) + int(config_payload["n_shared_experts"])
     hidden_size = int(config_payload["hidden_size"])
     head_dim = int(config_payload["head_dim"])
@@ -171,8 +227,9 @@ def _nemotron_arch_summary(config_payload: dict[str, Any]) -> dict[str, Any] | N
     moe_intermediate_size = int(config_payload["moe_intermediate_size"])
     return {
         "model_family": "nemotron_h",
-        "mamba_layers": mamba_layers,
-        "attention_layers": attention_layers,
+        "mamba_layers": layer_counts["mamba_layers"],
+        "moe_layers": layer_counts["moe_layers"],
+        "attention_layers": layer_counts["attention_layers"],
         "experts_per_layer": experts_per_layer,
         "hidden_size": hidden_size,
         "moe_intermediate_size": moe_intermediate_size,
@@ -180,11 +237,11 @@ def _nemotron_arch_summary(config_payload: dict[str, Any]) -> dict[str, Any] | N
         "kv_out_features": kv_out,
         "mamba_in_proj_out_features": int(config_payload["mamba_in_proj_out_features"]),
         "mamba_out_proj_in_features": int(config_payload["mamba_out_proj_in_features"]),
-    }
+    }, None
 
 
 def _module_payload_bytes(*, in_features: int, out_features: int, rank: int) -> int:
-    return (rank * int(in_features) + int(out_features) * rank) * FLOAT32_BYTES
+    return (rank * int(in_features) + int(out_features) * rank) * ADAPTER_WEIGHT_BYTES
 
 
 def estimate_submission_budget(
@@ -207,11 +264,14 @@ def estimate_submission_budget(
             "max_submission_zip_bytes": KAGGLE_SINGLE_FILE_LIMIT_BYTES,
         }
 
-    arch = _nemotron_arch_summary(config_payload)
+    arch, arch_error = _nemotron_arch_summary(config_payload)
     if arch is None:
         return {
             "status": "unknown",
-            "reason": f"unsupported model_type={config_payload.get('model_type')!r} for submission size estimation",
+            "reason": (
+                arch_error
+                or f"unsupported model_type={config_payload.get('model_type')!r} for submission size estimation"
+            ),
             "target_modules": resolved_target_modules,
             "selected_suffixes": selected_suffixes,
             "max_submission_zip_bytes": KAGGLE_SINGLE_FILE_LIMIT_BYTES,
@@ -221,9 +281,9 @@ def estimate_submission_budget(
     per_suffix_counts = {
         "in_proj": arch["mamba_layers"],
         "out_proj": arch["mamba_layers"],
-        "up_proj": arch["mamba_layers"] * arch["experts_per_layer"],
-        "down_proj": arch["mamba_layers"] * arch["experts_per_layer"],
-        "gate_proj": arch["mamba_layers"] * arch["experts_per_layer"],
+        "up_proj": arch["moe_layers"] * arch["experts_per_layer"],
+        "down_proj": arch["moe_layers"] * arch["experts_per_layer"],
+        "gate_proj": arch["moe_layers"] * arch["experts_per_layer"],
         "q_proj": arch["attention_layers"],
         "k_proj": arch["attention_layers"],
         "v_proj": arch["attention_layers"],
@@ -290,12 +350,15 @@ def estimate_submission_budget(
         projected_adapter_bytes += total_bytes
 
     projected_submission_zip_bytes = int(
-        math.ceil(projected_adapter_bytes * NEMOTRON_PROJECTED_ZIP_RATIO + NEMOTRON_PROJECTED_ZIP_OVERHEAD_BYTES)
+        math.ceil(projected_adapter_bytes * NEMOTRON_ZIP_COMPRESSION_RATIO + NEMOTRON_ZIP_OVERHEAD_BYTES)
     )
     within_budget = projected_submission_zip_bytes <= KAGGLE_SINGLE_FILE_LIMIT_BYTES
     return {
         "status": "ok" if within_budget else "over_limit",
         "model_family": arch["model_family"],
+        "mamba_layers": arch["mamba_layers"],
+        "moe_layers": arch["moe_layers"],
+        "attention_layers": arch["attention_layers"],
         "target_modules": resolved_target_modules,
         "selected_suffixes": selected_suffixes,
         "rank": resolved_rank,
@@ -303,8 +366,8 @@ def estimate_submission_budget(
         "projected_adapter_bytes": projected_adapter_bytes,
         "projected_submission_zip_bytes": projected_submission_zip_bytes,
         "max_submission_zip_bytes": KAGGLE_SINGLE_FILE_LIMIT_BYTES,
-        "compression_ratio_estimate": NEMOTRON_PROJECTED_ZIP_RATIO,
-        "compression_overhead_bytes": NEMOTRON_PROJECTED_ZIP_OVERHEAD_BYTES,
+        "compression_ratio_estimate": NEMOTRON_ZIP_COMPRESSION_RATIO,
+        "compression_overhead_bytes": NEMOTRON_ZIP_OVERHEAD_BYTES,
         "within_budget": within_budget,
         "reason": (
             None
@@ -398,12 +461,24 @@ def propose_size_safe_target_modules(
     }
 
 
-def ensure_submission_budget_safe(config: dict[str, Any]) -> dict[str, Any]:
+def ensure_submission_budget_safe(
+    config: dict[str, Any],
+    *,
+    allow_unknown_model: bool = False,
+) -> dict[str, Any]:
     budget = estimate_submission_budget(config)
     if budget["status"] == "over_limit":
         raise ValueError(
             "Configured LoRA target_modules are not submission-safe: "
             f"{budget['reason']}. "
             "Use scripts/list_model_linear_modules.py to derive a size-safe alternative."
+        )
+    if budget["status"] == "unknown" and not allow_unknown_model:
+        raise ValueError(
+            "Submission budget cannot be estimated for this model: "
+            f"{budget.get('reason', 'unknown model')}. "
+            "Refusing to train without a budget guard. "
+            "If this is intentional (e.g. a test harness on a non-Nemotron base), "
+            "pass allow_unknown_model=True explicitly."
         )
     return budget

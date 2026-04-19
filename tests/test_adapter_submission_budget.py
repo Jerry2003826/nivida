@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
+import src.student.adapter_submission_budget as budget_module
 from src.student.adapter_submission_budget import (
     DEFAULT_TARGET_REGEX,
     FULL_WIDE_TARGET_REGEX,
+    NEMOTRON_3_NANO_30B_FALLBACK,
     SUBMISSION_SAFE_WIDE_TARGET_REGEX,
     estimate_submission_budget,
     propose_size_safe_target_modules,
@@ -31,6 +35,15 @@ def test_estimate_submission_budget_marks_full_wide_regex_over_limit() -> None:
     assert budget["within_budget"] is False
     assert budget["projected_submission_zip_bytes"] > budget["max_submission_zip_bytes"]
     assert "gate_proj" in budget["selected_suffixes"]
+
+
+def test_nemotron_layer_count_matches_redhatai_spec() -> None:
+    budget = estimate_submission_budget(_nemotron_config())
+
+    assert budget["status"] == "ok"
+    assert budget["mamba_layers"] == 23
+    assert budget["moe_layers"] == 23
+    assert budget["attention_layers"] == 6
 
 
 def test_propose_size_safe_target_modules_blocks_gate_proj() -> None:
@@ -71,6 +84,21 @@ def test_estimate_submission_budget_returns_unknown_for_unsupported_model() -> N
     assert budget["status"] == "unknown"
 
 
+def test_invalid_hybrid_pattern_returns_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    invalid_payload = dict(NEMOTRON_3_NANO_30B_FALLBACK)
+    invalid_payload["hybrid_override_pattern"] = "MME"
+    monkeypatch.setattr(
+        budget_module,
+        "_load_model_config_payload",
+        lambda _config: invalid_payload,
+    )
+
+    budget = estimate_submission_budget(_nemotron_config())
+
+    assert budget["status"] == "unknown"
+    assert "pattern" in str(budget["reason"]).lower()
+
+
 def test_canonical_stage_configs_share_submission_safe_target_modules() -> None:
     config_paths = [
         "configs/train_stage1_format.yaml",
@@ -89,3 +117,7 @@ def test_canonical_stage_configs_share_submission_safe_target_modules() -> None:
         budget = estimate_submission_budget(read_yaml(path))
         assert budget["status"] == "ok", path
         assert budget["target_modules"] == SUBMISSION_SAFE_WIDE_TARGET_REGEX, path
+        assert budget["projected_submission_zip_bytes"] <= int(0.95 * 1_000_000_000), (
+            f"{path} projected zip {budget['projected_submission_zip_bytes']} "
+            f"has insufficient margin below Kaggle 1GB limit"
+        )

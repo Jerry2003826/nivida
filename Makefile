@@ -1,6 +1,6 @@
 PYTHON ?= python
 
-.PHONY: test prepare baseline family-report dry-train
+.PHONY: test prepare baseline family-report dry-train probe-submission-size
 
 test:
 	$(PYTHON) -m pytest -q
@@ -16,3 +16,9 @@ family-report:
 
 dry-train:
 	$(PYTHON) -m src.student.lora_train --config configs/train_lora.yaml --dry-run
+
+probe-submission-size:
+	$(PYTHON) scripts/probe_adapter_submission_size.py \
+	  --config configs/train_stage2_selected_trace.yaml \
+	  --output artifacts/adapter_submission_probe.json \
+	  --tiny-mode

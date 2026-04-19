@@ -149,6 +149,48 @@ Stage3 failure / success buckets are produced by `scripts/train_stage3_repair.sh
 - `configs/synth_hard_triads.yaml` (and the legacy `configs/synth.yaml`) set `hard_negative_ratio: 0.0` because the `hard_negative` / `negative_answer` metadata fields have no downstream consumer in the current training pipeline. Re-enable only when a real consumer (loss term, filter, etc.) lands.
 - stage3 can **skip itself** when stage2 produced zero hard-triad train failures. In that case `scripts/train_stage3_repair.sh` copies the stage2 bestproxy adapter to `artifacts/adapter_stage3_repair/` and `artifacts/adapter_stage3_bestproxy/`, reuses the stage2 bestproxy eval JSONs, and writes `stage3_skipped.json` next to the weights so downstream packaging / validation does not need to branch. See `data/processed/stage3_decision.json` and `data/processed/stage3_best_checkpoint_selection.json` for the gate outcome.
 
+### Submission size budget
+
+All canonical LoRA training configs share a single submission-safe
+`target_modules` regex so the final `submission.zip` stays below the
+Kaggle 1GB single-file limit:
+
+```text
+.*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$
+```
+
+`gate_proj` is deliberately excluded. With the current Nemotron-3 Nano
+30B rank-32 geometry, adding `gate_proj` pushes the projected zip to
+about 1.32GB, which fails the submission guard.
+
+The physical model here is important: peft saves LoRA adapter weights as
+new float32 trainable tensors (`lora_A` / `lora_B`), not at the base
+model's bf16 dtype. The budget estimator therefore uses
+`ADAPTER_WEIGHT_BYTES = 4` plus a conservative `ZIP_DEFLATED`
+compression ratio of `0.25`, calibrated against a real adapter probe.
+
+Three guards enforce the budget end to end:
+
+1. `lora_train.validate_lora_config` rejects target modules whose
+   projected zip exceeds 1GB before training starts.
+2. `scripts/validate_submission.py` re-reads the trained
+   `adapter_config.json` and runs the budget check again before
+   packaging.
+3. `src/student/package_submission.build_submission_zip` reads the
+   final `submission.zip` size from disk and hard-fails if the physical
+   archive exceeds 1GB.
+
+To recalibrate the formula against a real artifact shape, run:
+
+```bash
+make probe-submission-size
+```
+
+This runs the self-contained tiny probe and writes
+`artifacts/adapter_submission_probe.json`. On H200, rerun the same probe
+script without `--tiny-mode` after any canonical geometry change so the
+budget constants stay tied to a measured adapter artifact.
+
 ## Smoke and Validation
 
 H100 smoke path:

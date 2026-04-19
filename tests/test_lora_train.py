@@ -92,10 +92,25 @@ def test_validate_lora_config_rejects_submission_unsafe_target_modules() -> None
         )
 
 
+def test_validate_lora_config_strict_on_unknown_model() -> None:
+    config = {
+        "base_model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        "model_source": "huggingface",
+        "trust_remote_code": False,
+        "lora": {"rank": 32, "target_modules": ["in_proj", "out_proj"]},
+    }
+
+    with pytest.raises(ValueError, match="cannot be estimated"):
+        validate_lora_config(config)
+
+    validate_lora_config(config, allow_unknown_model=True)
+
+
 def test_dry_run_manifest_contains_resolved_fields(tmp_path: Path) -> None:
     config = _base_config(tmp_path)
     config.update(
         {
+            "base_model": "nvidia/Nemotron-3-Nano-30B",
             "model_source": "kagglehub",
             "model_handle": "metric/nemotron-3-nano-30b-a3b-bf16/transformers/default",
             "environment": {"KAGGLEHUB_CACHE": "/workspace/.cache/kagglehub"},
@@ -485,6 +500,13 @@ def test_preflight_in_dry_run_mode_skips_remote_calls(
 
 def test_dry_run_manifest_embeds_preflight_report(tmp_path: Path) -> None:
     config = _base_config(tmp_path)
+    config.update(
+        {
+            "base_model": "nvidia/Nemotron-3-Nano-30B",
+            "model_source": "kagglehub",
+            "model_handle": "metric/nemotron-3-nano-30b-a3b-bf16/transformers/default",
+        }
+    )
 
     manifest = dry_run_manifest(config)
 
