@@ -211,10 +211,12 @@ any observed compression ratio is unambiguous:
 3. `--adapter-dir artifacts/adapter_final_selected` - the only real
    calibration mode. The probe reads an already-trained adapter
    directory (`adapter_model.safetensors` + `adapter_config.json`),
-   re-derives rank and target modules from the artifact's own config,
-   re-runs `ensure_submission_budget_safe` against those, and then
-   hard-fails unless the measured safetensors bytes/module counts match
-   the canonical formula exactly. The trained-mode payload records
+   requires the artifact's `rank/target_modules` to match the requested
+   `--config`, re-runs `ensure_submission_budget_safe` against those,
+   and then hard-fails unless the measured safetensors bytes/module
+   counts match the canonical formula exactly. The trained-mode payload
+   records `requested_rank`, `requested_selected_suffixes`, and
+   `artifact_matches_requested_config` alongside
    `real_trained_adapter_archive_ratio` plus
    `real_trained_adapter_weight_compression_ratio`; the legacy
    `real_trained_adapter_compression_ratio` is retained as a backwards-

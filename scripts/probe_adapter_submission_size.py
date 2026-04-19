@@ -373,6 +373,42 @@ def _summarise_artifact_shape_against_formula(
     }
 
 
+def _summarise_artifact_config_against_request(
+    *,
+    requested_rank: int,
+    requested_target_modules: str | list[str],
+    artifact_rank: int,
+    artifact_target_modules: str | list[str],
+) -> dict[str, Any]:
+    requested_selected_suffixes = _selected_suffixes(requested_target_modules)
+    artifact_selected_suffixes = _selected_suffixes(artifact_target_modules)
+    mismatch_details: list[dict[str, Any]] = []
+    if artifact_rank != requested_rank:
+        mismatch_details.append(
+            {
+                "kind": "rank",
+                "expected": requested_rank,
+                "observed": artifact_rank,
+            }
+        )
+    if artifact_selected_suffixes != requested_selected_suffixes:
+        mismatch_details.append(
+            {
+                "kind": "selected_suffixes",
+                "expected": requested_selected_suffixes,
+                "observed": artifact_selected_suffixes,
+            }
+        )
+    return {
+        "requested_rank": requested_rank,
+        "requested_target_modules": requested_target_modules,
+        "requested_selected_suffixes": requested_selected_suffixes,
+        "artifact_selected_suffixes": artifact_selected_suffixes,
+        "artifact_matches_requested_config": not mismatch_details,
+        "artifact_request_mismatch_details": mismatch_details,
+    }
+
+
 def _archive_ratio(*, zip_size_bytes: int, formula_adapter_bytes: int) -> float:
     return zip_size_bytes / max(1, formula_adapter_bytes)
 
@@ -536,6 +572,16 @@ def probe_adapter_submission_size(
         )
 
     ensure_submission_budget_safe(config)
+    requested_target_modules = _normalise_target_modules(config)
+    requested_rank = int(dict(config.get("lora", {})).get("rank", 16))
+    config_match_summary: dict[str, Any] = {
+        "requested_rank": requested_rank,
+        "requested_target_modules": requested_target_modules,
+        "requested_selected_suffixes": _selected_suffixes(requested_target_modules),
+        "artifact_selected_suffixes": _selected_suffixes(requested_target_modules),
+        "artifact_matches_requested_config": True,
+        "artifact_request_mismatch_details": [],
+    }
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -546,12 +592,34 @@ def probe_adapter_submission_size(
         if not adapter_dir.is_dir():
             raise FileNotFoundError(f"existing_adapter_dir does not exist: {adapter_dir}")
         adapter_config = _read_adapter_config(adapter_dir)
-        rank = int(adapter_config.get("r", 0)) or int(
-            dict(config.get("lora", {})).get("rank", 16)
+        artifact_rank = int(adapter_config.get("r", 0))
+        if artifact_rank <= 0:
+            raise ValueError(
+                "adapter_config.json is missing a valid positive `r`; "
+                "--adapter-dir must point at a trained PEFT adapter artifact."
+            )
+        if adapter_config.get("target_modules") is None:
+            raise ValueError(
+                "adapter_config.json is missing `target_modules`; "
+                "--adapter-dir must point at a trained PEFT adapter artifact."
+            )
+        artifact_target_modules = budget_module._normalise_target_modules(
+            adapter_config.get("target_modules")
         )
-        target_modules = adapter_config.get("target_modules")
-        if target_modules is None:
-            target_modules = _normalise_target_modules(config)
+        config_match_summary = _summarise_artifact_config_against_request(
+            requested_rank=requested_rank,
+            requested_target_modules=requested_target_modules,
+            artifact_rank=artifact_rank,
+            artifact_target_modules=artifact_target_modules,
+        )
+        if not config_match_summary["artifact_matches_requested_config"]:
+            raise ValueError(
+                "Trained adapter artifact config does not match requested probe config: "
+                f"{config_match_summary['artifact_request_mismatch_details']}. "
+                "Refusing to use this artifact for compression calibration."
+            )
+        rank = artifact_rank
+        target_modules = artifact_target_modules
         artifact_config = dict(config)
         artifact_config["lora"] = dict(artifact_config.get("lora", {}))
         artifact_config["lora"]["rank"] = rank
@@ -566,8 +634,8 @@ def probe_adapter_submission_size(
         if adapter_dir.exists():
             shutil.rmtree(adapter_dir)
         adapter_dir.mkdir(parents=True, exist_ok=True)
-        target_modules = _normalise_target_modules(config)
-        rank = int(dict(config.get("lora", {})).get("rank", 16))
+        target_modules = requested_target_modules
+        rank = requested_rank
 
     if zip_path.exists():
         zip_path.unlink()
@@ -658,6 +726,7 @@ def probe_adapter_submission_size(
         "zip_path": str(zip_path),
         "target_modules": target_modules,
         "rank": rank,
+        **config_match_summary,
         "mamba_layers": formula["mamba_layers"],
         "moe_layers": formula["moe_layers"],
         "attention_layers": formula["attention_layers"],

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -49,6 +50,21 @@ def _probe_config_dict(target_modules: str = SUBMISSION_SAFE_WIDE_TARGET_REGEX) 
         "lora": {"rank": 32, "target_modules": target_modules},
         "training": {"output_dir": "artifacts/adapter_stage2_selected_trace"},
     }
+
+
+def _rewrite_adapter_config(
+    adapter_dir: Path,
+    *,
+    rank: int | None = None,
+    target_modules: str | list[str] | None = None,
+) -> None:
+    config_path = adapter_dir / "adapter_config.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    if rank is not None:
+        payload["r"] = rank
+    if target_modules is not None:
+        payload["target_modules"] = target_modules
+    config_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def test_tiny_mode_formula_matches_real_zip_within_5pct(tmp_path: Path) -> None:
@@ -248,6 +264,60 @@ def test_probe_rejects_missing_adapter_dir(tmp_path: Path) -> None:
         )
 
 
+def test_probe_trained_adapter_mode_rejects_rank_mismatch_with_requested_config(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_probe_config(tmp_path / "probe_config.yaml")
+    output_path_tiny = tmp_path / "probe_tiny.json"
+
+    probe_adapter_submission_size(
+        config=_probe_config_dict(),
+        config_path=config_path,
+        output_path=output_path_tiny,
+        tiny_mode=True,
+    )
+    adapter_dir = output_path_tiny.with_name(f"{output_path_tiny.stem}_artifact")
+    _rewrite_adapter_config(adapter_dir, rank=16)
+
+    output_path_trained = tmp_path / "probe_trained.json"
+    with pytest.raises(ValueError, match="does not match requested probe config"):
+        probe_adapter_submission_size(
+            config=_probe_config_dict(),
+            config_path=config_path,
+            output_path=output_path_trained,
+            existing_adapter_dir=adapter_dir,
+        )
+
+    assert not output_path_trained.exists()
+
+
+def test_probe_trained_adapter_mode_rejects_target_modules_mismatch_with_requested_config(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_probe_config(tmp_path / "probe_config.yaml")
+    output_path_tiny = tmp_path / "probe_tiny.json"
+
+    probe_adapter_submission_size(
+        config=_probe_config_dict(),
+        config_path=config_path,
+        output_path=output_path_tiny,
+        tiny_mode=True,
+    )
+    adapter_dir = output_path_tiny.with_name(f"{output_path_tiny.stem}_artifact")
+    _rewrite_adapter_config(adapter_dir, target_modules=r".*\.(q_proj|v_proj)$")
+
+    output_path_trained = tmp_path / "probe_trained.json"
+    with pytest.raises(ValueError, match="does not match requested probe config"):
+        probe_adapter_submission_size(
+            config=_probe_config_dict(),
+            config_path=config_path,
+            output_path=output_path_trained,
+            existing_adapter_dir=adapter_dir,
+        )
+
+    assert not output_path_trained.exists()
+
+
 def test_probe_trained_adapter_mode_rejects_shape_mismatch(tmp_path: Path) -> None:
     config_path = _write_probe_config(tmp_path / "probe_config.yaml")
     output_path_tiny = tmp_path / "probe_tiny.json"
@@ -325,6 +395,11 @@ def test_probe_trained_adapter_mode_reads_existing_artifact_when_shape_matches_f
 
     assert payload["probe_mode"] == "trained_adapter"
     assert payload["peft_weights_are_fresh"] is False
+    assert payload["requested_rank"] == 32
+    assert payload["artifact_matches_requested_config"] is True
+    assert payload["artifact_request_mismatch_details"] == []
+    assert payload["requested_selected_suffixes"] == payload["selected_suffixes"]
+    assert payload["artifact_selected_suffixes"] == payload["selected_suffixes"]
     assert payload["artifact_shape_matches_formula"] is True
     assert payload["artifact_shape_mismatch_details"] == []
     assert "real_trained_adapter_compression_ratio" in payload
