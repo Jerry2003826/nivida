@@ -53,6 +53,11 @@ def test_extract_fallback_final_answer_phrase() -> None:
     assert extract_final_answer("The final answer is: 3.14") == "3.14"
 
 
+def test_extract_fullwidth_colon_pattern() -> None:
+    assert extract_final_answer("Final answer：42") == "42"
+    assert extract_final_answer("final answer：3.14") == "3.14"
+
+
 def test_extract_fallback_last_number() -> None:
     assert extract_final_answer("Just a number 100 in text") == "100"
 

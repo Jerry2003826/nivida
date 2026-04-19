@@ -86,8 +86,8 @@ def extract_final_answer(text: str | None) -> str:
     patterns = [
         r'The final answer is:\s*([^\n]+)',
         r'Final answer is:\s*([^\n]+)',
-        r'Final answer\s*[:ЃК]\s*([^\n]+)',
-        r'final answer\s*[:ЃК]\s*([^\n]+)',
+        r'Final answer\s*[:：]\s*([^\n]+)',
+        r'final answer\s*[:：]\s*([^\n]+)',
     ]
     for pattern in patterns:
         matches = re.findall(pattern, text, re.IGNORECASE)
