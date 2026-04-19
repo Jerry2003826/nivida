@@ -12,6 +12,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.common.io import read_yaml, write_json
+from src.student.adapter_submission_budget import (
+    estimate_submission_budget,
+    propose_size_safe_target_modules,
+)
 
 
 KNOWN_SUFFIXES: tuple[str, ...] = (
@@ -244,6 +248,14 @@ def audit_linear_modules(
     uncovered_summary = ", ".join(
         f"{suffix}={suffix_counts[suffix]}" for suffix in uncovered_candidate_suffixes
     ) or "none"
+    size_safe_recommendation = propose_size_safe_target_modules(
+        config,
+        current_target_modules=target_modules,
+    )
+    current_submission_budget = estimate_submission_budget(
+        config,
+        target_modules=target_modules,
+    )
 
     return {
         "config_path": str(config_path),
@@ -258,15 +270,22 @@ def audit_linear_modules(
         "currently_matched_modules": currently_matched_modules,
         "num_currently_matched": len(currently_matched_modules),
         "uncovered_candidate_suffixes": uncovered_candidate_suffixes,
+        "current_submission_budget": current_submission_budget,
         "wide_branch_recommendation": {
             "eligible": eligible,
-            "proposed_regex": (
-                r".*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj|gate_proj)$"
-            ),
+            "proposed_regex": size_safe_recommendation.get("proposed_regex"),
+            "proposed_target_suffixes": size_safe_recommendation.get("proposed_target_suffixes"),
+            "proposed_budget": size_safe_recommendation.get("proposed_budget"),
+            "budget_blocked_suffixes": size_safe_recommendation.get("budget_blocked_suffixes"),
+            "candidate_evaluations": size_safe_recommendation.get("candidate_evaluations"),
+            "full_wide_regex": size_safe_recommendation.get("full_wide_regex"),
+            "full_wide_budget": size_safe_recommendation.get("full_wide_budget"),
             "rationale": (
                 "Uncovered candidate suffix counts: "
                 f"{uncovered_summary}. "
-                "Eligible when at least two uncovered suffixes account for eight or more modules."
+                "Eligible when at least two uncovered suffixes account for eight or more modules. "
+                "The proposed regex is submission-budget-safe; suffixes that would push the "
+                "projected Kaggle zip over 1 GB are listed in budget_blocked_suffixes."
             ),
         },
     }

@@ -6,6 +6,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from src.student.adapter_submission_budget import KAGGLE_SINGLE_FILE_LIMIT_BYTES
+
 
 REQUIRED_ADAPTER_FILES = {"adapter_config.json"}
 ADAPTER_WEIGHT_CANDIDATES = ("adapter_model.safetensors", "adapter_model.bin")
@@ -52,6 +54,23 @@ def read_adapter_target_modules(adapter_dir: str | Path) -> str | list[str] | No
     return str(target_modules)
 
 
+def submission_zip_size_bytes(path: str | Path) -> int:
+    return int(Path(path).stat().st_size)
+
+
+def validate_submission_zip_size(
+    path: str | Path,
+    *,
+    max_bytes: int = KAGGLE_SINGLE_FILE_LIMIT_BYTES,
+) -> int:
+    size_bytes = submission_zip_size_bytes(path)
+    if size_bytes > max_bytes:
+        raise ValueError(
+            f"Submission zip size {size_bytes} exceeds Kaggle single-file limit {max_bytes}"
+        )
+    return size_bytes
+
+
 def build_submission_zip(adapter_dir: str | Path, output_path: str | Path) -> Path:
     adapter_path = Path(adapter_dir)
     validate_adapter_dir(adapter_path)
@@ -61,6 +80,7 @@ def build_submission_zip(adapter_dir: str | Path, output_path: str | Path) -> Pa
         for file_path in adapter_path.iterdir():
             if file_path.is_file():
                 archive.write(file_path, arcname=file_path.name)
+    validate_submission_zip_size(output_path)
     return output_path
 
 

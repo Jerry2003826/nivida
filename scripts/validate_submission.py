@@ -11,8 +11,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.common.io import read_yaml, write_json
 from src.experiments.eval_competition_replica import evaluate_replica
+from src.student.adapter_submission_budget import estimate_submission_budget
 from src.student.inference import run_inference
-from src.student.package_submission import build_submission_zip, read_adapter_rank, validate_adapter_dir
+from src.student.package_submission import (
+    build_submission_zip,
+    read_adapter_rank,
+    read_adapter_target_modules,
+    validate_adapter_dir,
+)
 
 
 class SubmissionValidationError(ValueError):
@@ -52,6 +58,17 @@ def validate_submission(
         "adapter_rank": adapter_rank,
         "rank_ok": True,
     }
+    submission_budget = estimate_submission_budget(
+        config,
+        target_modules=read_adapter_target_modules(adapter_dir),
+        rank=adapter_rank,
+    )
+    payload["submission_budget"] = submission_budget
+    if package_output and submission_budget.get("status") == "over_limit":
+        raise SubmissionValidationError(
+            "Projected submission zip would exceed Kaggle's 1 GB limit: "
+            f"{submission_budget.get('projected_submission_zip_bytes')}"
+        )
 
     predictions_path = None
     if smoke_input:
@@ -80,6 +97,8 @@ def validate_submission(
             )
         packaged = build_submission_zip(adapter_dir, package_output)
         payload["package_output"] = str(packaged)
+        if packaged.exists():
+            payload["package_size_bytes"] = packaged.stat().st_size
 
     write_json(output_path, payload)
     return payload

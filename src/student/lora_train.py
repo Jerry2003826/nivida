@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from src.common.io import load_jsonl, read_yaml, write_json
+from src.student.adapter_submission_budget import ensure_submission_budget_safe
 from src.student.package_submission import (
     read_adapter_rank,
     read_adapter_target_modules,
@@ -23,6 +24,7 @@ def validate_lora_config(config: dict[str, Any]) -> None:
     rank = int(config.get("lora", {}).get("rank", 16))
     if rank > 32:
         raise ValueError(f"LoRA rank must be <= 32, got {rank}")
+    ensure_submission_budget_safe(config)
 
 
 def _normalise_dtype(dtype_name: str) -> str:
@@ -239,6 +241,7 @@ def dry_run_manifest(config: dict[str, Any]) -> dict[str, Any]:
             type(metrics_tokenizer).__name__ if metrics_tokenizer is not None else None
         ),
         "preflight": preflight,
+        "submission_budget": ensure_submission_budget_safe(config),
         "resolved_max_seq_length": resolved_max_seq_length,
         "resolved_target_modules": normalise_target_modules(config.get("lora", {}).get("target_modules")),
         "dataset_stats": dataset_stats,

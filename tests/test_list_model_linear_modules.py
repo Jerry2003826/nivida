@@ -63,9 +63,14 @@ class FakeModel:
 def test_enumeration_and_regex_match(tmp_path: Path, monkeypatch) -> None:
     cfg = tmp_path / "fake_cfg.yaml"
     cfg.write_text(
+        "base_model: nvidia/Nemotron-3-Nano-30B\n"
+        "model_source: kagglehub\n"
+        "model_handle: metric/nemotron-3-nano-30b-a3b-bf16/transformers/default\n"
+        "lora:\n"
+        "  rank: 32\n"
         "model:\n"
         "  name: fake/Nemotron-test\n"
-        "  target_modules: '.*\\\\.(in_proj|out_proj|up_proj|down_proj)$'\n",
+        '  target_modules: ".*\\\\.(in_proj|out_proj|up_proj|down_proj)$"\n',
         encoding="utf-8",
     )
     out = tmp_path / "audit.json"
@@ -94,4 +99,8 @@ def test_enumeration_and_regex_match(tmp_path: Path, monkeypatch) -> None:
         "v_proj",
         "o_proj",
     }
+    assert data["current_submission_budget"]["status"] == "ok"
     assert data["wide_branch_recommendation"]["eligible"] in (True, False)
+    assert data["wide_branch_recommendation"]["proposed_budget"]["status"] == "ok"
+    assert "gate_proj" not in data["wide_branch_recommendation"]["proposed_regex"]
+    assert "gate_proj" in data["wide_branch_recommendation"]["full_wide_regex"]

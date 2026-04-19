@@ -5,6 +5,10 @@ import re
 from pathlib import Path
 
 from src.common.io import read_yaml, write_json
+from src.student.adapter_submission_budget import (
+    estimate_submission_budget,
+    propose_size_safe_target_modules,
+)
 from src.student.lora_train import _import_or_raise, normalise_target_modules, resolve_model_path
 
 
@@ -29,6 +33,11 @@ def audit_modules(config: dict[str, object]) -> dict[str, object]:
         "num_modules": len(module_names),
         "num_matches": len(matches),
         "matches": matches,
+        "submission_budget": estimate_submission_budget(config, target_modules=target_modules),
+        "size_safe_recommendation": propose_size_safe_target_modules(
+            config,
+            current_target_modules=target_modules,
+        ),
     }
 
 

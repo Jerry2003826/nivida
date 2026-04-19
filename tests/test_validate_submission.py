@@ -157,3 +157,37 @@ def test_validate_submission_packages_after_local_eval(
     # Validator must enable strict coverage when running local_eval so that
     # pipeline coverage mismatches surface before packaging.
     assert all(flag is True for *_, flag in eval_calls)
+
+
+def test_validate_submission_rejects_projected_oversize_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write_config(tmp_path / "config.yaml")
+    adapter_dir = _write_adapter_dir(tmp_path / "adapter")
+    smoke_input = tmp_path / "smoke.jsonl"
+    smoke_input.write_text('{"id":"x"}\n', encoding="utf-8")
+    labels = tmp_path / "labels.jsonl"
+    labels.write_text('{"id":"x"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        validate_submission_module,
+        "estimate_submission_budget",
+        lambda *args, **kwargs: {
+            "status": "over_limit",
+            "projected_submission_zip_bytes": 1_100_000_000,
+        },
+    )
+
+    with pytest.raises(
+        validate_submission_module.SubmissionValidationError,
+        match="Projected submission zip would exceed Kaggle's 1 GB limit",
+    ):
+        validate_submission_module.validate_submission(
+            config_path=config_path,
+            adapter_dir=adapter_dir,
+            output_path=tmp_path / "validation.json",
+            smoke_input=smoke_input,
+            labels=labels,
+            package_output=tmp_path / "submission.zip",
+        )

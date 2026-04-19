@@ -76,6 +76,22 @@ def test_validate_lora_config_rejects_large_rank() -> None:
         validate_lora_config({"lora": {"rank": 64}})
 
 
+def test_validate_lora_config_rejects_submission_unsafe_target_modules() -> None:
+    with pytest.raises(ValueError, match="submission-safe"):
+        validate_lora_config(
+            {
+                "base_model": "nvidia/Nemotron-3-Nano-30B",
+                "model_source": "kagglehub",
+                "model_handle": "metric/nemotron-3-nano-30b-a3b-bf16/transformers/default",
+                "trust_remote_code": True,
+                "lora": {
+                    "rank": 32,
+                    "target_modules": r".*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj|gate_proj)$",
+                },
+            }
+        )
+
+
 def test_dry_run_manifest_contains_resolved_fields(tmp_path: Path) -> None:
     config = _base_config(tmp_path)
     config.update(
@@ -94,6 +110,7 @@ def test_dry_run_manifest_contains_resolved_fields(tmp_path: Path) -> None:
     assert manifest["environment"]["KAGGLEHUB_CACHE"] == "/workspace/.cache/kagglehub"
     assert manifest["resolved_target_modules"] == ["in_proj", "out_proj"]
     assert manifest["preflight"]["status"] == "ok"
+    assert manifest["submission_budget"]["status"] == "ok"
 
 
 def test_requires_mamba_ssm_only_for_nemotron_like_configs() -> None:
