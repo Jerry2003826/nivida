@@ -38,6 +38,17 @@ python scripts/validate_submission.py \
   --package-output submission.zip
 ```
 
+For local post-training acceptance, the recommended shortcut is:
+
+```bash
+make final-acceptance
+```
+
+This runs the canonical local closeout chain
+(`select_final_adapter -> trained probe -> validate_submission -> package`)
+against already-downloaded stage2/stage3 bestproxy artifacts. It does not
+download cloud outputs or run training.
+
 ## Data Preparation
 
 Prepare the canonical official dataset and maintained splits:

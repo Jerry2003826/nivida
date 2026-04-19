@@ -1,6 +1,6 @@
 PYTHON ?= python
 
-.PHONY: test prepare baseline family-report dry-train probe-submission-size probe-submission-size-trained
+.PHONY: test prepare baseline family-report dry-train probe-submission-size probe-submission-size-trained final-acceptance
 
 test:
 	$(PYTHON) -m pytest -q
@@ -31,3 +31,6 @@ probe-submission-size-trained:
 	  --config configs/train_stage2_selected_trace.yaml \
 	  --output artifacts/adapter_submission_probe.json \
 	  --adapter-dir $(ADAPTER_DIR)
+
+final-acceptance:
+	$(PYTHON) scripts/run_local_final_acceptance.py
