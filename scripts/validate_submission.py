@@ -11,7 +11,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.common.io import read_yaml, write_json
 from src.experiments.eval_competition_replica import evaluate_replica
-from src.student.adapter_submission_budget import estimate_submission_budget
+from src.student.adapter_submission_budget import (
+    ensure_submission_budget_safe,
+    estimate_submission_budget,
+)
 from src.student.inference import run_inference
 from src.student.package_submission import (
     build_submission_zip,
@@ -58,17 +61,33 @@ def validate_submission(
         "adapter_rank": adapter_rank,
         "rank_ok": True,
     }
+    adapter_target_modules = read_adapter_target_modules(adapter_dir)
     submission_budget = estimate_submission_budget(
         config,
-        target_modules=read_adapter_target_modules(adapter_dir),
+        target_modules=adapter_target_modules,
         rank=adapter_rank,
     )
     payload["submission_budget"] = submission_budget
-    if package_output and submission_budget.get("status") == "over_limit":
-        raise SubmissionValidationError(
-            "Projected submission zip would exceed Kaggle's 1 GB limit: "
-            f"{submission_budget.get('projected_submission_zip_bytes')}"
-        )
+    if package_output:
+        try:
+            ensure_submission_budget_safe(
+                config,
+                target_modules=adapter_target_modules,
+                rank=adapter_rank,
+            )
+        except ValueError as exc:
+            if submission_budget.get("status") == "over_limit":
+                raise SubmissionValidationError(
+                    "Projected submission zip would exceed Kaggle's 1 GB limit: "
+                    f"{submission_budget.get('projected_submission_zip_bytes')}"
+                ) from exc
+            if submission_budget.get("status") == "unknown":
+                raise SubmissionValidationError(
+                    "Submission budget cannot be estimated for this model: "
+                    f"{submission_budget.get('reason', 'unknown model')}. "
+                    "Refusing to package submission.zip without a budget guard."
+                ) from exc
+            raise SubmissionValidationError(str(exc)) from exc
 
     predictions_path = None
     if smoke_input:

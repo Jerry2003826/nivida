@@ -8,6 +8,7 @@ import pytest
 import src.student.lora_train as lora_train_module
 import src.student.preflight as preflight
 from src.common.io import write_json, write_jsonl
+from src.student.adapter_submission_budget import _HYPOTHETICAL_OVER_LIMIT_TARGET_REGEX
 from src.student.lora_train import (
     apply_runtime_environment,
     build_training_arguments_kwargs,
@@ -86,7 +87,7 @@ def test_validate_lora_config_rejects_submission_unsafe_target_modules() -> None
                 "trust_remote_code": True,
                 "lora": {
                     "rank": 32,
-                    "target_modules": r".*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj|gate_proj)$",
+                    "target_modules": _HYPOTHETICAL_OVER_LIMIT_TARGET_REGEX,
                 },
             }
         )

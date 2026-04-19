@@ -103,4 +103,7 @@ def test_enumeration_and_regex_match(tmp_path: Path, monkeypatch) -> None:
     assert data["wide_branch_recommendation"]["eligible"] in (True, False)
     assert data["wide_branch_recommendation"]["proposed_budget"]["status"] == "ok"
     assert "gate_proj" not in data["wide_branch_recommendation"]["proposed_regex"]
-    assert "gate_proj" in data["wide_branch_recommendation"]["full_wide_regex"]
+    assert (
+        data["wide_branch_recommendation"]["full_wide_regex"]
+        == r".*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$"
+    )

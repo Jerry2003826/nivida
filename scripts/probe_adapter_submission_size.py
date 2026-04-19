@@ -21,7 +21,6 @@ from src.common.io import read_yaml, write_json
 from src.student import adapter_submission_budget as budget_module
 from src.student.adapter_submission_budget import (
     ADAPTER_WEIGHT_BYTES,
-    FULL_WIDE_TARGET_REGEX,
     KNOWN_TARGET_SUFFIXES,
     NEMOTRON_ZIP_COMPRESSION_RATIO,
     NEMOTRON_ZIP_OVERHEAD_BYTES,
@@ -42,6 +41,7 @@ TINY_NEMOTRON_LIKE_PAYLOAD = {
     "n_routed_experts": 1,
     "n_shared_experts": 1,
     "moe_intermediate_size": 48,
+    "moe_shared_expert_intermediate_size": 72,
     "mamba_in_proj_out_features": 96,
     "mamba_out_proj_in_features": 80,
 }
@@ -68,73 +68,20 @@ def _formula_from_payload(
         raise ValueError(arch_error or "tiny probe payload is not a valid nemotron_h config")
 
     selected_suffixes = _selected_suffixes(target_modules)
-    per_suffix_counts = {
-        "in_proj": arch["mamba_layers"],
-        "out_proj": arch["mamba_layers"],
-        "up_proj": arch["moe_layers"] * arch["experts_per_layer"],
-        "down_proj": arch["moe_layers"] * arch["experts_per_layer"],
-        "gate_proj": arch["moe_layers"] * arch["experts_per_layer"],
-        "q_proj": arch["attention_layers"],
-        "k_proj": arch["attention_layers"],
-        "v_proj": arch["attention_layers"],
-        "o_proj": arch["attention_layers"],
-    }
-    per_suffix_bytes = {
-        "in_proj": budget_module._module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["mamba_in_proj_out_features"],
-            rank=rank,
-        ),
-        "out_proj": budget_module._module_payload_bytes(
-            in_features=arch["mamba_out_proj_in_features"],
-            out_features=arch["hidden_size"],
-            rank=rank,
-        ),
-        "up_proj": budget_module._module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["moe_intermediate_size"],
-            rank=rank,
-        ),
-        "down_proj": budget_module._module_payload_bytes(
-            in_features=arch["moe_intermediate_size"],
-            out_features=arch["hidden_size"],
-            rank=rank,
-        ),
-        "gate_proj": budget_module._module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["moe_intermediate_size"],
-            rank=rank,
-        ),
-        "q_proj": budget_module._module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["q_out_features"],
-            rank=rank,
-        ),
-        "k_proj": budget_module._module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["kv_out_features"],
-            rank=rank,
-        ),
-        "v_proj": budget_module._module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["kv_out_features"],
-            rank=rank,
-        ),
-        "o_proj": budget_module._module_payload_bytes(
-            in_features=arch["q_out_features"],
-            out_features=arch["hidden_size"],
-            rank=rank,
-        ),
-    }
+    per_suffix_counts = budget_module._nemotron_per_suffix_counts(arch)
+    per_suffix_total_bytes = budget_module._nemotron_per_suffix_total_bytes(
+        arch,
+        rank=rank,
+    )
 
     suffix_breakdown: dict[str, dict[str, int]] = {}
     projected_adapter_bytes = 0
     for suffix in selected_suffixes:
         count = per_suffix_counts[suffix]
-        total_bytes = per_suffix_bytes[suffix] * count
+        total_bytes = per_suffix_total_bytes[suffix]
         suffix_breakdown[suffix] = {
             "count": count,
-            "bytes_per_module": per_suffix_bytes[suffix],
+            "bytes_per_module": int(total_bytes // max(1, count)),
             "total_bytes": total_bytes,
         }
         projected_adapter_bytes += total_bytes
@@ -149,7 +96,8 @@ def _formula_from_payload(
         "mamba_layers": arch["mamba_layers"],
         "moe_layers": arch["moe_layers"],
         "attention_layers": arch["attention_layers"],
-        "experts_per_layer": arch["experts_per_layer"],
+        "n_routed_experts_per_layer": arch["n_routed_experts_per_layer"],
+        "n_shared_experts_per_layer": arch["n_shared_experts_per_layer"],
         "selected_suffixes": selected_suffixes,
         "suffix_breakdown": suffix_breakdown,
         "projected_adapter_bytes": projected_adapter_bytes,
@@ -157,17 +105,30 @@ def _formula_from_payload(
     }
 
 
-def _suffix_dimensions(arch: dict[str, Any], suffix: str) -> tuple[int, int]:
+def _suffix_dimensions(
+    arch: dict[str, Any],
+    suffix: str,
+    *,
+    expert_kind: str | None = None,
+) -> tuple[int, int]:
     if suffix == "in_proj":
         return arch["hidden_size"], arch["mamba_in_proj_out_features"]
     if suffix == "out_proj":
         return arch["mamba_out_proj_in_features"], arch["hidden_size"]
     if suffix == "up_proj":
-        return arch["hidden_size"], arch["moe_intermediate_size"]
+        intermediate = (
+            arch["moe_shared_expert_intermediate_size"]
+            if expert_kind == "shared"
+            else arch["moe_intermediate_size"]
+        )
+        return arch["hidden_size"], intermediate
     if suffix == "down_proj":
-        return arch["moe_intermediate_size"], arch["hidden_size"]
-    if suffix == "gate_proj":
-        return arch["hidden_size"], arch["moe_intermediate_size"]
+        intermediate = (
+            arch["moe_shared_expert_intermediate_size"]
+            if expert_kind == "shared"
+            else arch["moe_intermediate_size"]
+        )
+        return intermediate, arch["hidden_size"]
     if suffix == "q_proj":
         return arch["hidden_size"], arch["q_out_features"]
     if suffix == "k_proj":
@@ -328,7 +289,6 @@ def _generate_tiny_adapter(
 
     tensors: dict[str, np.ndarray] = {}
     layer_kinds = [char for char in TINY_NEMOTRON_LIKE_PAYLOAD["hybrid_override_pattern"] if char != "-"]
-    experts_per_layer = arch["experts_per_layer"]
     selected_suffixes = set(formula["selected_suffixes"])
 
     for layer_index, layer_kind in enumerate(layer_kinds):
@@ -340,13 +300,33 @@ def _generate_tiny_adapter(
                 tensors[f"{prefix}.lora_A.weight"] = np.zeros((rank, in_features), dtype=np.float32)
                 tensors[f"{prefix}.lora_B.weight"] = np.zeros((out_features, rank), dtype=np.float32)
         elif layer_kind == "E":
-            suffixes = [suffix for suffix in ("up_proj", "down_proj", "gate_proj") if suffix in selected_suffixes]
-            for expert_index in range(experts_per_layer):
+            suffixes = [suffix for suffix in ("up_proj", "down_proj") if suffix in selected_suffixes]
+            for expert_index in range(arch["n_routed_experts_per_layer"]):
                 for suffix in suffixes:
-                    in_features, out_features = _suffix_dimensions(arch, suffix)
+                    in_features, out_features = _suffix_dimensions(
+                        arch,
+                        suffix,
+                        expert_kind="routed",
+                    )
                     prefix = (
                         f"base_model.model.layers.{layer_index}.experts.{expert_index}.{suffix}"
                     )
+                    tensors[f"{prefix}.lora_A.weight"] = np.zeros((rank, in_features), dtype=np.float32)
+                    tensors[f"{prefix}.lora_B.weight"] = np.zeros((out_features, rank), dtype=np.float32)
+            for shared_index in range(arch["n_shared_experts_per_layer"]):
+                for suffix in suffixes:
+                    in_features, out_features = _suffix_dimensions(
+                        arch,
+                        suffix,
+                        expert_kind="shared",
+                    )
+                    if arch["n_shared_experts_per_layer"] == 1:
+                        prefix = f"base_model.model.layers.{layer_index}.shared_experts.{suffix}"
+                    else:
+                        prefix = (
+                            f"base_model.model.layers.{layer_index}.shared_experts."
+                            f"{shared_index}.{suffix}"
+                        )
                     tensors[f"{prefix}.lora_A.weight"] = np.zeros((rank, in_features), dtype=np.float32)
                     tensors[f"{prefix}.lora_B.weight"] = np.zeros((out_features, rank), dtype=np.float32)
         elif layer_kind == "*":
@@ -498,9 +478,6 @@ def probe_adapter_submission_size(
         "weight_bytes_counted_from_safetensors": measured["weight_bytes_counted_from_safetensors"],
         "implied_real_dtype_bytes": measured["implied_real_dtype_bytes"],
         "dtype_names": measured["dtype_names"],
-        "implied_real_compression_ratio": (
-            final_zip_size / max(1, int(formula["projected_adapter_bytes"]))
-        ),
         "suffix_breakdown_measured": measured["suffix_breakdown_measured"],
         "compression_ratio_estimate": NEMOTRON_ZIP_COMPRESSION_RATIO,
         "compression_overhead_bytes": NEMOTRON_ZIP_OVERHEAD_BYTES,
@@ -510,6 +487,14 @@ def probe_adapter_submission_size(
     }
     if tiny_mode:
         payload["expected_analytical_zip_bytes"] = formula_predicted_zip_bytes
+        payload["formula_smoke_ratio_after_entropy_pad"] = (
+            final_zip_size / max(1, int(formula["projected_adapter_bytes"]))
+        )
+        payload["tiny_mode_is_not_calibration"] = True
+    else:
+        payload["real_adapter_compression_ratio"] = (
+            final_zip_size / max(1, int(formula["projected_adapter_bytes"]))
+        )
 
     write_json(output_path, payload)
     return payload
@@ -525,9 +510,6 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     config = read_yaml(args.config)
-    if _normalise_target_modules(config) == FULL_WIDE_TARGET_REGEX:
-        # Fail before any artifact generation when the config is known unsafe.
-        ensure_submission_budget_safe(config)
     probe_adapter_submission_size(
         config=config,
         config_path=args.config,

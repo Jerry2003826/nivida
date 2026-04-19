@@ -159,15 +159,36 @@ Kaggle 1GB single-file limit:
 .*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$
 ```
 
-`gate_proj` is deliberately excluded. With the current Nemotron-3 Nano
-30B rank-32 geometry, adding `gate_proj` pushes the projected zip to
-about 1.32GB, which fails the submission guard.
+This regex covers the real LoRA-compatible Nemotron-H Linear modules we
+currently rely on:
 
-The physical model here is important: peft saves LoRA adapter weights as
+- Mamba: `in_proj`, `out_proj`
+- MoE experts: `up_proj`, `down_proj`
+- Attention: `q_proj`, `k_proj`, `v_proj`, `o_proj`
+
+The current HF Nemotron-H implementation does not expose a `gate_proj`
+Linear. `NemotronHMOE.gate` is a router module, not a LoRA-compatible
+Linear, so `gate_proj` is not a valid `target_modules` entry for this
+budget model. If a future model revision introduces a real `gate_proj`
+Linear, extend `src/student/adapter_submission_budget.py` only after
+proving the module exists with `scripts/list_model_linear_modules.py`
+against the actual model source.
+
+The MoE part of the estimator intentionally distinguishes routed and
+shared experts. Per MoE layer, Nemotron-3 Nano 30B has `128` routed
+experts at `moe_intermediate_size=1856` plus `1` shared expert at
+`moe_shared_expert_intermediate_size=3712`, so the canonical rank-32
+projection is:
+
+- projected adapter bytes: `3,535,495,168`
+- projected submission zip: `888,873,792`
+- remaining headroom to Kaggle's 1GB limit: about `111.1MB`
+
+The physical artifact model matters: peft saves LoRA adapter weights as
 new float32 trainable tensors (`lora_A` / `lora_B`), not at the base
-model's bf16 dtype. The budget estimator therefore uses
+model's bf16 dtype. The estimator therefore uses
 `ADAPTER_WEIGHT_BYTES = 4` plus a conservative `ZIP_DEFLATED`
-compression ratio of `0.25`, calibrated against a real adapter probe.
+compression ratio of `0.25`, calibrated against a probe artifact.
 
 Three guards enforce the budget end to end:
 
@@ -187,9 +208,14 @@ make probe-submission-size
 ```
 
 This runs the self-contained tiny probe and writes
-`artifacts/adapter_submission_probe.json`. On H200, rerun the same probe
-script without `--tiny-mode` after any canonical geometry change so the
-budget constants stay tied to a measured adapter artifact.
+`artifacts/adapter_submission_probe.json`. Tiny-mode is only a formula
+smoke test; it is not a real compression calibration. Rerun the probe
+without `--tiny-mode` whenever any of the following changes:
+
+- PEFT / Transformers / Safetensors serialization behavior
+- Torch or dtype policy that could change saved LoRA tensor dtypes
+- Model geometry or target-module selection, including routed/shared MoE widths
+- Packaging behavior, such as extra files or zip compression settings
 
 ## Smoke and Validation
 

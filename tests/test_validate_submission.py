@@ -178,6 +178,11 @@ def test_validate_submission_rejects_projected_oversize_package(
             "projected_submission_zip_bytes": 1_100_000_000,
         },
     )
+    monkeypatch.setattr(
+        validate_submission_module,
+        "ensure_submission_budget_safe",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("submission-safe")),
+    )
 
     with pytest.raises(
         validate_submission_module.SubmissionValidationError,
@@ -189,5 +194,58 @@ def test_validate_submission_rejects_projected_oversize_package(
             output_path=tmp_path / "validation.json",
             smoke_input=smoke_input,
             labels=labels,
+            package_output=tmp_path / "submission.zip",
+        )
+
+
+def test_validate_submission_rejects_unknown_budget_when_packaging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    (adapter_dir / "adapter_model.safetensors").write_text("weights", encoding="utf-8")
+    (adapter_dir / "adapter_config.json").write_text(
+        '{"r": 32, "target_modules": ["in_proj", "out_proj"]}',
+        encoding="utf-8",
+    )
+
+    config_path = tmp_path / "unknown_config.yaml"
+    write_yaml(
+        config_path,
+        {
+            "base_model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+            "model_source": "huggingface",
+            "trust_remote_code": False,
+            "lora": {"rank": 32, "target_modules": ["in_proj", "out_proj"]},
+        },
+    )
+
+    smoke_input = tmp_path / "smoke.jsonl"
+    smoke_input.write_text("", encoding="utf-8")
+    labels_path = tmp_path / "labels.jsonl"
+    labels_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        validate_submission_module,
+        "run_inference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        validate_submission_module,
+        "evaluate_replica",
+        lambda **_kwargs: {"local_eval": "stub"},
+    )
+
+    with pytest.raises(
+        validate_submission_module.SubmissionValidationError,
+        match="cannot be estimated",
+    ):
+        validate_submission_module.validate_submission(
+            config_path=config_path,
+            adapter_dir=adapter_dir,
+            output_path=tmp_path / "validation.json",
+            smoke_input=smoke_input,
+            labels=labels_path,
             package_output=tmp_path / "submission.zip",
         )

@@ -40,28 +40,35 @@ KNOWN_TARGET_SUFFIXES: tuple[str, ...] = (
     "k_proj",
     "v_proj",
     "o_proj",
-    "gate_proj",
 )
 CANDIDATE_WIDE_SUFFIXES: tuple[str, ...] = (
     "q_proj",
     "k_proj",
     "v_proj",
     "o_proj",
-    "gate_proj",
 )
 SAFE_ADDITION_PRIORITY: tuple[str, ...] = (
     "q_proj",
     "k_proj",
     "v_proj",
     "o_proj",
-    "gate_proj",
 )
 DEFAULT_TARGET_REGEX = r".*\.(in_proj|out_proj|up_proj|down_proj)$"
 SUBMISSION_SAFE_WIDE_TARGET_REGEX = (
     r".*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$"
 )
-FULL_WIDE_TARGET_REGEX = (
-    r".*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj|gate_proj)$"
+# NOTE: gate_proj is intentionally absent. The current HF Nemotron-H
+# implementation does not expose a gate_proj nn.Linear. NemotronHMLP has only
+# up_proj and down_proj; NemotronHMOE.gate is a router module, not a
+# LoRA-compatible Linear. If a future model revision adds gate_proj as a real
+# Linear, update these suffix lists only after verifying it with
+# scripts/list_model_linear_modules.py against the actual model source.
+FULL_WIDE_TARGET_REGEX = SUBMISSION_SAFE_WIDE_TARGET_REGEX
+_HYPOTHETICAL_OVER_LIMIT_TARGET_REGEX = (
+    r".*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj|hypothetical_bulk_proj)$"
+)
+_ALL_RECOGNISED_SUFFIXES: tuple[str, ...] = KNOWN_TARGET_SUFFIXES + (
+    "hypothetical_bulk_proj",
 )
 NEMOTRON_3_NANO_30B_FALLBACK = {
     "model_type": "nemotron_h",
@@ -74,6 +81,7 @@ NEMOTRON_3_NANO_30B_FALLBACK = {
     "n_routed_experts": 128,
     "n_shared_experts": 1,
     "moe_intermediate_size": 1856,
+    "moe_shared_expert_intermediate_size": 3712,
     "mamba_in_proj_out_features": 10304,
     "mamba_out_proj_in_features": 4096,
 }
@@ -153,13 +161,13 @@ def _normalise_target_modules(raw_target_modules: Any) -> str | list[str]:
 def _selected_suffixes(target_modules: str | list[str]) -> list[str]:
     if isinstance(target_modules, list):
         selected = []
-        for suffix in KNOWN_TARGET_SUFFIXES:
+        for suffix in _ALL_RECOGNISED_SUFFIXES:
             if suffix in target_modules:
                 selected.append(suffix)
         return selected
     pattern = re.compile(target_modules)
     selected: list[str] = []
-    for suffix in KNOWN_TARGET_SUFFIXES:
+    for suffix in _ALL_RECOGNISED_SUFFIXES:
         fake_name = f"model.layers.0.{suffix}"
         if pattern.search(fake_name):
             selected.append(suffix)
@@ -167,7 +175,7 @@ def _selected_suffixes(target_modules: str | list[str]) -> list[str]:
 
 
 def _target_suffix_regex(suffixes: list[str]) -> str:
-    ordered = [suffix for suffix in KNOWN_TARGET_SUFFIXES if suffix in suffixes]
+    ordered = [suffix for suffix in _ALL_RECOGNISED_SUFFIXES if suffix in suffixes]
     if not ordered:
         return DEFAULT_TARGET_REGEX
     return r".*\.(" + "|".join(ordered) + r")$"
@@ -219,20 +227,29 @@ def _nemotron_arch_summary(
     )
     if layer_counts is None:
         return None, layer_error
-    experts_per_layer = int(config_payload["n_routed_experts"]) + int(config_payload["n_shared_experts"])
+    routed_experts = int(config_payload["n_routed_experts"])
+    shared_experts = int(config_payload["n_shared_experts"])
+    experts_per_layer = routed_experts + shared_experts
     hidden_size = int(config_payload["hidden_size"])
     head_dim = int(config_payload["head_dim"])
     q_out = int(config_payload["num_attention_heads"]) * head_dim
     kv_out = int(config_payload["num_key_value_heads"]) * head_dim
-    moe_intermediate_size = int(config_payload["moe_intermediate_size"])
     return {
         "model_family": "nemotron_h",
         "mamba_layers": layer_counts["mamba_layers"],
         "moe_layers": layer_counts["moe_layers"],
         "attention_layers": layer_counts["attention_layers"],
         "experts_per_layer": experts_per_layer,
+        "n_routed_experts_per_layer": routed_experts,
+        "n_shared_experts_per_layer": shared_experts,
         "hidden_size": hidden_size,
-        "moe_intermediate_size": moe_intermediate_size,
+        "moe_intermediate_size": int(config_payload["moe_intermediate_size"]),
+        "moe_shared_expert_intermediate_size": int(
+            config_payload.get(
+                "moe_shared_expert_intermediate_size",
+                config_payload["moe_intermediate_size"],
+            )
+        ),
         "q_out_features": q_out,
         "kv_out_features": kv_out,
         "mamba_in_proj_out_features": int(config_payload["mamba_in_proj_out_features"]),
@@ -242,6 +259,113 @@ def _nemotron_arch_summary(
 
 def _module_payload_bytes(*, in_features: int, out_features: int, rank: int) -> int:
     return (rank * int(in_features) + int(out_features) * rank) * ADAPTER_WEIGHT_BYTES
+
+
+def _nemotron_per_suffix_counts(arch: dict[str, Any]) -> dict[str, int]:
+    moe_module_count = arch["moe_layers"] * (
+        arch["n_routed_experts_per_layer"] + arch["n_shared_experts_per_layer"]
+    )
+    return {
+        "in_proj": arch["mamba_layers"],
+        "out_proj": arch["mamba_layers"],
+        "up_proj": moe_module_count,
+        "down_proj": moe_module_count,
+        "q_proj": arch["attention_layers"],
+        "k_proj": arch["attention_layers"],
+        "v_proj": arch["attention_layers"],
+        "o_proj": arch["attention_layers"],
+        "hypothetical_bulk_proj": moe_module_count,
+    }
+
+
+def _nemotron_per_suffix_total_bytes(
+    arch: dict[str, Any],
+    *,
+    rank: int,
+) -> dict[str, int]:
+    hidden = arch["hidden_size"]
+    routed_int = arch["moe_intermediate_size"]
+    shared_int = arch["moe_shared_expert_intermediate_size"]
+    routed_count = arch["n_routed_experts_per_layer"]
+    shared_count = arch["n_shared_experts_per_layer"]
+    moe_layers = arch["moe_layers"]
+    moe_counts = _nemotron_per_suffix_counts(arch)
+
+    up_total_per_moe_layer = (
+        routed_count
+        * _module_payload_bytes(
+            in_features=hidden,
+            out_features=routed_int,
+            rank=rank,
+        )
+        + shared_count
+        * _module_payload_bytes(
+            in_features=hidden,
+            out_features=shared_int,
+            rank=rank,
+        )
+    )
+    down_total_per_moe_layer = (
+        routed_count
+        * _module_payload_bytes(
+            in_features=routed_int,
+            out_features=hidden,
+            rank=rank,
+        )
+        + shared_count
+        * _module_payload_bytes(
+            in_features=shared_int,
+            out_features=hidden,
+            rank=rank,
+        )
+    )
+
+    return {
+        "in_proj": _module_payload_bytes(
+            in_features=hidden,
+            out_features=arch["mamba_in_proj_out_features"],
+            rank=rank,
+        )
+        * arch["mamba_layers"],
+        "out_proj": _module_payload_bytes(
+            in_features=arch["mamba_out_proj_in_features"],
+            out_features=hidden,
+            rank=rank,
+        )
+        * arch["mamba_layers"],
+        "up_proj": up_total_per_moe_layer * moe_layers,
+        "down_proj": down_total_per_moe_layer * moe_layers,
+        "q_proj": _module_payload_bytes(
+            in_features=hidden,
+            out_features=arch["q_out_features"],
+            rank=rank,
+        )
+        * arch["attention_layers"],
+        "k_proj": _module_payload_bytes(
+            in_features=hidden,
+            out_features=arch["kv_out_features"],
+            rank=rank,
+        )
+        * arch["attention_layers"],
+        "v_proj": _module_payload_bytes(
+            in_features=hidden,
+            out_features=arch["kv_out_features"],
+            rank=rank,
+        )
+        * arch["attention_layers"],
+        "o_proj": _module_payload_bytes(
+            in_features=arch["q_out_features"],
+            out_features=hidden,
+            rank=rank,
+        )
+        * arch["attention_layers"],
+        "hypothetical_bulk_proj": _module_payload_bytes(
+            in_features=hidden,
+            out_features=routed_int,
+            rank=rank,
+        )
+        * moe_counts["hypothetical_bulk_proj"],
+    }
 
 
 def estimate_submission_budget(
@@ -278,73 +402,20 @@ def estimate_submission_budget(
         }
 
     resolved_rank = int(rank if rank is not None else dict(config.get("lora", {})).get("rank", 16))
-    per_suffix_counts = {
-        "in_proj": arch["mamba_layers"],
-        "out_proj": arch["mamba_layers"],
-        "up_proj": arch["moe_layers"] * arch["experts_per_layer"],
-        "down_proj": arch["moe_layers"] * arch["experts_per_layer"],
-        "gate_proj": arch["moe_layers"] * arch["experts_per_layer"],
-        "q_proj": arch["attention_layers"],
-        "k_proj": arch["attention_layers"],
-        "v_proj": arch["attention_layers"],
-        "o_proj": arch["attention_layers"],
-    }
-    per_suffix_bytes = {
-        "in_proj": _module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["mamba_in_proj_out_features"],
-            rank=resolved_rank,
-        ),
-        "out_proj": _module_payload_bytes(
-            in_features=arch["mamba_out_proj_in_features"],
-            out_features=arch["hidden_size"],
-            rank=resolved_rank,
-        ),
-        "up_proj": _module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["moe_intermediate_size"],
-            rank=resolved_rank,
-        ),
-        "down_proj": _module_payload_bytes(
-            in_features=arch["moe_intermediate_size"],
-            out_features=arch["hidden_size"],
-            rank=resolved_rank,
-        ),
-        "gate_proj": _module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["moe_intermediate_size"],
-            rank=resolved_rank,
-        ),
-        "q_proj": _module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["q_out_features"],
-            rank=resolved_rank,
-        ),
-        "k_proj": _module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["kv_out_features"],
-            rank=resolved_rank,
-        ),
-        "v_proj": _module_payload_bytes(
-            in_features=arch["hidden_size"],
-            out_features=arch["kv_out_features"],
-            rank=resolved_rank,
-        ),
-        "o_proj": _module_payload_bytes(
-            in_features=arch["q_out_features"],
-            out_features=arch["hidden_size"],
-            rank=resolved_rank,
-        ),
-    }
+    per_suffix_counts = _nemotron_per_suffix_counts(arch)
+    per_suffix_total_bytes = _nemotron_per_suffix_total_bytes(
+        arch,
+        rank=resolved_rank,
+    )
 
     suffix_breakdown: dict[str, dict[str, int]] = {}
     projected_adapter_bytes = 0
     for suffix in selected_suffixes:
         count = per_suffix_counts[suffix]
-        total_bytes = per_suffix_bytes[suffix] * count
+        total_bytes = per_suffix_total_bytes[suffix]
         suffix_breakdown[suffix] = {
             "count": count,
-            "bytes_per_module": per_suffix_bytes[suffix],
+            "bytes_per_module": int(total_bytes // max(1, count)),
             "total_bytes": total_bytes,
         }
         projected_adapter_bytes += total_bytes
@@ -359,6 +430,8 @@ def estimate_submission_budget(
         "mamba_layers": arch["mamba_layers"],
         "moe_layers": arch["moe_layers"],
         "attention_layers": arch["attention_layers"],
+        "n_routed_experts_per_layer": arch["n_routed_experts_per_layer"],
+        "n_shared_experts_per_layer": arch["n_shared_experts_per_layer"],
         "target_modules": resolved_target_modules,
         "selected_suffixes": selected_suffixes,
         "rank": resolved_rank,
@@ -396,6 +469,13 @@ def propose_size_safe_target_modules(
             "reason": "could not resolve current target module suffixes",
             "current_target_modules": resolved_target_modules,
         }
+    current_known_suffixes = [suffix for suffix in current_suffixes if suffix in KNOWN_TARGET_SUFFIXES]
+    if not current_known_suffixes:
+        return {
+            "status": "unknown",
+            "reason": "could not resolve current known target module suffixes",
+            "current_target_modules": resolved_target_modules,
+        }
 
     current_budget = estimate_submission_budget(
         config,
@@ -410,9 +490,11 @@ def propose_size_safe_target_modules(
             "current_budget": current_budget,
         }
 
-    proposed_suffixes = [suffix for suffix in current_suffixes if suffix not in CANDIDATE_WIDE_SUFFIXES]
+    proposed_suffixes = [
+        suffix for suffix in current_known_suffixes if suffix not in CANDIDATE_WIDE_SUFFIXES
+    ]
     if not proposed_suffixes:
-        proposed_suffixes = list(current_suffixes)
+        proposed_suffixes = list(current_known_suffixes)
     search_base_suffixes = list(proposed_suffixes)
     budget_blocked_suffixes: list[str] = []
     candidate_evaluations: dict[str, dict[str, Any]] = {}
@@ -464,9 +546,15 @@ def propose_size_safe_target_modules(
 def ensure_submission_budget_safe(
     config: dict[str, Any],
     *,
+    target_modules: str | list[str] | None = None,
+    rank: int | None = None,
     allow_unknown_model: bool = False,
 ) -> dict[str, Any]:
-    budget = estimate_submission_budget(config)
+    budget = estimate_submission_budget(
+        config,
+        target_modules=target_modules,
+        rank=rank,
+    )
     if budget["status"] == "over_limit":
         raise ValueError(
             "Configured LoRA target_modules are not submission-safe: "
