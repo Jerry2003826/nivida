@@ -212,9 +212,13 @@ any observed compression ratio is unambiguous:
    calibration mode. The probe reads an already-trained adapter
    directory (`adapter_model.safetensors` + `adapter_config.json`),
    re-derives rank and target modules from the artifact's own config,
-   re-runs `ensure_submission_budget_safe` against those, and zips the
-   artifact as-is. The output key is
-   `real_trained_adapter_compression_ratio`. Every probe run also emits
+   re-runs `ensure_submission_budget_safe` against those, and then
+   hard-fails unless the measured safetensors bytes/module counts match
+   the canonical formula exactly. The trained-mode payload records
+   `real_trained_adapter_archive_ratio` plus
+   `real_trained_adapter_weight_compression_ratio`; the legacy
+   `real_trained_adapter_compression_ratio` is retained as a backwards-
+   compatible alias of the archive ratio. Every probe run also emits
    `lora_b_zero_fraction` and `lora_b_likely_untrained` so the
    provenance check is machine-readable.
 

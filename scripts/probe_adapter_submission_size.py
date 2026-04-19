@@ -323,6 +323,72 @@ def _measure_lora_b_zero_fraction(adapter_model_path: Path) -> dict[str, Any]:
     }
 
 
+def _summarise_artifact_shape_against_formula(
+    *,
+    formula: dict[str, Any],
+    measured: dict[str, Any],
+) -> dict[str, Any]:
+    expected_total_weight_bytes = int(formula["projected_adapter_bytes"])
+    observed_total_weight_bytes = int(
+        measured["weight_bytes_counted_from_safetensors"]
+    )
+    expected_suffix_breakdown = dict(formula.get("suffix_breakdown", {}))
+    observed_suffix_breakdown = dict(measured.get("suffix_breakdown_measured", {}))
+
+    mismatch_details: list[dict[str, Any]] = []
+    if observed_total_weight_bytes != expected_total_weight_bytes:
+        mismatch_details.append(
+            {
+                "kind": "total_weight_bytes",
+                "expected": expected_total_weight_bytes,
+                "observed": observed_total_weight_bytes,
+            }
+        )
+
+    for suffix in sorted(set(expected_suffix_breakdown) | set(observed_suffix_breakdown)):
+        expected = expected_suffix_breakdown.get(suffix)
+        observed = observed_suffix_breakdown.get(suffix)
+        expected_module_count = None if expected is None else int(expected["count"])
+        expected_tensor_bytes = None if expected is None else int(expected["total_bytes"])
+        observed_module_count = None if observed is None else int(observed["module_count"])
+        observed_tensor_bytes = None if observed is None else int(observed["tensor_bytes"])
+        if (
+            expected_module_count != observed_module_count
+            or expected_tensor_bytes != observed_tensor_bytes
+        ):
+            mismatch_details.append(
+                {
+                    "kind": "suffix",
+                    "suffix": suffix,
+                    "expected_module_count": expected_module_count,
+                    "observed_module_count": observed_module_count,
+                    "expected_tensor_bytes": expected_tensor_bytes,
+                    "observed_tensor_bytes": observed_tensor_bytes,
+                }
+            )
+
+    return {
+        "artifact_shape_matches_formula": not mismatch_details,
+        "artifact_shape_mismatch_details": mismatch_details,
+    }
+
+
+def _archive_ratio(*, zip_size_bytes: int, formula_adapter_bytes: int) -> float:
+    return zip_size_bytes / max(1, formula_adapter_bytes)
+
+
+def _weight_compression_ratio(
+    *,
+    zip_size_bytes: int,
+    formula_adapter_bytes: int,
+) -> float:
+    weight_bytes_after_fixed_overhead = max(
+        0,
+        zip_size_bytes - NEMOTRON_ZIP_OVERHEAD_BYTES,
+    )
+    return weight_bytes_after_fixed_overhead / max(1, formula_adapter_bytes)
+
+
 def _generate_tiny_adapter(
     *,
     adapter_dir: Path,
@@ -548,8 +614,28 @@ def probe_adapter_submission_size(
         entropy_pad_bytes = 0
 
     measured = _measure_saved_adapter(adapter_model_path)
+    shape_summary = _summarise_artifact_shape_against_formula(
+        formula=formula,
+        measured=measured,
+    )
+    if existing_adapter_dir is not None and not shape_summary["artifact_shape_matches_formula"]:
+        raise ValueError(
+            "Trained adapter artifact shape does not match canonical formula: "
+            f"measured={measured['weight_bytes_counted_from_safetensors']} "
+            f"formula={int(formula['projected_adapter_bytes'])}. "
+            "Refusing to use this artifact for compression calibration."
+        )
     lora_b_stats = _measure_lora_b_zero_fraction(adapter_model_path)
     formula_predicted_zip_bytes = int(formula["projected_submission_zip_bytes"])
+    formula_adapter_bytes = int(formula["projected_adapter_bytes"])
+    archive_ratio = _archive_ratio(
+        zip_size_bytes=int(final_zip_size),
+        formula_adapter_bytes=formula_adapter_bytes,
+    )
+    weight_compression_ratio = _weight_compression_ratio(
+        zip_size_bytes=int(final_zip_size),
+        formula_adapter_bytes=formula_adapter_bytes,
+    )
     formula_error_pct = abs(formula_predicted_zip_bytes - final_zip_size) / max(1, final_zip_size) * 100.0
     adapter_dir_size_bytes = sum(
         path.stat().st_size
@@ -580,12 +666,13 @@ def probe_adapter_submission_size(
         "adapter_dir_size_bytes": int(adapter_dir_size_bytes),
         "zip_size_bytes": int(final_zip_size),
         "formula_predicted_zip_bytes": formula_predicted_zip_bytes,
-        "formula_adapter_bytes": int(formula["projected_adapter_bytes"]),
+        "formula_adapter_bytes": formula_adapter_bytes,
         "formula_error_pct": formula_error_pct,
         "weight_bytes_counted_from_safetensors": measured["weight_bytes_counted_from_safetensors"],
         "implied_real_dtype_bytes": measured["implied_real_dtype_bytes"],
         "dtype_names": measured["dtype_names"],
         "suffix_breakdown_measured": measured["suffix_breakdown_measured"],
+        **shape_summary,
         "compression_ratio_estimate": NEMOTRON_ZIP_COMPRESSION_RATIO,
         "compression_overhead_bytes": NEMOTRON_ZIP_OVERHEAD_BYTES,
         "entropy_pad_bytes": int(entropy_pad_bytes),
@@ -595,19 +682,15 @@ def probe_adapter_submission_size(
     }
     if tiny_mode:
         payload["expected_analytical_zip_bytes"] = formula_predicted_zip_bytes
-        payload["formula_smoke_ratio_after_entropy_pad"] = (
-            final_zip_size / max(1, int(formula["projected_adapter_bytes"]))
-        )
+        payload["formula_smoke_ratio_after_entropy_pad"] = archive_ratio
         payload["tiny_mode_is_not_calibration"] = True
     elif existing_adapter_dir is not None:
-        payload["real_trained_adapter_compression_ratio"] = (
-            final_zip_size / max(1, int(formula["projected_adapter_bytes"]))
-        )
+        payload["real_trained_adapter_archive_ratio"] = archive_ratio
+        payload["real_trained_adapter_weight_compression_ratio"] = weight_compression_ratio
+        payload["real_trained_adapter_compression_ratio"] = archive_ratio
         payload["peft_weights_are_fresh"] = False
     else:
-        payload["fresh_peft_structure_compression_ratio"] = (
-            final_zip_size / max(1, int(formula["projected_adapter_bytes"]))
-        )
+        payload["fresh_peft_structure_compression_ratio"] = archive_ratio
         payload["peft_weights_are_fresh"] = True
         payload["fresh_peft_structure_is_not_calibration"] = True
 

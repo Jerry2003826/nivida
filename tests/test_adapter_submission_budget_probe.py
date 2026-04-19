@@ -10,6 +10,7 @@ from safetensors.numpy import save_file
 import src.student.adapter_submission_budget as budget_module
 from scripts.probe_adapter_submission_size import (
     TINY_NEMOTRON_LIKE_PAYLOAD,
+    _formula_from_payload,
     probe_adapter_submission_size,
 )
 from src.common.io import write_yaml
@@ -130,6 +131,8 @@ def test_probe_tiny_mode_json_marks_not_calibration(tmp_path: Path) -> None:
     assert payload["tiny_mode_is_not_calibration"] is True
     assert "formula_smoke_ratio_after_entropy_pad" in payload
     assert "real_trained_adapter_compression_ratio" not in payload
+    assert "real_trained_adapter_archive_ratio" not in payload
+    assert "real_trained_adapter_weight_compression_ratio" not in payload
     assert "fresh_peft_structure_compression_ratio" not in payload
 
 
@@ -245,7 +248,7 @@ def test_probe_rejects_missing_adapter_dir(tmp_path: Path) -> None:
         )
 
 
-def test_probe_trained_adapter_mode_reads_existing_artifact(tmp_path: Path) -> None:
+def test_probe_trained_adapter_mode_rejects_shape_mismatch(tmp_path: Path) -> None:
     config_path = _write_probe_config(tmp_path / "probe_config.yaml")
     output_path_tiny = tmp_path / "probe_tiny.json"
 
@@ -259,6 +262,32 @@ def test_probe_trained_adapter_mode_reads_existing_artifact(tmp_path: Path) -> N
     assert adapter_dir.is_dir()
     assert (adapter_dir / "adapter_config.json").is_file()
 
+    output_path_trained = tmp_path / "probe_trained.json"
+    with pytest.raises(ValueError, match="shape does not match canonical formula"):
+        probe_adapter_submission_size(
+            config=_probe_config_dict(),
+            config_path=config_path,
+            output_path=output_path_trained,
+            existing_adapter_dir=adapter_dir,
+        )
+
+    assert not output_path_trained.exists()
+
+
+def test_probe_trained_adapter_mode_reads_existing_artifact_when_shape_matches_formula(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write_probe_config(tmp_path / "probe_config.yaml")
+    output_path_tiny = tmp_path / "probe_tiny.json"
+
+    probe_adapter_submission_size(
+        config=_probe_config_dict(),
+        config_path=config_path,
+        output_path=output_path_tiny,
+        tiny_mode=True,
+    )
+    adapter_dir = output_path_tiny.with_name(f"{output_path_tiny.stem}_artifact")
     adapter_model_path = adapter_dir / "adapter_model.safetensors"
     with safe_open(adapter_model_path, framework="np") as handle:
         tensors = {key: handle.get_tensor(key) for key in handle.keys()}
@@ -268,6 +297,23 @@ def test_probe_trained_adapter_mode_reads_existing_artifact(tmp_path: Path) -> N
         if key.endswith(".lora_B.weight"):
             tensors[key] = rng.normal(size=tensor.shape).astype(np.float32)
     save_file(tensors, str(adapter_model_path))
+
+    tiny_formula = _formula_from_payload(
+        config_payload=TINY_NEMOTRON_LIKE_PAYLOAD,
+        target_modules=SUBMISSION_SAFE_WIDE_TARGET_REGEX,
+        rank=32,
+    )
+    tiny_budget = {
+        "status": "ok",
+        "within_budget": True,
+        "max_submission_zip_bytes": 1_000_000_000,
+        **tiny_formula,
+    }
+    monkeypatch.setattr(
+        budget_module,
+        "estimate_submission_budget",
+        lambda config, *, target_modules=None, rank=None: tiny_budget,
+    )
 
     output_path_trained = tmp_path / "probe_trained.json"
     payload = probe_adapter_submission_size(
@@ -279,11 +325,23 @@ def test_probe_trained_adapter_mode_reads_existing_artifact(tmp_path: Path) -> N
 
     assert payload["probe_mode"] == "trained_adapter"
     assert payload["peft_weights_are_fresh"] is False
+    assert payload["artifact_shape_matches_formula"] is True
+    assert payload["artifact_shape_mismatch_details"] == []
     assert "real_trained_adapter_compression_ratio" in payload
+    assert "real_trained_adapter_archive_ratio" in payload
+    assert "real_trained_adapter_weight_compression_ratio" in payload
     assert "fresh_peft_structure_compression_ratio" not in payload
     assert payload["lora_b_zero_fraction"] is not None
     assert payload["lora_b_zero_fraction"] < 0.01
     assert payload["lora_b_likely_untrained"] is False
+    assert (
+        payload["real_trained_adapter_compression_ratio"]
+        == payload["real_trained_adapter_archive_ratio"]
+    )
+    assert (
+        payload["real_trained_adapter_weight_compression_ratio"]
+        <= payload["real_trained_adapter_archive_ratio"]
+    )
 
 
 def test_probe_tiny_mode_reports_lora_b_all_zeros(tmp_path: Path) -> None:
@@ -302,4 +360,6 @@ def test_probe_tiny_mode_reports_lora_b_all_zeros(tmp_path: Path) -> None:
     assert payload["lora_b_likely_untrained"] is True
     assert payload["tiny_mode_is_not_calibration"] is True
     assert "real_trained_adapter_compression_ratio" not in payload
+    assert "real_trained_adapter_archive_ratio" not in payload
+    assert "real_trained_adapter_weight_compression_ratio" not in payload
     assert "fresh_peft_structure_compression_ratio" not in payload
