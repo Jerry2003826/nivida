@@ -14,6 +14,12 @@ from src.competition.split_builder import build_splits
 from src.teacher.chain_search import ChainSearchEngine
 from src.teacher.family_tagger import apply_family_tags
 from src.teacher.program_signature import annotate_example_from_candidates
+from src.teacher.stage2_annotation_provenance import (
+    STAGE2_ANNOTATION_BEAM_WIDTH,
+    STAGE2_ANNOTATION_MAX_DEPTH,
+    STAGE2_ANNOTATION_TOP_K,
+    build_stage2_annotation_provenance,
+)
 
 
 def main() -> None:
@@ -38,11 +44,25 @@ def main() -> None:
         split=dataset_split,
     )
     examples = apply_family_tags(examples)
-    engine = ChainSearchEngine(beam_width=8, max_depth=2)
+    engine = ChainSearchEngine(
+        beam_width=STAGE2_ANNOTATION_BEAM_WIDTH,
+        max_depth=STAGE2_ANNOTATION_MAX_DEPTH,
+    )
     for example in examples:
-        candidates = engine.solve_example(example, top_k=2)
+        candidates = engine.solve_example(example, top_k=STAGE2_ANNOTATION_TOP_K)
         annotate_example_from_candidates(example, candidates)
     write_jsonl(output_path, [example.to_dict() for example in examples])
+
+    from src.common.io import write_json
+
+    provenance_path = Path(f"{output_path}.provenance.json")
+    write_json(
+        provenance_path,
+        build_stage2_annotation_provenance(
+            input_path=input_path,
+            output_path=output_path,
+        ),
+    )
 
     if config.get("build_splits", True):
         split_cfg = config.get("split_strategy", config.get("split", {}))
@@ -54,7 +74,6 @@ def main() -> None:
         )
         output_dir = Path(split_output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        from src.common.io import write_json
 
         write_json(output_dir / "splits.json", split_payload)
 

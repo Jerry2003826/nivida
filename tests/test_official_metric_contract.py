@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import ast
+import inspect
+import json
+from pathlib import Path
+
 from src.competition.official_metric_contract import (
     EXTRACT_FINAL_ANSWER_SHA256,
+    EXPECTED_EXTRACT_FINAL_ANSWER_SHA256,
+    EXPECTED_VERIFY_SHA256,
+    METRIC_NOTEBOOK_RELATIVE_PATH,
     OFFICIAL_GUARD_TEXT,
     OFFICIAL_LLM_KWARGS,
     OFFICIAL_SAMPLING_KWARGS,
     VERIFY_SHA256,
+    current_contract_fingerprint,
     extract_final_answer,
     verify,
 )
@@ -58,6 +67,10 @@ def test_extract_fullwidth_colon_pattern() -> None:
     assert extract_final_answer("final answer：3.14") == "3.14"
 
 
+def test_fullwidth_colon_non_numeric_guard() -> None:
+    assert extract_final_answer("Final answer：XLVII") == "XLVII"
+
+
 def test_extract_fallback_last_number() -> None:
     assert extract_final_answer("Just a number 100 in text") == "100"
 
@@ -69,6 +82,10 @@ def test_extract_last_nonempty_boxed_wins() -> None:
 
 def test_extract_unclosed_boxed_accepted() -> None:
     assert extract_final_answer(r"the ans is \boxed{99") == "99"
+
+
+def test_boxed_regex_non_numeric_guard() -> None:
+    assert extract_final_answer(r"The answer is \boxed{XLVII}") == "XLVII"
 
 
 def test_verify_binary_leading_zero_rejected() -> None:
@@ -91,6 +108,10 @@ def test_verify_numeric_tolerance_ok() -> None:
     assert verify("24.64", "24.6401") is True
 
 
+def test_binary_guard_only_fires_on_pure_01() -> None:
+    assert verify("24", "24.1") is True
+
+
 def test_verify_numeric_tolerance_rejects_far() -> None:
     assert verify("24.64", "25.00") is False
 
@@ -106,3 +127,34 @@ def test_verify_parameter_order_sanity() -> None:
 def test_fingerprints_present() -> None:
     assert len(EXTRACT_FINAL_ANSWER_SHA256) == 64
     assert len(VERIFY_SHA256) == 64
+    assert len(EXPECTED_EXTRACT_FINAL_ANSWER_SHA256) == 64
+    assert len(EXPECTED_VERIFY_SHA256) == 64
+
+
+def test_notebook_source_parity() -> None:
+    nb_path = Path(METRIC_NOTEBOOK_RELATIVE_PATH)
+    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    official_src = "".join(
+        "".join(cell["source"]) + "\n\n"
+        for cell in nb["cells"]
+        if cell.get("cell_type") == "code"
+    )
+    lines = official_src.splitlines(keepends=True)
+    tree = ast.parse(official_src)
+
+    def get_func(name: str) -> str:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                return "".join(lines[node.lineno - 1:node.end_lineno])
+        raise AssertionError(f"{name} not found in official notebook")
+
+    from src.competition import official_metric_contract as contract
+
+    assert inspect.getsource(contract.extract_final_answer) == get_func("extract_final_answer")
+    assert inspect.getsource(contract.verify) == get_func("verify")
+
+
+def test_contract_fingerprint_reports_expected_notebook_digests() -> None:
+    fingerprint = current_contract_fingerprint().to_dict()
+    assert fingerprint["expected_extract_final_answer_sha256"] == EXTRACT_FINAL_ANSWER_SHA256
+    assert fingerprint["expected_verify_sha256"] == VERIFY_SHA256

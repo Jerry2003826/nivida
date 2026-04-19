@@ -4,29 +4,33 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.audit_equation_family import ANSWER_TYPES, classify_answer_type
-from src.common.io import load_jsonl, write_json
+from src.common.io import load_jsonl, read_json, write_json
 from src.competition.metrics import competition_correct as _repo_verify_bidirectional
 from src.competition.official_metric_contract import (
     current_contract_fingerprint,
     verify as _official_verify,
 )
 from src.competition.schema import PuzzleExample
+from src.student.sft_dataset_builder import (
+    HARD_TRIAD_FAMILIES,
+    _select_official_stage2_silver,
+    _select_official_stage2_strict,
+    _select_synth_stage2,
+)
 from src.teacher.chain_search import ChainSearchEngine
 from src.teacher.program_signature import annotate_example_from_candidates
+from src.teacher.stage2_annotation_provenance import (
+    stage2_provenance_matches_local,
+)
 
 
-STRICT_CONF_MIN = 0.80
-STRICT_COVERAGE_MIN = 1.0
-SILVER_CONF_MIN = 0.65
-SILVER_COVERAGE_MIN = 0.67
-HARD_TRIAD_FAMILIES: frozenset[str] = frozenset({"bit", "cipher", "equation"})
 KNOWN_SYNTH_SOURCES: tuple[str, ...] = (
     "chain_search",
     "program_signature",
@@ -35,11 +39,6 @@ KNOWN_SYNTH_SOURCES: tuple[str, ...] = (
     "synth_generator",
     "unknown",
 )
-CANONICAL_CHAIN_SEARCH = {
-    "beam_width": 8,
-    "max_depth": 2,
-    "top_k": 2,
-}
 
 
 @dataclass(slots=True)
@@ -59,41 +58,41 @@ class EvaluatedExample:
     repo_solver_verifiable: bool
     official_solver_verifiable: bool
     strict_repo: bool
+    strict_repo_reason: str | None
     strict_official: bool
+    strict_official_reason: str | None
     silver_repo: bool
     silver_official: bool
     synth_repo: bool
     synth_official: bool
     mismatched_support_pairs: list[dict[str, Any]]
+    repo_example: PuzzleExample
+    official_example: PuzzleExample
 
 
-def _normalize_family(row: dict[str, Any]) -> str:
-    metadata = row.get("metadata", {}) or {}
-    return str(
-        row.get("official_family")
+def _metadata_value(example: PuzzleExample, key: str, default: Any = None) -> Any:
+    extras = example.metadata.extras or {}
+    if key in extras and extras[key] not in (None, ""):
+        return extras[key]
+    if hasattr(example.metadata, key):
+        value = getattr(example.metadata, key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _clone_example(example: PuzzleExample) -> PuzzleExample:
+    return PuzzleExample.from_dict(example.to_dict())
+
+
+def _normalize_family_from_example(example: PuzzleExample, row: dict[str, Any]) -> str:
+    value = (
+        _metadata_value(example, "official_family")
+        or row.get("official_family")
         or row.get("family")
-        or metadata.get("official_family")
-        or metadata.get("family")
         or "unknown"
     )
-
-
-def _normalize_program_signature(row: dict[str, Any]) -> str | None:
-    metadata = row.get("metadata", {}) or {}
-    value = row.get("program_signature")
-    if value is None:
-        value = metadata.get("program_signature")
-    if value in (None, ""):
-        return None
     return str(value)
-
-
-def _normalize_teacher_confidence(row: dict[str, Any]) -> float:
-    metadata = row.get("metadata", {}) or {}
-    value = row.get("teacher_confidence")
-    if value is None:
-        value = metadata.get("teacher_confidence")
-    return float(value or 0.0)
 
 
 def _normalize_synth_source(row: dict[str, Any], input_path: str | Path) -> str:
@@ -123,7 +122,42 @@ def _normalize_synth_source(row: dict[str, Any], input_path: str | Path) -> str:
     return "unknown"
 
 
-def _support_pairs_from_row(row: dict[str, Any]) -> tuple[list[dict[str, str]] | None, str | None]:
+def _example_from_row(row: dict[str, Any], *, source_pool: str) -> PuzzleExample:
+    example = PuzzleExample.from_dict(row)
+    metadata = row.get("metadata", {}) or {}
+
+    if not example.raw_prompt and row.get("prompt"):
+        example.raw_prompt = str(row.get("prompt", ""))
+    if not example.official_instruction and row.get("official_instruction"):
+        example.official_instruction = str(row.get("official_instruction", ""))
+    if not example.query:
+        example.query = str(row.get("query", row.get("query_input", "")) or "")
+    if example.target_answer is None and row.get("target_answer") is not None:
+        example.target_answer = str(row.get("target_answer"))
+    if not example.metadata.official_family:
+        family = row.get("official_family") or row.get("family") or metadata.get("official_family")
+        if family not in (None, ""):
+            example.metadata.official_family = str(family)
+    if not example.metadata.program_signature:
+        signature = row.get("program_signature") or metadata.get("program_signature")
+        if signature not in (None, ""):
+            example.metadata.program_signature = str(signature)
+    if example.metadata.teacher_confidence is None:
+        confidence = row.get("teacher_confidence")
+        if confidence is None:
+            confidence = metadata.get("teacher_confidence")
+        if confidence is not None:
+            example.metadata.teacher_confidence = float(confidence)
+
+    if source_pool == "synth":
+        example.metadata.source = "synthetic"
+
+    return example
+
+
+def _support_pairs_from_row(
+    row: dict[str, Any],
+) -> tuple[list[dict[str, str]] | None, str | None]:
     metadata = row.get("metadata", {}) or {}
     extras = metadata.get("extras", {}) or {}
     support_pairs = extras.get("support_pairs")
@@ -139,7 +173,8 @@ def _support_pairs_from_row(row: dict[str, Any]) -> tuple[list[dict[str, str]] |
                     "prediction": str(pair.get("prediction", "")),
                 }
             )
-        return normalized, None if extras.get("query_prediction") is None else str(extras.get("query_prediction"))
+        query_prediction = extras.get("query_prediction")
+        return normalized, None if query_prediction is None else str(query_prediction)
 
     top_candidates = extras.get("chain_search_top_k") or extras.get("top_candidates")
     parsed_examples = row.get("parsed_examples") or row.get("train_pairs") or []
@@ -164,14 +199,23 @@ def _support_pairs_from_row(row: dict[str, Any]) -> tuple[list[dict[str, str]] |
     return None, None
 
 
-def _rerun_annotation(row: dict[str, Any]) -> tuple[list[dict[str, str]], str | None, str | None, float]:
-    example = PuzzleExample.from_dict(row)
+def _row_needs_rerun(row: dict[str, Any]) -> bool:
+    support_pairs, _query_prediction = _support_pairs_from_row(row)
+    return support_pairs is None
+
+
+def _rerun_annotation(
+    example: PuzzleExample,
+    *,
+    settings: Mapping[str, Any],
+) -> tuple[list[dict[str, str]], str | None]:
     engine = ChainSearchEngine(
-        beam_width=CANONICAL_CHAIN_SEARCH["beam_width"],
-        max_depth=CANONICAL_CHAIN_SEARCH["max_depth"],
+        beam_width=int(settings["beam_width"]),
+        max_depth=int(settings["max_depth"]),
     )
-    candidates = engine.solve_example(example, top_k=CANONICAL_CHAIN_SEARCH["top_k"])
-    annotate_example_from_candidates(example, candidates)
+    candidates = engine.solve_example(example, top_k=int(settings["top_k"]))
+    probe = _clone_example(example)
+    annotate_example_from_candidates(probe, candidates)
     top = candidates[0] if candidates else None
     predictions = [] if top is None else list(top.predictions)
     support_pairs = [
@@ -183,52 +227,22 @@ def _rerun_annotation(row: dict[str, Any]) -> tuple[list[dict[str, str]], str | 
         for pair, prediction in zip(example.parsed_examples, predictions)
     ]
     query_prediction = None if top is None or top.query_prediction is None else str(top.query_prediction)
-    return (
-        support_pairs,
-        query_prediction,
-        example.metadata.program_signature,
-        float(example.metadata.teacher_confidence or 0.0),
-    )
+    return support_pairs, query_prediction
 
 
-def _strict_gate(
+def _counterfactual_with_official_verify(
+    example: PuzzleExample,
     *,
-    teacher_confidence: float,
     support_coverage: float,
     solver_verifiable: bool,
-    program_signature: str | None,
-) -> bool:
-    return (
-        teacher_confidence >= STRICT_CONF_MIN
-        and solver_verifiable
-        and support_coverage >= STRICT_COVERAGE_MIN
-    )
-
-
-def _silver_gate(
-    *,
-    family: str,
-    teacher_confidence: float,
-    support_coverage: float,
-    solver_verifiable: bool,
-    program_signature: str | None,
-) -> bool:
-    return (
-        family in HARD_TRIAD_FAMILIES
-        and teacher_confidence >= SILVER_CONF_MIN
-        and support_coverage >= SILVER_COVERAGE_MIN
-        and (program_signature is not None or solver_verifiable)
-    )
-
-
-def _synth_gate(
-    *,
-    target_answer: str,
-    query_prediction: str | None,
-    solver_verifiable: bool,
-    program_signature: str | None,
-) -> bool:
-    return bool(target_answer) and query_prediction is not None and solver_verifiable and program_signature is not None
+) -> PuzzleExample:
+    clone = _clone_example(example)
+    clone.metadata.extras = {
+        **dict(clone.metadata.extras or {}),
+        "support_coverage": float(support_coverage),
+        "solver_verifiable": bool(solver_verifiable),
+    }
+    return clone
 
 
 def _rate(numerator: int, denominator: int, *, null_if_zero: bool = False) -> float | None:
@@ -240,11 +254,7 @@ def _rate(numerator: int, denominator: int, *, null_if_zero: bool = False) -> fl
 def _group_stats(rows: list[EvaluatedExample]) -> dict[str, Any]:
     strict_base = [row for row in rows if row.source_pool == "train" and row.strict_repo]
     strict_repo_only = [row for row in strict_base if not row.strict_official]
-    silver_base = [
-        row
-        for row in rows
-        if row.source_pool == "train" and row.silver_repo and not row.strict_repo
-    ]
+    silver_base = [row for row in rows if row.source_pool == "train" and row.silver_repo]
     silver_repo_only = [row for row in silver_base if not row.silver_official]
     synth_base = [row for row in rows if row.source_pool == "synth" and row.synth_repo]
     synth_repo_only = [row for row in synth_base if not row.synth_official]
@@ -270,6 +280,9 @@ def _example_payload(example: EvaluatedExample) -> dict[str, Any]:
         "official_solver_verifiable": example.official_solver_verifiable,
         "program_signature": example.program_signature,
         "teacher_confidence": example.teacher_confidence,
+        "strict_repo_reason": example.strict_repo_reason,
+        "strict_official_reason": example.strict_official_reason,
+        "annotation_source": example.annotation_source,
         "mismatched_support_pairs": example.mismatched_support_pairs,
     }
 
@@ -322,19 +335,79 @@ def _decision_hint(strict_pollution_rate: float) -> dict[str, Any]:
     }
 
 
+def _rerun_settings_from_provenance(
+    *,
+    stage2_provenance_json: str | Path | None,
+    train_jsonl: str | Path,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    provenance_path = (
+        Path(stage2_provenance_json)
+        if stage2_provenance_json is not None
+        else Path(f"{train_jsonl}.provenance.json")
+    )
+    if not provenance_path.exists():
+        payload = {
+            "status": "insufficient_evidence",
+            "reason": "stage2 provenance missing or mismatched",
+            "required": {"provenance_path": str(provenance_path)},
+            "found": None,
+        }
+        return None, payload
+
+    provenance = read_json(provenance_path)
+    ok, required, found = stage2_provenance_matches_local(provenance)
+    if not ok:
+        payload = {
+            "status": "insufficient_evidence",
+            "reason": "stage2 provenance missing or mismatched",
+            "required": required,
+            "found": {
+                **found,
+                "provenance_path": str(provenance_path),
+                "code_commit": provenance.get("code_commit"),
+                "input_jsonl_sha256": provenance.get("input_jsonl_sha256"),
+                "output_jsonl_sha256": provenance.get("output_jsonl_sha256"),
+                "created_at_utc": provenance.get("created_at_utc"),
+            },
+        }
+        return None, payload
+
+    settings = {
+        "beam_width": int(provenance["beam_width"]),
+        "max_depth": int(provenance["max_depth"]),
+        "top_k": int(provenance["top_k"]),
+        "annotation_engine": str(provenance["annotation_engine"]),
+        "operator_priority_hash": str(provenance["operator_priority_hash"]),
+        "provenance_path": str(provenance_path),
+        "code_commit": provenance.get("code_commit"),
+        "input_jsonl_sha256": provenance.get("input_jsonl_sha256"),
+        "output_jsonl_sha256": provenance.get("output_jsonl_sha256"),
+        "created_at_utc": provenance.get("created_at_utc"),
+    }
+    return settings, None
+
+
 def _evaluate_rows(
     *,
     rows: list[dict[str, Any]],
     source_pool: str,
     input_path: str | Path,
     allow_rerun_chain_search: bool,
+    rerun_settings: Mapping[str, Any] | None,
 ) -> list[EvaluatedExample]:
     evaluated: list[EvaluatedExample] = []
     for row in rows:
-        family = _normalize_family(row)
-        target_answer = str(row.get("target_answer", ""))
-        program_signature = _normalize_program_signature(row)
-        teacher_confidence = _normalize_teacher_confidence(row)
+        example = _example_from_row(row, source_pool=source_pool)
+        family = _normalize_family_from_example(example, row)
+        target_answer = str("" if example.target_answer is None else example.target_answer)
+        program_signature = (
+            None
+            if _metadata_value(example, "program_signature") in (None, "")
+            else str(_metadata_value(example, "program_signature"))
+        )
+        teacher_confidence = float(_metadata_value(example, "teacher_confidence", 0.0) or 0.0)
+        repo_support_coverage = float(example.metadata.extras.get("support_coverage", 0.0) or 0.0)
+        repo_solver_verifiable = bool(example.metadata.extras.get("solver_verifiable"))
 
         support_pairs, query_prediction = _support_pairs_from_row(row)
         annotation_source = "cached"
@@ -344,10 +417,11 @@ def _evaluate_rows(
                     "Missing support_pairs/query_prediction in metadata.extras. "
                     "Re-run with --allow-rerun-chain-search to rebuild annotations."
                 )
-            support_pairs, query_prediction, program_signature, teacher_confidence = _rerun_annotation(row)
+            if rerun_settings is None:
+                raise ValueError("rerun_settings is required when --allow-rerun-chain-search is enabled.")
+            support_pairs, query_prediction = _rerun_annotation(example, settings=rerun_settings)
             annotation_source = "rerun"
 
-        repo_matches: list[bool] = []
         official_matches: list[bool] = []
         mismatched_support_pairs: list[dict[str, Any]] = []
         for pair in support_pairs:
@@ -355,7 +429,6 @@ def _evaluate_rows(
             target = str(pair.get("target", ""))
             repo_match = _repo_verify_bidirectional(prediction, target)
             official_match = _official_verify(target, prediction)
-            repo_matches.append(repo_match)
             official_matches.append(official_match)
             if repo_match != official_match:
                 mismatched_support_pairs.append(
@@ -368,53 +441,22 @@ def _evaluate_rows(
                     }
                 )
 
-        repo_support_coverage = _rate(sum(repo_matches), len(repo_matches)) or 0.0
         official_support_coverage = _rate(sum(official_matches), len(official_matches)) or 0.0
-        repo_solver_verifiable = bool(repo_matches) and all(repo_matches) and query_prediction is not None
         official_solver_verifiable = bool(official_matches) and all(official_matches) and query_prediction is not None
 
-        strict_repo = _strict_gate(
-            teacher_confidence=teacher_confidence,
-            support_coverage=repo_support_coverage,
-            solver_verifiable=repo_solver_verifiable,
-            program_signature=program_signature,
-        )
-        strict_official = _strict_gate(
-            teacher_confidence=teacher_confidence,
-            support_coverage=official_support_coverage,
+        strict_repo, strict_repo_reason = _select_official_stage2_strict(example)
+        official_example = _counterfactual_with_official_verify(
+            example,
+            support_coverage=float(official_support_coverage),
             solver_verifiable=official_solver_verifiable,
-            program_signature=program_signature,
         )
-        silver_repo = _silver_gate(
-            family=family,
-            teacher_confidence=teacher_confidence,
-            support_coverage=repo_support_coverage,
-            solver_verifiable=repo_solver_verifiable,
-            program_signature=program_signature,
-        )
-        silver_official = _silver_gate(
-            family=family,
-            teacher_confidence=teacher_confidence,
-            support_coverage=official_support_coverage,
-            solver_verifiable=official_solver_verifiable,
-            program_signature=program_signature,
-        )
-        synth_repo = _synth_gate(
-            target_answer=target_answer,
-            query_prediction=query_prediction,
-            solver_verifiable=repo_solver_verifiable,
-            program_signature=program_signature,
-        )
-        synth_official = _synth_gate(
-            target_answer=target_answer,
-            query_prediction=query_prediction,
-            solver_verifiable=official_solver_verifiable,
-            program_signature=program_signature,
-        )
+        strict_official, strict_official_reason = _select_official_stage2_strict(official_example)
+        silver_repo = _select_official_stage2_silver(example) and not strict_repo
+        silver_official = _select_official_stage2_silver(official_example) and not strict_official
 
         evaluated.append(
             EvaluatedExample(
-                id=str(row.get("id", "")),
+                id=str(row.get("id", example.id)),
                 source_pool=source_pool,
                 family=family,
                 answer_type=classify_answer_type(target_answer),
@@ -424,20 +466,50 @@ def _evaluate_rows(
                 query_prediction=query_prediction,
                 program_signature=program_signature,
                 teacher_confidence=teacher_confidence,
-                repo_support_coverage=float(repo_support_coverage),
+                repo_support_coverage=repo_support_coverage,
                 official_support_coverage=float(official_support_coverage),
                 repo_solver_verifiable=repo_solver_verifiable,
                 official_solver_verifiable=official_solver_verifiable,
-                strict_repo=strict_repo,
-                strict_official=strict_official,
-                silver_repo=silver_repo,
-                silver_official=silver_official,
-                synth_repo=synth_repo,
-                synth_official=synth_official,
+                strict_repo=bool(strict_repo),
+                strict_repo_reason=strict_repo_reason,
+                strict_official=bool(strict_official),
+                strict_official_reason=strict_official_reason,
+                silver_repo=bool(silver_repo),
+                silver_official=bool(silver_official),
+                synth_repo=False,
+                synth_official=False,
                 mismatched_support_pairs=mismatched_support_pairs,
+                repo_example=example,
+                official_example=official_example,
             )
         )
     return evaluated
+
+
+def _populate_synth_selection(
+    *,
+    train_examples: list[EvaluatedExample],
+    synth_examples: list[EvaluatedExample],
+) -> None:
+    repo_strict_signatures = {
+        row.program_signature
+        for row in train_examples
+        if row.strict_repo and row.program_signature
+    }
+    official_strict_signatures = {
+        row.program_signature
+        for row in train_examples
+        if row.strict_official and row.program_signature
+    }
+    for row in synth_examples:
+        row.synth_repo = _select_synth_stage2(
+            row.repo_example,
+            official_signatures=repo_strict_signatures,
+        )
+        row.synth_official = _select_synth_stage2(
+            row.official_example,
+            official_signatures=official_strict_signatures,
+        )
 
 
 def run_audit(
@@ -445,6 +517,7 @@ def run_audit(
     train_jsonl: str | Path,
     synth_jsonl: str | Path,
     stage2_report: str | Path | None,
+    stage2_provenance_json: str | Path | None,
     output: str | Path,
     samples_to_include: int,
     allow_rerun_chain_search: bool,
@@ -463,28 +536,40 @@ def run_audit(
     train_rows = load_jsonl(train_path)
     synth_rows = load_jsonl(synth_path) if synth_path.exists() else []
 
-    evaluated = _evaluate_rows(
+    rerun_settings: dict[str, Any] | None = None
+    if allow_rerun_chain_search and any(_row_needs_rerun(row) for row in train_rows + synth_rows):
+        rerun_settings, insufficient_payload = _rerun_settings_from_provenance(
+            stage2_provenance_json=stage2_provenance_json,
+            train_jsonl=train_path,
+        )
+        if insufficient_payload is not None:
+            write_json(output, insufficient_payload)
+            return insufficient_payload
+
+    train_examples = _evaluate_rows(
         rows=train_rows,
         source_pool="train",
         input_path=train_path,
         allow_rerun_chain_search=allow_rerun_chain_search,
-    ) + _evaluate_rows(
+        rerun_settings=rerun_settings,
+    )
+    synth_examples = _evaluate_rows(
         rows=synth_rows,
         source_pool="synth",
         input_path=synth_path,
         allow_rerun_chain_search=allow_rerun_chain_search,
+        rerun_settings=rerun_settings,
+    )
+    _populate_synth_selection(
+        train_examples=train_examples,
+        synth_examples=synth_examples,
     )
 
-    train_examples = [row for row in evaluated if row.source_pool == "train"]
-    synth_examples = [row for row in evaluated if row.source_pool == "synth"]
+    evaluated = train_examples + synth_examples
 
     strict_repo_base = [row for row in train_examples if row.strict_repo]
     strict_repo_only = [row for row in strict_repo_base if not row.strict_official]
-    silver_repo_base = [
-        row
-        for row in train_examples
-        if row.silver_repo and not row.strict_repo
-    ]
+    silver_repo_base = [row for row in train_examples if row.silver_repo]
     silver_repo_only = [row for row in silver_repo_base if not row.silver_official]
     synth_repo_base = [row for row in synth_examples if row.synth_repo]
     synth_repo_only = [row for row in synth_repo_base if not row.synth_official]
@@ -513,42 +598,54 @@ def run_audit(
         for annotation_source in ("cached", "rerun")
     }
 
-    strict_pollution_rate = _rate(len(strict_repo_only), len(strict_repo_base)) or 0.0
+    strict_pollution_rate = _rate(len(strict_repo_only), len(strict_repo_base), null_if_zero=True)
+    summary = {
+        "num_train_examples": len(train_examples),
+        "num_synth_examples": len(synth_examples),
+        "strict_repo_accepted": len(strict_repo_base),
+        "strict_official_accepted": sum(row.strict_official for row in train_examples),
+        "strict_repo_only": len(strict_repo_only),
+        "strict_pollution_rate": strict_pollution_rate,
+        "silver_repo_accepted": len(silver_repo_base),
+        "silver_official_accepted": sum(row.silver_official for row in train_examples),
+        "silver_repo_only": len(silver_repo_only),
+        "silver_pollution_rate": _rate(len(silver_repo_only), len(silver_repo_base), null_if_zero=True),
+        "synth_repo_accepted": len(synth_repo_base),
+        "synth_official_accepted": sum(row.synth_official for row in synth_examples),
+        "synth_repo_only": len(synth_repo_only),
+        "synth_pollution_rate": _rate(len(synth_repo_only), len(synth_repo_base), null_if_zero=True),
+    }
+
+    decision_hint: dict[str, Any]
+    if len(strict_repo_base) == 0:
+        decision_hint = {
+            "action": "insufficient_evidence",
+            "reason": "strict_repo_accepted == 0 (no samples passed repo strict gate)",
+        }
+    else:
+        assert strict_pollution_rate is not None
+        decision_hint = _decision_hint(strict_pollution_rate)
+
     payload = {
         "inputs": {
             "train_jsonl": str(train_path),
             "synth_jsonl": str(synth_path),
             "stage2_report": None if stage2_report is None else str(stage2_report),
+            "stage2_provenance_json": None if rerun_settings is None else str(rerun_settings["provenance_path"]),
             "contract_fingerprint": current_contract_fingerprint().to_dict(),
         },
-        "thresholds": {
-            "strict": {"conf_min": STRICT_CONF_MIN, "coverage_min": STRICT_COVERAGE_MIN},
-            "silver": {"conf_min": SILVER_CONF_MIN, "coverage_min": SILVER_COVERAGE_MIN},
+        "selection_contract": {
+            "strict_selector": "src.student.sft_dataset_builder._select_official_stage2_strict",
+            "silver_selector": "src.student.sft_dataset_builder._select_official_stage2_silver",
+            "synth_selector": "src.student.sft_dataset_builder._select_synth_stage2",
+            "hard_triad_families": list(HARD_TRIAD_FAMILIES),
         },
-        "summary": {
-            "num_train_examples": len(train_examples),
-            "num_synth_examples": len(synth_examples),
-            "strict_repo_accepted": len(strict_repo_base),
-            "strict_official_accepted": sum(row.strict_official for row in train_examples),
-            "strict_repo_only": len(strict_repo_only),
-            "strict_pollution_rate": strict_pollution_rate,
-            "silver_repo_accepted": len(silver_repo_base),
-            "silver_official_accepted": sum(
-                row.silver_official and not row.strict_repo
-                for row in train_examples
-            ),
-            "silver_repo_only": len(silver_repo_only),
-            "silver_pollution_rate": _rate(len(silver_repo_only), len(silver_repo_base)) or 0.0,
-            "synth_repo_accepted": len(synth_repo_base),
-            "synth_official_accepted": sum(row.synth_official for row in synth_examples),
-            "synth_repo_only": len(synth_repo_only),
-            "synth_pollution_rate": _rate(len(synth_repo_only), len(synth_repo_base)) or 0.0,
-        },
+        "summary": summary,
         "by_family": by_family,
         "by_synth_source": by_synth_source,
         "by_answer_type": by_answer_type,
         "by_annotation_source": by_annotation_source,
-        "decision_hint": _decision_hint(strict_pollution_rate),
+        "decision_hint": decision_hint,
         "examples": {
             "strict_repo_only": [
                 _example_payload(row)
@@ -573,16 +670,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--train-jsonl", default="data/processed/stage2_official_train_no_hard_valid.jsonl")
     parser.add_argument("--synth-jsonl", default="data/synthetic/synth_hard_triads.jsonl")
     parser.add_argument("--stage2-report")
+    parser.add_argument("--stage2-provenance-json")
     parser.add_argument("--output", default="data/processed/audit_teacher_gate_extractor_parity.json")
     parser.add_argument("--samples-to-include", type=int, default=50)
     parser.add_argument("--allow-rerun-chain-search", action="store_true")
-    parser.add_argument("--strict-strict-gate", action="store_true", default=True)
     args = parser.parse_args(argv)
 
     run_audit(
         train_jsonl=args.train_jsonl,
         synth_jsonl=args.synth_jsonl,
         stage2_report=args.stage2_report,
+        stage2_provenance_json=args.stage2_provenance_json,
         output=args.output,
         samples_to_include=max(0, int(args.samples_to_include)),
         allow_rerun_chain_search=bool(args.allow_rerun_chain_search),

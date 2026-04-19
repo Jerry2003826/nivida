@@ -207,8 +207,11 @@ def evaluate_official_vllm_proxy(
     return payload
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Evaluate an adapter with the official vLLM prompt/sampling contract.")
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Evaluate an adapter with the official vLLM prompt/sampling contract.",
+        allow_abbrev=False,
+    )
     parser.add_argument("--adapter-dir", required=True)
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
@@ -216,8 +219,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--num-repeats", type=int, default=1)
     parser.add_argument("--write-raw-predictions", action="store_true")
     parser.add_argument("--raw-predictions-dir")
-    parser.add_argument("--seed-base", type=int, default=0)
     parser.add_argument("--no-load-base-model", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = _build_arg_parser()
     args = parser.parse_args(argv)
 
     evaluate_official_vllm_proxy(

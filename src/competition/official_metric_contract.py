@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 import math
 import re
+from functools import lru_cache
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -149,8 +152,41 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+@lru_cache(maxsize=1)
+def _metric_notebook_path() -> Path:
+    return Path(METRIC_NOTEBOOK_RELATIVE_PATH)
+
+
+@lru_cache(maxsize=1)
+def _metric_notebook_code_source() -> str:
+    notebook = json.loads(_metric_notebook_path().read_text(encoding="utf-8"))
+    return "".join(
+        "".join(cell["source"]) + "\n\n"
+        for cell in notebook["cells"]
+        if cell.get("cell_type") == "code"
+    )
+
+
+@lru_cache(maxsize=None)
+def _notebook_function_source(name: str) -> str:
+    import ast
+
+    source = _metric_notebook_code_source()
+    lines = source.splitlines(keepends=True)
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return "".join(lines[node.lineno - 1:node.end_lineno])
+    raise ValueError(f"Function {name!r} not found in {METRIC_NOTEBOOK_RELATIVE_PATH}.")
+
+
 EXTRACT_FINAL_ANSWER_SHA256 = _sha256(_source_of(extract_final_answer))
 VERIFY_SHA256 = _sha256(_source_of(verify))
+EXPECTED_EXTRACT_FINAL_ANSWER_SHA256 = _sha256(
+    _notebook_function_source("extract_final_answer")
+)
+EXPECTED_VERIFY_SHA256 = _sha256(_notebook_function_source("verify"))
+METRIC_NOTEBOOK_SHA256 = hashlib.sha256(_metric_notebook_path().read_bytes()).hexdigest()
 
 
 def build_official_prompt(user_prompt: str, tokenizer: Any) -> str:
@@ -170,6 +206,9 @@ class ContractFingerprint:
     snapshot_date: str
     extract_sha256: str
     verify_sha256: str
+    expected_extract_sha256: str
+    expected_verify_sha256: str
+    notebook_sha256: str
     llm_kwargs: Mapping[str, Any]
     sampling_kwargs: Mapping[str, Any]
     guard_text: str
@@ -180,6 +219,9 @@ class ContractFingerprint:
             "metric_notebook_relative_path": METRIC_NOTEBOOK_RELATIVE_PATH,
             "extract_final_answer_sha256": self.extract_sha256,
             "verify_sha256": self.verify_sha256,
+            "expected_extract_final_answer_sha256": self.expected_extract_sha256,
+            "expected_verify_sha256": self.expected_verify_sha256,
+            "metric_notebook_sha256": self.notebook_sha256,
             "official_llm_kwargs": dict(self.llm_kwargs),
             "official_sampling_kwargs": dict(self.sampling_kwargs),
             "official_guard_text": self.guard_text,
@@ -191,6 +233,9 @@ def current_contract_fingerprint() -> ContractFingerprint:
         snapshot_date=METRIC_NOTEBOOK_SNAPSHOT_DATE,
         extract_sha256=EXTRACT_FINAL_ANSWER_SHA256,
         verify_sha256=VERIFY_SHA256,
+        expected_extract_sha256=EXPECTED_EXTRACT_FINAL_ANSWER_SHA256,
+        expected_verify_sha256=EXPECTED_VERIFY_SHA256,
+        notebook_sha256=METRIC_NOTEBOOK_SHA256,
         llm_kwargs=OFFICIAL_LLM_KWARGS,
         sampling_kwargs=OFFICIAL_SAMPLING_KWARGS,
         guard_text=OFFICIAL_GUARD_TEXT,

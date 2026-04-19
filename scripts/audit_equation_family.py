@@ -33,7 +33,7 @@ ANSWER_TYPES: tuple[str, ...] = (
 )
 
 _PAIR_LINE_RE = re.compile(r"^(\S+)\s*=\s*(\S+)$", re.MULTILINE)
-_PAIR_INLINE_RE = re.compile(r"(\S+)\s*=\s*(\S+)(?=[\n,;])")
+_PAIR_INLINE_RE = re.compile(r"(\S+)\s*=\s*(\S+)(?=$|[\n,;])", re.MULTILINE)
 _OPERATOR_RE = re.compile(r"\d+\s*[+\-*/|\\%^]\s*\d+\s*=\s*\S+")
 _ARITHMETIC_TOKEN_RE = re.compile(r"\d+[+\-*/|\\]\d+")
 _QUERY_RE = re.compile(r"Now,\s*determine the result for:\s*(.+)$", re.IGNORECASE | re.MULTILINE)

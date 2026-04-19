@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from scripts.audit_equation_family import extract_shown_examples
+
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -75,3 +77,9 @@ def test_audit_runs_and_classifies(tmp_path: Path) -> None:
         "investigate-manual",
     }
     assert samp.exists() and samp.stat().st_size > 0
+
+
+def test_inline_pair_at_prompt_end_is_counted() -> None:
+    pairs = extract_shown_examples("A = 1, B = 2")
+    assert ("A", "1") in pairs
+    assert ("B", "2") in pairs
