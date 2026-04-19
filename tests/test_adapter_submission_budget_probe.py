@@ -159,6 +159,27 @@ def test_probe_tiny_mode_respects_shared_expert_size(tmp_path: Path) -> None:
     assert payload["formula_suffix_breakdown"]["up_proj"]["total_bytes"] == expected_up_total
 
 
+def test_probe_tiny_mode_uses_realistic_nemotron_peft_key_paths(tmp_path: Path) -> None:
+    config_path = _write_probe_config(tmp_path / "probe_config.yaml")
+    output_path = tmp_path / "probe.json"
+
+    payload = probe_adapter_submission_size(
+        config=_probe_config_dict(),
+        config_path=config_path,
+        output_path=output_path,
+        tiny_mode=True,
+    )
+
+    with safe_open(Path(payload["adapter_model_path"]), framework="np") as handle:
+        keys = list(handle.keys())
+
+    assert any(key.startswith("base_model.model.backbone.layers.") for key in keys)
+    assert any(".mixer.in_proj.lora_A.weight" in key for key in keys)
+    assert any(".mixer.experts.0.up_proj.lora_A.weight" in key for key in keys)
+    assert any(".mixer.shared_experts.up_proj.lora_A.weight" in key for key in keys)
+    assert any(".mixer.q_proj.lora_A.weight" in key for key in keys)
+
+
 def test_probe_refuses_to_run_with_unsafe_target_modules(tmp_path: Path) -> None:
     config_path = _write_probe_config(
         tmp_path / "unsafe_probe_config.yaml",

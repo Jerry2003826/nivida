@@ -56,6 +56,15 @@ def test_nemotron_layer_count_matches_redhatai_spec() -> None:
     assert budget["n_shared_experts_per_layer"] == 1
 
 
+def test_nemotron_mamba_projection_dims_are_derived_from_config_fields() -> None:
+    arch, error = budget_module._nemotron_arch_summary(dict(NEMOTRON_3_NANO_30B_FALLBACK))
+
+    assert error is None
+    assert arch is not None
+    assert arch["mamba_in_proj_out_features"] == 10_304
+    assert arch["mamba_out_proj_in_features"] == 4_096
+
+
 def test_propose_size_safe_target_modules_reaches_canonical_safe_regex() -> None:
     recommendation = propose_size_safe_target_modules(_nemotron_config())
 

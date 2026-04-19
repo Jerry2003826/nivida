@@ -82,8 +82,10 @@ NEMOTRON_3_NANO_30B_FALLBACK = {
     "n_shared_experts": 1,
     "moe_intermediate_size": 1856,
     "moe_shared_expert_intermediate_size": 3712,
-    "mamba_in_proj_out_features": 10304,
-    "mamba_out_proj_in_features": 4096,
+    "mamba_num_heads": 64,
+    "mamba_head_dim": 64,
+    "n_groups": 8,
+    "ssm_state_size": 128,
 }
 
 
@@ -232,6 +234,21 @@ def _nemotron_arch_summary(
     experts_per_layer = routed_experts + shared_experts
     hidden_size = int(config_payload["hidden_size"])
     head_dim = int(config_payload["head_dim"])
+    try:
+        mamba_num_heads = int(config_payload["mamba_num_heads"])
+        mamba_head_dim = int(config_payload["mamba_head_dim"])
+        n_groups = int(config_payload["n_groups"])
+        ssm_state_size = int(config_payload["ssm_state_size"])
+    except KeyError as exc:
+        return None, (
+            "missing Nemotron-H Mamba config field required for projection geometry: "
+            f"{exc.args[0]}"
+        )
+    mamba_intermediate_size = mamba_num_heads * mamba_head_dim
+    mamba_conv_dim = mamba_intermediate_size + 2 * n_groups * ssm_state_size
+    mamba_in_proj_out_features = (
+        mamba_intermediate_size + mamba_conv_dim + mamba_num_heads
+    )
     q_out = int(config_payload["num_attention_heads"]) * head_dim
     kv_out = int(config_payload["num_key_value_heads"]) * head_dim
     return {
@@ -252,8 +269,8 @@ def _nemotron_arch_summary(
         ),
         "q_out_features": q_out,
         "kv_out_features": kv_out,
-        "mamba_in_proj_out_features": int(config_payload["mamba_in_proj_out_features"]),
-        "mamba_out_proj_in_features": int(config_payload["mamba_out_proj_in_features"]),
+        "mamba_in_proj_out_features": mamba_in_proj_out_features,
+        "mamba_out_proj_in_features": mamba_intermediate_size,
     }, None
 
 

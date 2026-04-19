@@ -188,7 +188,8 @@ The physical artifact model matters: peft saves LoRA adapter weights as
 new float32 trainable tensors (`lora_A` / `lora_B`), not at the base
 model's bf16 dtype. The estimator therefore uses
 `ADAPTER_WEIGHT_BYTES = 4` plus a conservative `ZIP_DEFLATED`
-compression ratio of `0.25`, calibrated against a probe artifact.
+compression ratio of `0.25`, calibrated against a real no-tiny PEFT
+probe artifact. Tiny-mode remains only a formula smoke test.
 
 Three guards enforce the budget end to end:
 

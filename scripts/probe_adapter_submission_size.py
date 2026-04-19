@@ -42,8 +42,10 @@ TINY_NEMOTRON_LIKE_PAYLOAD = {
     "n_shared_experts": 1,
     "moe_intermediate_size": 48,
     "moe_shared_expert_intermediate_size": 72,
-    "mamba_in_proj_out_features": 96,
-    "mamba_out_proj_in_features": 80,
+    "mamba_num_heads": 4,
+    "mamba_head_dim": 8,
+    "n_groups": 1,
+    "ssm_state_size": 14,
 }
 
 
@@ -292,11 +294,12 @@ def _generate_tiny_adapter(
     selected_suffixes = set(formula["selected_suffixes"])
 
     for layer_index, layer_kind in enumerate(layer_kinds):
+        mixer_prefix = f"base_model.model.backbone.layers.{layer_index}.mixer"
         if layer_kind == "M":
             suffixes = [suffix for suffix in ("in_proj", "out_proj") if suffix in selected_suffixes]
             for suffix in suffixes:
                 in_features, out_features = _suffix_dimensions(arch, suffix)
-                prefix = f"base_model.model.layers.{layer_index}.mixer.{suffix}"
+                prefix = f"{mixer_prefix}.{suffix}"
                 tensors[f"{prefix}.lora_A.weight"] = np.zeros((rank, in_features), dtype=np.float32)
                 tensors[f"{prefix}.lora_B.weight"] = np.zeros((out_features, rank), dtype=np.float32)
         elif layer_kind == "E":
@@ -308,9 +311,7 @@ def _generate_tiny_adapter(
                         suffix,
                         expert_kind="routed",
                     )
-                    prefix = (
-                        f"base_model.model.layers.{layer_index}.experts.{expert_index}.{suffix}"
-                    )
+                    prefix = f"{mixer_prefix}.experts.{expert_index}.{suffix}"
                     tensors[f"{prefix}.lora_A.weight"] = np.zeros((rank, in_features), dtype=np.float32)
                     tensors[f"{prefix}.lora_B.weight"] = np.zeros((out_features, rank), dtype=np.float32)
             for shared_index in range(arch["n_shared_experts_per_layer"]):
@@ -321,10 +322,10 @@ def _generate_tiny_adapter(
                         expert_kind="shared",
                     )
                     if arch["n_shared_experts_per_layer"] == 1:
-                        prefix = f"base_model.model.layers.{layer_index}.shared_experts.{suffix}"
+                        prefix = f"{mixer_prefix}.shared_experts.{suffix}"
                     else:
                         prefix = (
-                            f"base_model.model.layers.{layer_index}.shared_experts."
+                            f"{mixer_prefix}.shared_experts."
                             f"{shared_index}.{suffix}"
                         )
                     tensors[f"{prefix}.lora_A.weight"] = np.zeros((rank, in_features), dtype=np.float32)
@@ -333,7 +334,7 @@ def _generate_tiny_adapter(
             suffixes = [suffix for suffix in ("q_proj", "k_proj", "v_proj", "o_proj") if suffix in selected_suffixes]
             for suffix in suffixes:
                 in_features, out_features = _suffix_dimensions(arch, suffix)
-                prefix = f"base_model.model.layers.{layer_index}.self_attn.{suffix}"
+                prefix = f"{mixer_prefix}.{suffix}"
                 tensors[f"{prefix}.lora_A.weight"] = np.zeros((rank, in_features), dtype=np.float32)
                 tensors[f"{prefix}.lora_B.weight"] = np.zeros((out_features, rank), dtype=np.float32)
 
