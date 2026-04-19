@@ -93,6 +93,7 @@ def test_enumeration_and_regex_match(tmp_path: Path, monkeypatch) -> None:
     assert counts["q_proj"] == 1
     assert counts["in_proj"] == 2
     assert counts["up_proj"] == 3
+    assert counts.get("gate_proj", 0) == 0
     assert set(data["uncovered_candidate_suffixes"]) == {
         "q_proj",
         "k_proj",

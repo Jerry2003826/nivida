@@ -27,7 +27,6 @@ KNOWN_SUFFIXES: tuple[str, ...] = (
     "k_proj",
     "v_proj",
     "o_proj",
-    "gate_proj",
     "router",
     "gate",
 )
@@ -36,7 +35,6 @@ CANDIDATE_WIDE_SUFFIXES: tuple[str, ...] = (
     "k_proj",
     "v_proj",
     "o_proj",
-    "gate_proj",
 )
 DEFAULT_TARGET_REGEX = r".*\.(in_proj|out_proj|up_proj|down_proj)$"
 
@@ -168,7 +166,7 @@ def _module_category(
         return "attention"
     if suffix in {"in_proj", "out_proj"}:
         return "attention" if attention_hint else "mamba"
-    if suffix in {"up_proj", "down_proj", "gate_proj"}:
+    if suffix in {"up_proj", "down_proj"}:
         return "moe_expert" if "experts" in parent_path else "mlp"
     if suffix in {"router", "gate"}:
         return "moe_router"
