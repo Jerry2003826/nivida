@@ -547,6 +547,37 @@ def summarise_model_losses(outputs: Any) -> dict[str, float]:
     return summary
 
 
+def should_capture_loss_outputs(
+    *,
+    global_step: int,
+    logging_steps: int,
+    return_outputs: bool,
+) -> bool:
+    if return_outputs:
+        return True
+    logging_every = max(1, int(logging_steps))
+    candidate_step = max(1, int(global_step) + 1)
+    return candidate_step % logging_every == 0
+
+
+def should_require_strict_divergence_check(
+    *,
+    global_step: int,
+    warmup_steps: int,
+    floor_step: int = 250,
+    warmup_multiplier: float = 2.0,
+) -> bool:
+    thresholds: list[int] = []
+    scaled_warmup = math.ceil(max(0, int(warmup_steps)) * max(0.0, float(warmup_multiplier)))
+    if scaled_warmup > 0:
+        thresholds.append(scaled_warmup)
+    if int(floor_step) > 0:
+        thresholds.append(int(floor_step))
+    if not thresholds:
+        return True
+    return int(global_step) >= min(thresholds)
+
+
 def _sample_keys_evenly(keys: list[str], limit: int) -> list[str]:
     if len(keys) <= limit:
         return list(keys)
@@ -583,7 +614,14 @@ def probe_saved_lora_artifact(
     if not path.exists():
         raise FileNotFoundError(f"Saved adapter artifact is missing: {path}")
 
-    with safe_open(str(path), framework="np") as handle:
+    probe_framework = "np"
+    try:
+        handle_cm = safe_open(str(path), framework="pt")
+        probe_framework = "pt"
+    except (ImportError, ModuleNotFoundError):
+        handle_cm = safe_open(str(path), framework="np")
+
+    with handle_cm as handle:
         lora_keys = sorted(
             key
             for key in handle.keys()
@@ -599,21 +637,62 @@ def probe_saved_lora_artifact(
         digest = hashlib.sha256()
 
         for key in sampled_keys:
-            tensor = np.asarray(handle.get_tensor(key), dtype=np.float32)
+            try:
+                raw_tensor = handle.get_tensor(key)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"[LoRA] cannot read saved tensor '{key}' from {path}. "
+                    "The adapter storage dtype may not be supported by the current probe backend."
+                ) from exc
+            if probe_framework == "pt":
+                tensor = raw_tensor.detach().float().cpu().contiguous()
+                tensor_bytes = tensor.numpy().tobytes()
+            else:
+                try:
+                    tensor = np.asarray(raw_tensor, dtype=np.float32)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"[LoRA] cannot normalise saved tensor '{key}' from {path} with numpy. "
+                        "If the adapter was saved in bf16/bfloat16 storage, rerun this probe in an environment "
+                        "with torch so safetensors can load it via framework='pt'."
+                    ) from exc
+                tensor_bytes = tensor.tobytes()
             digest.update(key.encode("utf-8"))
             digest.update(str(tuple(int(dim) for dim in tensor.shape)).encode("ascii"))
-            digest.update(tensor.tobytes())
+            digest.update(tensor_bytes)
 
         sampled_b_total = 0
         sampled_b_zero_count = 0
         sampled_b_max_abs = 0.0
         sampled_b_tensors = 0
         for key in sampled_b_keys:
-            tensor = np.asarray(handle.get_tensor(key), dtype=np.float32)
+            try:
+                raw_tensor = handle.get_tensor(key)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"[LoRA] cannot read saved tensor '{key}' from {path}. "
+                    "The adapter storage dtype may not be supported by the current probe backend."
+                ) from exc
+            if probe_framework == "pt":
+                tensor = raw_tensor.detach().float().cpu().contiguous()
+                tensor_size = int(tensor.numel())
+                zero_count = int((tensor == 0).sum().item())
+                tensor_max_abs = float(tensor.abs().max().item()) if tensor_size else 0.0
+            else:
+                try:
+                    tensor = np.asarray(raw_tensor, dtype=np.float32)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"[LoRA] cannot normalise saved tensor '{key}' from {path} with numpy. "
+                        "If the adapter was saved in bf16/bfloat16 storage, rerun this probe in an environment "
+                        "with torch so safetensors can load it via framework='pt'."
+                    ) from exc
+                tensor_size = int(tensor.size)
+                zero_count = int((tensor == 0).sum())
+                tensor_max_abs = float(np.abs(tensor).max()) if tensor_size else 0.0
             sampled_b_tensors += 1
-            sampled_b_total += int(tensor.size)
-            sampled_b_zero_count += int((tensor == 0).sum())
-            tensor_max_abs = float(np.abs(tensor).max()) if tensor.size else 0.0
+            sampled_b_total += tensor_size
+            sampled_b_zero_count += zero_count
             sampled_b_max_abs = max(sampled_b_max_abs, tensor_max_abs)
 
     sampled_b_zero_fraction = None
@@ -676,10 +755,14 @@ class LoraTrainingHealth:
         output_dir: str | Path,
         initial_probe: dict[str, Any] | None,
         probe_tensor_limit: int,
+        strict_divergence_after_step: int,
+        strict_divergence_after_warmup_multiplier: float,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.initial_probe = initial_probe
         self.probe_tensor_limit = max(1, int(probe_tensor_limit))
+        self.strict_divergence_after_step = int(strict_divergence_after_step)
+        self.strict_divergence_after_warmup_multiplier = float(strict_divergence_after_warmup_multiplier)
         self.last_logged_step = -1
         self.last_loss_logged_step = -1
         self.last_grad_summary: dict[str, Any] | None = None
@@ -763,6 +846,14 @@ class LoraTrainingHealth:
             f"sampled_lora_b_max_abs={probe['sampled_lora_b_max_abs']}"
         )
         return probe
+
+    def should_require_strict_divergence(self, *, global_step: int, warmup_steps: int) -> bool:
+        return should_require_strict_divergence_check(
+            global_step=global_step,
+            warmup_steps=warmup_steps,
+            floor_step=self.strict_divergence_after_step,
+            warmup_multiplier=self.strict_divergence_after_warmup_multiplier,
+        )
 
 
 def _load_trainable_adapter(peft_module: Any, model: Any, adapter_dir: str | Path) -> Any:
@@ -882,6 +973,10 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
 
     training_config = dict(config.get("training", {}))
     probe_tensor_limit = int(training_config.get("lora_probe_tensor_limit", 128))
+    strict_divergence_after_step = int(training_config.get("strict_divergence_after_step", 250))
+    strict_divergence_after_warmup_multiplier = float(
+        training_config.get("strict_divergence_after_warmup_multiplier", 2.0)
+    )
     initial_probe = None
     init_adapter_dir = lora_initialisation.get("init_adapter_dir")
     if init_adapter_dir:
@@ -895,6 +990,8 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         output_dir=output_dir,
         initial_probe=initial_probe,
         probe_tensor_limit=probe_tensor_limit,
+        strict_divergence_after_step=strict_divergence_after_step,
+        strict_divergence_after_warmup_multiplier=strict_divergence_after_warmup_multiplier,
     )
     lora_health.log_trainable_summary(lora_trainable_summary)
 
@@ -958,22 +1055,35 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
             *args: Any,
             **kwargs: Any,
         ):
-            loss, outputs = super().compute_loss(
+            capture_outputs = should_capture_loss_outputs(
+                global_step=int(getattr(self.state, "global_step", 0)),
+                logging_steps=int(getattr(self.args, "logging_steps", 10)),
+                return_outputs=return_outputs,
+            )
+            if capture_outputs:
+                loss, outputs = super().compute_loss(
+                    model,
+                    inputs,
+                    return_outputs=True,
+                    *args,
+                    **kwargs,
+                )
+                if getattr(model, "training", False):
+                    lora_health.maybe_log_losses(
+                        outputs=outputs,
+                        global_step=int(getattr(self.state, "global_step", 0)),
+                        logging_steps=int(getattr(self.args, "logging_steps", 10)),
+                    )
+                if return_outputs:
+                    return loss, outputs
+                return loss
+            return super().compute_loss(
                 model,
                 inputs,
-                return_outputs=True,
+                return_outputs=False,
                 *args,
                 **kwargs,
             )
-            if getattr(model, "training", False):
-                lora_health.maybe_log_losses(
-                    outputs=outputs,
-                    global_step=int(getattr(self.state, "global_step", 0)),
-                    logging_steps=int(getattr(self.args, "logging_steps", 10)),
-                )
-            if return_outputs:
-                return loss, outputs
-            return loss
 
         def training_step(self, model: Any, inputs: dict[str, Any], *args: Any, **kwargs: Any):
             loss = super().training_step(model, inputs, *args, **kwargs)
@@ -995,9 +1105,16 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
 
         def _save(self, output_dir: str | None = None, state_dict: Any = None) -> None:
             super()._save(output_dir=output_dir, state_dict=state_dict)
+            if hasattr(self.args, "get_warmup_steps"):
+                warmup_steps = int(self.args.get_warmup_steps(int(getattr(self.state, "max_steps", 0))))
+            else:
+                warmup_steps = int(getattr(self.args, "warmup_steps", 0))
             lora_health.verify_saved_artifact(
                 output_dir or self.args.output_dir,
-                require_divergence_from_initial=False,
+                require_divergence_from_initial=lora_health.should_require_strict_divergence(
+                    global_step=int(getattr(self.state, "global_step", 0)),
+                    warmup_steps=warmup_steps,
+                ),
             )
 
     trainer = DiagnosticTrainer(
@@ -1035,6 +1152,8 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         "init_adapter_target_modules": lora_initialisation["init_adapter_target_modules"],
         "lora_trainable_summary": lora_trainable_summary,
         "initial_saved_probe": initial_probe,
+        "strict_divergence_after_step": strict_divergence_after_step,
+        "strict_divergence_after_warmup_multiplier": strict_divergence_after_warmup_multiplier,
         "last_grad_summary": lora_health.last_grad_summary,
         "last_loss_summary": lora_health.last_loss_summary,
         "last_eval_metrics": lora_health.last_eval_metrics,

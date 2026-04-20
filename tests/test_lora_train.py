@@ -25,6 +25,8 @@ from src.student.lora_train import (
     normalise_target_modules,
     probe_saved_lora_artifact,
     requires_mamba_ssm,
+    should_capture_loss_outputs,
+    should_require_strict_divergence_check,
     summarise_lora_runtime_state,
     summarise_model_losses,
     summarise_supervised_records,
@@ -393,6 +395,28 @@ def test_probe_saved_lora_artifact_digest_normalises_storage_dtype(tmp_path: Pat
     assert fp32_probe["sampled_lora_b_zero_fraction"] == fp16_probe["sampled_lora_b_zero_fraction"]
 
 
+def test_probe_saved_lora_artifact_supports_bfloat16_storage_dtype(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    save_torch_file = pytest.importorskip("safetensors.torch").save_file
+
+    bf16_path = tmp_path / "adapter_bf16.safetensors"
+    tensors = {
+        "base_model.model.backbone.layers.0.mixer.in_proj.lora_A.weight": torch.full(
+            (2, 4), 0.5, dtype=torch.bfloat16
+        ),
+        "base_model.model.backbone.layers.0.mixer.in_proj.lora_B.weight": torch.full(
+            (4, 2), 0.125, dtype=torch.bfloat16
+        ),
+    }
+    save_torch_file(tensors, str(bf16_path))
+
+    probe = probe_saved_lora_artifact(bf16_path, max_tensors=8)
+
+    assert probe["sampled_tensor_count"] == 2
+    assert probe["sampled_lora_b_zero_fraction"] == 0.0
+    assert probe["sampled_lora_b_max_abs"] == pytest.approx(0.125)
+
+
 def test_assert_saved_lora_artifact_healthy_rejects_all_zero_lora_b(tmp_path: Path) -> None:
     adapter_model_path = _write_adapter_safetensors(tmp_path / "adapter_model.safetensors")
 
@@ -503,6 +527,45 @@ def test_summarise_lora_runtime_state_reports_disabled_and_active_adapters() -> 
         "merged_lora_module_count": 1,
         "active_adapters": ["default", "repair"],
     }
+
+
+def test_should_capture_loss_outputs_only_on_logging_steps_by_default() -> None:
+    assert should_capture_loss_outputs(global_step=8, logging_steps=10, return_outputs=False) is False
+    assert should_capture_loss_outputs(global_step=9, logging_steps=10, return_outputs=False) is True
+    assert should_capture_loss_outputs(global_step=0, logging_steps=10, return_outputs=True) is True
+
+
+def test_should_require_strict_divergence_check_triggers_after_early_threshold() -> None:
+    assert should_require_strict_divergence_check(
+        global_step=100,
+        warmup_steps=50,
+        floor_step=250,
+        warmup_multiplier=2.0,
+    ) is True
+    assert should_require_strict_divergence_check(
+        global_step=72,
+        warmup_steps=36,
+        floor_step=250,
+        warmup_multiplier=2.0,
+    ) is True
+    assert should_require_strict_divergence_check(
+        global_step=70,
+        warmup_steps=36,
+        floor_step=250,
+        warmup_multiplier=2.0,
+    ) is False
+    assert should_require_strict_divergence_check(
+        global_step=249,
+        warmup_steps=500,
+        floor_step=250,
+        warmup_multiplier=2.0,
+    ) is False
+    assert should_require_strict_divergence_check(
+        global_step=250,
+        warmup_steps=500,
+        floor_step=250,
+        warmup_multiplier=2.0,
+    ) is True
 
 
 def test_ensure_generation_output_aliases_backfills_missing_decoder_outputs() -> None:

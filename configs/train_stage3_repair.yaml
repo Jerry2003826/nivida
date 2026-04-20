@@ -32,6 +32,8 @@ training:
   logging_steps: 10
   save_steps: 25
   eval_steps: 25
+  strict_divergence_after_step: 250
+  strict_divergence_after_warmup_multiplier: 2.0
   save_total_limit: 6
   report_to: []
   dataloader_pin_memory: false
