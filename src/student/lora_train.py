@@ -311,6 +311,14 @@ def build_training_arguments_kwargs(
         kwargs["evaluation_strategy"] = evaluation_value
     elif "eval_strategy" in training_args_params:
         kwargs["eval_strategy"] = evaluation_value
+    load_best_model_at_end = bool(training_config.get("load_best_model_at_end", has_eval_dataset))
+    if has_eval_dataset and load_best_model_at_end:
+        if "load_best_model_at_end" in training_args_params:
+            kwargs["load_best_model_at_end"] = True
+        if "metric_for_best_model" in training_args_params:
+            kwargs["metric_for_best_model"] = str(training_config.get("metric_for_best_model", "eval_loss"))
+        if "greater_is_better" in training_args_params:
+            kwargs["greater_is_better"] = bool(training_config.get("greater_is_better", False))
     return kwargs
 
 
@@ -399,8 +407,12 @@ def configure_model_for_training(model: Any, config: dict[str, Any]) -> Any:
         generation_config = getattr(model, "generation_config", None)
         if generation_config is not None and hasattr(generation_config, "use_cache"):
             generation_config.use_cache = False
+        # PEFT + gradient_checkpointing requires enable_input_require_grads, otherwise
+        # the first-layer LoRA params receive no gradient (trained-but-silent bug).
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
         if hasattr(model, "gradient_checkpointing_enable"):
-            model.gradient_checkpointing_enable()
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     return model
 
 

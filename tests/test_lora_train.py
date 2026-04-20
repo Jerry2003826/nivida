@@ -171,11 +171,27 @@ def test_requires_mamba_ssm_only_for_nemotron_like_configs() -> None:
 
 def test_build_training_arguments_kwargs_supports_old_and_new_transformers_names() -> None:
     class _OldArgs:
-        def __init__(self, output_dir, evaluation_strategy=None, **kwargs):
+        def __init__(
+            self,
+            output_dir,
+            evaluation_strategy=None,
+            load_best_model_at_end=None,
+            metric_for_best_model=None,
+            greater_is_better=None,
+            **kwargs,
+        ):
             pass
 
     class _NewArgs:
-        def __init__(self, output_dir, eval_strategy=None, **kwargs):
+        def __init__(
+            self,
+            output_dir,
+            eval_strategy=None,
+            load_best_model_at_end=None,
+            metric_for_best_model=None,
+            greater_is_better=None,
+            **kwargs,
+        ):
             pass
 
     old_kwargs = build_training_arguments_kwargs(
@@ -193,8 +209,14 @@ def test_build_training_arguments_kwargs_supports_old_and_new_transformers_names
 
     assert old_kwargs["evaluation_strategy"] == "steps"
     assert "eval_strategy" not in old_kwargs
+    assert old_kwargs["load_best_model_at_end"] is True
+    assert old_kwargs["metric_for_best_model"] == "eval_loss"
+    assert old_kwargs["greater_is_better"] is False
     assert new_kwargs["eval_strategy"] == "no"
     assert "evaluation_strategy" not in new_kwargs
+    assert "load_best_model_at_end" not in new_kwargs
+    assert "metric_for_best_model" not in new_kwargs
+    assert "greater_is_better" not in new_kwargs
     assert old_kwargs["warmup_ratio"] == 0.0
     assert old_kwargs["lr_scheduler_type"] == "linear"
 

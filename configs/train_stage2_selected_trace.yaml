@@ -23,9 +23,9 @@ training:
   num_train_epochs: 2
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 16
-  gradient_checkpointing: false
-  learning_rate: 8e-5
-  warmup_ratio: 0.03
+  gradient_checkpointing: true
+  learning_rate: 2.0e-5
+  warmup_ratio: 0.05
   lr_scheduler_type: cosine
   max_grad_norm: 1.0
   max_seq_length: auto
@@ -37,7 +37,10 @@ training:
   eval_steps: 125
   strict_divergence_after_step: 250
   strict_divergence_after_warmup_multiplier: 2.0
-  save_total_limit: 6
+  save_total_limit: 8
+  load_best_model_at_end: true
+  metric_for_best_model: eval_loss
+  greater_is_better: false
   report_to: []
   dataloader_pin_memory: false
   resume_from_checkpoint:

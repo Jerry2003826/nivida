@@ -16,30 +16,24 @@ lora:
   target_modules: ".*\\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$"
   bias: none
 training:
-  output_dir: artifacts/adapter_stage1_format
+  output_dir: artifacts/_smoke_stage1_verify
   dataset_path: data/processed/stage1_format_align_train.jsonl
   eval_path: data/processed/stage1_format_align_valid.jsonl
-  num_train_epochs: 1
+  num_train_epochs: 0.06
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 16
   gradient_checkpointing: true
   learning_rate: 3.0e-5
-  warmup_ratio: 0.05
+  warmup_ratio: 0.1
   lr_scheduler_type: cosine
   max_grad_norm: 1.0
   max_seq_length: 1024
-  logging_steps: 10
-  save_steps: 100
-  eval_steps: 100
-  strict_divergence_after_step: 250
-  strict_divergence_after_warmup_multiplier: 2.0
-  save_total_limit: 5
-  load_best_model_at_end: true
-  metric_for_best_model: eval_loss
-  greater_is_better: false
+  logging_steps: 5
+  save_steps: 500
+  eval_steps: 500
+  save_total_limit: 1
   report_to: []
   dataloader_pin_memory: false
-  resume_from_checkpoint:
   dry_run: false
 inference:
   prompt_mode: chat_thinking
