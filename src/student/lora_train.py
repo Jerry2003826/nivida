@@ -477,6 +477,8 @@ def summarise_lora_gradients(model: Any) -> dict[str, Any]:
                 nonfinite_grad_elements += current_nonfinite
                 gradient = gradient.clone()
                 gradient.masked_fill_(~finite_mask, 0)
+        if torch is not None and hasattr(gradient, "to"):
+            gradient = gradient.to(dtype=torch.float64)
         grad_norm = float(gradient.norm().item())
         grad_norm_sum += grad_norm
         grad_norm_max = max(grad_norm_max, grad_norm)
@@ -563,6 +565,48 @@ def sanitize_nonfinite_lora_gradients(model: Any) -> dict[str, Any]:
         "nonfinite_grad_tensors": nonfinite_grad_tensors,
         "nonfinite_grad_elements": nonfinite_grad_elements,
         "sanitized_parameter_names": sanitized_parameter_names,
+    }
+
+
+def safe_clip_lora_gradients(
+    model: Any,
+    *,
+    max_norm: float,
+) -> dict[str, Any]:
+    try:
+        import torch
+    except ImportError as exc:
+        raise ImportError(
+            "torch is required to clip LoRA gradients safely during training."
+        ) from exc
+
+    clipped_parameter_tensors = 0
+    tensors_with_grad = 0
+    total_norm_sq = 0.0
+    clip_coefficient = 1.0
+
+    for _name, parameter in _iter_lora_named_parameters(model):
+        if not parameter.requires_grad or parameter.grad is None:
+            continue
+        tensors_with_grad += 1
+        gradient = parameter.grad.detach()
+        gradient_norm = torch.linalg.vector_norm(gradient.to(dtype=torch.float64))
+        total_norm_sq += float(gradient_norm.item()) ** 2
+
+    total_norm = math.sqrt(total_norm_sq)
+    if max_norm > 0.0 and tensors_with_grad and total_norm > max_norm:
+        clip_coefficient = float(max_norm / (total_norm + 1e-12))
+        for _name, parameter in _iter_lora_named_parameters(model):
+            if not parameter.requires_grad or parameter.grad is None:
+                continue
+            parameter.grad.mul_(clip_coefficient)
+            clipped_parameter_tensors += 1
+
+    return {
+        "lora_tensors_with_grad": tensors_with_grad,
+        "total_grad_norm": total_norm if tensors_with_grad else None,
+        "clip_coefficient": clip_coefficient,
+        "clipped_parameter_tensors": clipped_parameter_tensors,
     }
 
 
@@ -822,6 +866,7 @@ class LoraTrainingHealth:
         self.probe_tensor_limit = max(1, int(probe_tensor_limit))
         self.strict_divergence_after_step = int(strict_divergence_after_step)
         self.strict_divergence_after_warmup_multiplier = float(strict_divergence_after_warmup_multiplier)
+        self.diagnostic_log_path = self.output_dir / "training_diagnostics.log"
         self.last_logged_step = -1
         self.last_loss_logged_step = -1
         self.last_grad_summary: dict[str, Any] | None = None
@@ -831,9 +876,15 @@ class LoraTrainingHealth:
         self.last_saved_probe: dict[str, Any] | None = None
         self.last_sanitized_step = -1
         self.first_nonfinite_grad_step: int | None = None
+        self.last_clipped_step = -1
+
+    def _emit_diagnostic(self, message: str) -> None:
+        print(message, flush=True)
+        with self.diagnostic_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{message}\n")
 
     def log_trainable_summary(self, summary: dict[str, Any]) -> None:
-        print(
+        self._emit_diagnostic(
             "[LoRA] trainable tensors="
             f"{summary['trainable_lora_parameter_tensors']}/{summary['lora_parameter_tensors']} "
             f"numel={summary['trainable_lora_parameter_numel']}/{summary['lora_parameter_numel']} "
@@ -849,7 +900,7 @@ class LoraTrainingHealth:
         summary = summarise_lora_gradients(model)
         self.last_grad_summary = summary
         self.last_logged_step = candidate_step
-        print(
+        self._emit_diagnostic(
             "[LoRA] step="
             f"{candidate_step} grad_norm mean={summary['mean_grad_norm']} "
             f"max={summary['max_grad_norm']} tensors_with_grad="
@@ -869,16 +920,16 @@ class LoraTrainingHealth:
         self.last_loss_summary = summary
         if summary:
             formatted = " ".join(f"{key}={value}" for key, value in summary.items())
-            print(f"[LossDiag] step={candidate_step} {formatted}")
+            self._emit_diagnostic(f"[LossDiag] step={candidate_step} {formatted}")
         else:
-            print(f"[LossDiag] step={candidate_step} no_named_loss_components_found")
+            self._emit_diagnostic(f"[LossDiag] step={candidate_step} no_named_loss_components_found")
 
     def log_eval_diagnostics(self, *, model: Any, global_step: int, metrics: dict[str, Any]) -> None:
         runtime_state = summarise_lora_runtime_state(model)
         param_state = summarise_lora_gradients(model)
         self.last_eval_runtime_state = runtime_state
         self.last_eval_metrics = dict(metrics)
-        print(
+        self._emit_diagnostic(
             "[EvalDiag] step="
             f"{int(global_step)} eval_loss={metrics.get('eval_loss')!r} "
             f"trainable_tensors={param_state['trainable_lora_parameter_tensors']}/"
@@ -905,7 +956,7 @@ class LoraTrainingHealth:
             require_divergence_from_initial=require_divergence_from_initial,
         )
         self.last_saved_probe = probe
-        print(
+        self._emit_diagnostic(
             "[LoRA] saved "
             f"{Path(output_dir).name} sampled_lora_b_zero_fraction={probe['sampled_lora_b_zero_fraction']} "
             f"sampled_lora_b_max_abs={probe['sampled_lora_b_max_abs']}"
@@ -937,12 +988,32 @@ class LoraTrainingHealth:
         )
         if should_log:
             self.last_sanitized_step = candidate_step
-            print(
+            self._emit_diagnostic(
                 "[LoRA] step="
                 f"{candidate_step} sanitized_nonfinite_gradients tensors="
                 f"{summary['nonfinite_grad_tensors']} elements={summary['nonfinite_grad_elements']}"
             )
         return summary
+
+    def maybe_log_safe_clip(
+        self,
+        *,
+        global_step: int,
+        logging_steps: int,
+        summary: dict[str, Any],
+    ) -> None:
+        logging_every = max(1, int(logging_steps))
+        candidate_step = max(1, int(global_step) + 1)
+        if candidate_step == self.last_clipped_step or candidate_step % logging_every != 0:
+            return
+        self.last_clipped_step = candidate_step
+        self._emit_diagnostic(
+            "[LoRA] step="
+            f"{candidate_step} safe_total_grad_norm={summary['total_grad_norm']} "
+            f"clip_coefficient={summary['clip_coefficient']} "
+            f"clipped_tensors={summary['clipped_parameter_tensors']}/"
+            f"{summary['lora_tensors_with_grad']}"
+        )
 
 
 def _load_trainable_adapter(peft_module: Any, model: Any, adapter_dir: str | Path) -> Any:
@@ -1193,12 +1264,23 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
             return metrics
 
         def _clip_grad_norm(self, model: Any):
-            lora_health.maybe_sanitize_gradients(
+            sanitize_summary = lora_health.maybe_sanitize_gradients(
                 model=model,
                 global_step=int(getattr(self.state, "global_step", 0)),
                 logging_steps=int(getattr(self.args, "logging_steps", 10)),
             )
-            return super()._clip_grad_norm(model)
+            clip_summary = safe_clip_lora_gradients(
+                model,
+                max_norm=float(getattr(self.args, "max_grad_norm", 0.0)),
+            )
+            lora_health.maybe_log_safe_clip(
+                global_step=int(getattr(self.state, "global_step", 0)),
+                logging_steps=int(getattr(self.args, "logging_steps", 10)),
+                summary=clip_summary,
+            )
+            if sanitize_summary["nonfinite_grad_tensors"] > 0 and clip_summary["clip_coefficient"] == 1.0:
+                return clip_summary["total_grad_norm"]
+            return clip_summary["total_grad_norm"]
 
         def _save(self, output_dir: str | None = None, state_dict: Any = None) -> None:
             super()._save(output_dir=output_dir, state_dict=state_dict)
@@ -1241,6 +1323,7 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         "num_eval_records": len(eval_records),
         "preflight": preflight,
         "adapter_files": adapter_files,
+        "training_diagnostics_log": str(lora_health.diagnostic_log_path),
         "target_modules": lora_initialisation["target_modules"],
         "matched_target_modules": lora_initialisation["matched_target_modules"],
         "num_matched_target_modules": lora_initialisation["num_matched_target_modules"],
