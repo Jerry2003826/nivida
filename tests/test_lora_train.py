@@ -25,6 +25,7 @@ from src.student.lora_train import (
     normalise_target_modules,
     probe_saved_lora_artifact,
     requires_mamba_ssm,
+    sanitize_nonfinite_lora_gradients,
     should_capture_loss_outputs,
     should_require_strict_divergence_check,
     summarise_lora_runtime_state,
@@ -361,6 +362,89 @@ def test_summarise_lora_gradients_reports_nonzero_gradients() -> None:
     assert summary["lora_tensors_with_grad"] == 2
     assert summary["mean_grad_norm"] == pytest.approx((1.0 + 3.0) / 2.0)
     assert summary["max_grad_norm"] == pytest.approx(3.0)
+    assert summary["nonfinite_grad_tensors"] == 0
+    assert summary["nonfinite_grad_elements"] == 0
+
+
+def test_sanitize_nonfinite_lora_gradients_zeroes_only_nonfinite_entries() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _Parameter:
+        def __init__(self, grad: torch.Tensor) -> None:
+            self.requires_grad = True
+            self.grad = grad
+
+        def numel(self) -> int:
+            return int(self.grad.numel())
+
+    class _DummyModel:
+        def __init__(self) -> None:
+            self._params = [
+                (
+                    "adapter.lora_A.weight",
+                    _Parameter(torch.tensor([[1.0, float("inf")], [float("nan"), -2.0]], dtype=torch.float32)),
+                ),
+                (
+                    "adapter.lora_B.weight",
+                    _Parameter(torch.tensor([[0.5, -0.25]], dtype=torch.float32)),
+                ),
+            ]
+
+        def named_parameters(self):
+            return list(self._params)
+
+    model = _DummyModel()
+
+    summary = sanitize_nonfinite_lora_gradients(model)
+
+    assert summary["lora_tensors_with_grad"] == 2
+    assert summary["nonfinite_grad_tensors"] == 1
+    assert summary["nonfinite_grad_elements"] == 2
+    assert summary["sanitized_parameter_names"] == ["adapter.lora_A.weight"]
+    assert torch.equal(
+        model._params[0][1].grad,
+        torch.tensor([[1.0, 0.0], [0.0, -2.0]], dtype=torch.float32),
+    )
+    assert torch.equal(
+        model._params[1][1].grad,
+        torch.tensor([[0.5, -0.25]], dtype=torch.float32),
+    )
+
+
+def test_summarise_lora_gradients_reports_nonfinite_counts_without_inf_norm() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _Parameter:
+        def __init__(self, grad: torch.Tensor) -> None:
+            self.requires_grad = True
+            self.grad = grad
+
+        def numel(self) -> int:
+            return int(self.grad.numel())
+
+    class _DummyModel:
+        def __init__(self) -> None:
+            self._params = [
+                (
+                    "adapter.lora_A.weight",
+                    _Parameter(torch.tensor([[3.0, float("inf")]], dtype=torch.float32)),
+                ),
+                (
+                    "adapter.lora_B.weight",
+                    _Parameter(torch.tensor([[4.0]], dtype=torch.float32)),
+                ),
+            ]
+
+        def named_parameters(self):
+            return list(self._params)
+
+    summary = summarise_lora_gradients(_DummyModel())
+
+    assert summary["lora_tensors_with_grad"] == 2
+    assert summary["nonfinite_grad_tensors"] == 1
+    assert summary["nonfinite_grad_elements"] == 1
+    assert summary["mean_grad_norm"] == pytest.approx((3.0 + 4.0) / 2.0)
+    assert summary["max_grad_norm"] == pytest.approx(4.0)
 
 
 def test_probe_saved_lora_artifact_reports_zero_lora_b(tmp_path: Path) -> None:

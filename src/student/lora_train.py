@@ -446,6 +446,12 @@ def summarise_lora_gradients(model: Any) -> dict[str, Any]:
     tensors_with_grad = 0
     grad_norm_sum = 0.0
     grad_norm_max = 0.0
+    nonfinite_grad_tensors = 0
+    nonfinite_grad_elements = 0
+    try:
+        import torch
+    except Exception:
+        torch = None
 
     for _name, parameter in _iter_lora_named_parameters(model):
         total_tensors += 1
@@ -454,7 +460,24 @@ def summarise_lora_gradients(model: Any) -> dict[str, Any]:
         if parameter.grad is None:
             continue
         tensors_with_grad += 1
-        grad_norm = float(parameter.grad.detach().float().norm().item())
+        gradient = parameter.grad.detach()
+        if hasattr(gradient, "float"):
+            gradient = gradient.float()
+        if torch is not None:
+            try:
+                finite_mask = torch.isfinite(gradient)
+            except Exception:
+                finite_mask = None
+        else:
+            finite_mask = None
+        if finite_mask is not None:
+            current_nonfinite = int((~finite_mask).sum().item())
+            if current_nonfinite:
+                nonfinite_grad_tensors += 1
+                nonfinite_grad_elements += current_nonfinite
+                gradient = gradient.clone()
+                gradient.masked_fill_(~finite_mask, 0)
+        grad_norm = float(gradient.norm().item())
         grad_norm_sum += grad_norm
         grad_norm_max = max(grad_norm_max, grad_norm)
 
@@ -468,6 +491,8 @@ def summarise_lora_gradients(model: Any) -> dict[str, Any]:
         "lora_tensors_with_grad": tensors_with_grad,
         "mean_grad_norm": mean_grad_norm,
         "max_grad_norm": grad_norm_max if tensors_with_grad else None,
+        "nonfinite_grad_tensors": nonfinite_grad_tensors,
+        "nonfinite_grad_elements": nonfinite_grad_elements,
     }
 
 
@@ -504,6 +529,40 @@ def summarise_lora_runtime_state(model: Any) -> dict[str, Any]:
         "disabled_lora_module_count": disabled_modules,
         "merged_lora_module_count": merged_modules,
         "active_adapters": sorted(active_adapters),
+    }
+
+
+def sanitize_nonfinite_lora_gradients(model: Any) -> dict[str, Any]:
+    try:
+        import torch
+    except ImportError as exc:
+        raise ImportError(
+            "torch is required to sanitise non-finite LoRA gradients during training."
+        ) from exc
+
+    tensors_with_grad = 0
+    nonfinite_grad_tensors = 0
+    nonfinite_grad_elements = 0
+    sanitized_parameter_names: list[str] = []
+
+    for name, parameter in _iter_lora_named_parameters(model):
+        if parameter.grad is None:
+            continue
+        tensors_with_grad += 1
+        finite_mask = torch.isfinite(parameter.grad)
+        if bool(finite_mask.all()):
+            continue
+        nonfinite_grad_tensors += 1
+        current_nonfinite = int((~finite_mask).sum().item())
+        nonfinite_grad_elements += current_nonfinite
+        parameter.grad.masked_fill_(~finite_mask, 0)
+        sanitized_parameter_names.append(name)
+
+    return {
+        "lora_tensors_with_grad": tensors_with_grad,
+        "nonfinite_grad_tensors": nonfinite_grad_tensors,
+        "nonfinite_grad_elements": nonfinite_grad_elements,
+        "sanitized_parameter_names": sanitized_parameter_names,
     }
 
 
@@ -770,6 +829,8 @@ class LoraTrainingHealth:
         self.last_eval_metrics: dict[str, Any] | None = None
         self.last_eval_runtime_state: dict[str, Any] | None = None
         self.last_saved_probe: dict[str, Any] | None = None
+        self.last_sanitized_step = -1
+        self.first_nonfinite_grad_step: int | None = None
 
     def log_trainable_summary(self, summary: dict[str, Any]) -> None:
         print(
@@ -792,7 +853,9 @@ class LoraTrainingHealth:
             "[LoRA] step="
             f"{candidate_step} grad_norm mean={summary['mean_grad_norm']} "
             f"max={summary['max_grad_norm']} tensors_with_grad="
-            f"{summary['lora_tensors_with_grad']}/{summary['trainable_lora_parameter_tensors']}"
+            f"{summary['lora_tensors_with_grad']}/{summary['trainable_lora_parameter_tensors']} "
+            f"nonfinite_tensors={summary['nonfinite_grad_tensors']} "
+            f"nonfinite_elements={summary['nonfinite_grad_elements']}"
         )
 
     def maybe_log_losses(self, *, outputs: Any, global_step: int, logging_steps: int) -> None:
@@ -822,7 +885,9 @@ class LoraTrainingHealth:
             f"{param_state['lora_parameter_tensors']} disabled_modules="
             f"{runtime_state['disabled_lora_module_count']}/{runtime_state['lora_module_count']} "
             f"merged_modules={runtime_state['merged_lora_module_count']} "
-            f"active_adapters={runtime_state['active_adapters']}"
+            f"active_adapters={runtime_state['active_adapters']} "
+            f"nonfinite_tensors={param_state['nonfinite_grad_tensors']} "
+            f"nonfinite_elements={param_state['nonfinite_grad_elements']}"
         )
 
     def verify_saved_artifact(
@@ -854,6 +919,30 @@ class LoraTrainingHealth:
             floor_step=self.strict_divergence_after_step,
             warmup_multiplier=self.strict_divergence_after_warmup_multiplier,
         )
+
+    def maybe_sanitize_gradients(self, *, model: Any, global_step: int, logging_steps: int) -> dict[str, Any]:
+        logging_every = max(1, int(logging_steps))
+        candidate_step = max(1, int(global_step) + 1)
+        summary = sanitize_nonfinite_lora_gradients(model)
+        if summary["nonfinite_grad_tensors"] <= 0:
+            return summary
+
+        if self.first_nonfinite_grad_step is None:
+            self.first_nonfinite_grad_step = candidate_step
+
+        should_log = (
+            candidate_step % logging_every == 0
+            or self.last_sanitized_step != candidate_step
+            and self.first_nonfinite_grad_step == candidate_step
+        )
+        if should_log:
+            self.last_sanitized_step = candidate_step
+            print(
+                "[LoRA] step="
+                f"{candidate_step} sanitized_nonfinite_gradients tensors="
+                f"{summary['nonfinite_grad_tensors']} elements={summary['nonfinite_grad_elements']}"
+            )
+        return summary
 
 
 def _load_trainable_adapter(peft_module: Any, model: Any, adapter_dir: str | Path) -> Any:
@@ -1102,6 +1191,14 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
                 metrics=metrics,
             )
             return metrics
+
+        def _clip_grad_norm(self, model: Any):
+            lora_health.maybe_sanitize_gradients(
+                model=model,
+                global_step=int(getattr(self.state, "global_step", 0)),
+                logging_steps=int(getattr(self.args, "logging_steps", 10)),
+            )
+            return super()._clip_grad_norm(model)
 
         def _save(self, output_dir: str | None = None, state_dict: Any = None) -> None:
             super()._save(output_dir=output_dir, state_dict=state_dict)
