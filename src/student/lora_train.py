@@ -610,6 +610,10 @@ def safe_clip_lora_gradients(
     }
 
 
+def _is_lora_b_parameter_name(name: str) -> bool:
+    return name.endswith(".lora_B.weight") or ".lora_B." in name
+
+
 def summarise_lora_b_parameters(model: Any) -> dict[str, Any]:
     total_tensors = 0
     total_numel = 0
@@ -625,7 +629,7 @@ def summarise_lora_b_parameters(model: Any) -> dict[str, Any]:
         torch = None
 
     for name, parameter in _iter_lora_named_parameters(model):
-        if not name.endswith(".lora_B.weight"):
+        if not _is_lora_b_parameter_name(name):
             continue
         total_tensors += 1
         value = parameter.detach()

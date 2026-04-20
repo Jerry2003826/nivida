@@ -14,6 +14,7 @@ import src.student.preflight as preflight
 from src.common.io import write_json, write_jsonl
 from src.student.adapter_submission_budget import _HYPOTHETICAL_OVER_LIMIT_TARGET_REGEX
 from src.student.lora_train import (
+    _is_lora_b_parameter_name,
     apply_safe_lora_gradient_controls,
     apply_runtime_environment,
     assert_saved_lora_artifact_healthy,
@@ -525,6 +526,12 @@ def test_safe_clip_lora_gradients_scales_large_finite_gradients_without_overflow
         assert norm < 1e20
 
 
+def test_is_lora_b_parameter_name_supports_runtime_and_saved_formats() -> None:
+    assert _is_lora_b_parameter_name("adapter.lora_B.weight") is True
+    assert _is_lora_b_parameter_name("adapter.lora_B.default.weight") is True
+    assert _is_lora_b_parameter_name("adapter.lora_A.default.weight") is False
+
+
 def test_summarise_lora_b_parameters_reports_zero_fraction_and_grad_state() -> None:
     torch = pytest.importorskip("torch")
 
@@ -537,7 +544,7 @@ def test_summarise_lora_b_parameters_reports_zero_fraction_and_grad_state() -> N
         def named_parameters(self):
             return [
                 ("adapter.lora_A.weight", self.a),
-                ("adapter.lora_B.weight", self.b),
+                ("adapter.lora_B.default.weight", self.b),
             ]
 
     summary = summarise_lora_b_parameters(_DummyModel())
