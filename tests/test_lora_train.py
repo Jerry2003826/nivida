@@ -3,7 +3,9 @@ from collections import namedtuple
 from pathlib import Path
 import sys
 
+import numpy as np
 import pytest
+from safetensors.numpy import save_file
 
 import src.student.lora_train as lora_train_module
 import src.student.preflight as preflight
@@ -11,16 +13,20 @@ from src.common.io import write_json, write_jsonl
 from src.student.adapter_submission_budget import _HYPOTHETICAL_OVER_LIMIT_TARGET_REGEX
 from src.student.lora_train import (
     apply_runtime_environment,
+    assert_saved_lora_artifact_healthy,
     build_training_arguments_kwargs,
     configure_model_for_training,
     dry_run_manifest,
+    ensure_lora_parameters_trainable,
     ensure_generation_output_aliases,
     infer_recommended_max_seq_length,
     initialise_lora_model,
     load_tokenizer,
     normalise_target_modules,
+    probe_saved_lora_artifact,
     requires_mamba_ssm,
     summarise_supervised_records,
+    summarise_lora_gradients,
     validate_init_adapter_compatibility,
     validate_lora_config,
 )
@@ -70,6 +76,22 @@ def _usage(total_gb: int, free_gb: int):
     free = free_gb * 1024**3
     used = total - free
     return usage_type(total, used, free)
+
+
+def _write_adapter_safetensors(
+    path: Path,
+    *,
+    lora_a_value: float = 0.25,
+    lora_b_value: float = 0.0,
+    copies: int = 3,
+) -> Path:
+    tensors = {}
+    for idx in range(copies):
+        prefix = f"base_model.model.backbone.layers.{idx}.mixer.in_proj"
+        tensors[f"{prefix}.lora_A.weight"] = np.full((2, 4), lora_a_value + idx, dtype=np.float32)
+        tensors[f"{prefix}.lora_B.weight"] = np.full((4, 2), lora_b_value, dtype=np.float32)
+    save_file(tensors, str(path))
+    return path
 
 
 def test_validate_lora_config_rejects_large_rank() -> None:
@@ -255,6 +277,125 @@ def test_configure_model_for_training_disables_use_cache_with_gradient_checkpoin
     assert model.config.use_cache is False
     assert model.generation_config.use_cache is False
     assert model.gradient_checkpointing_enabled is True
+
+
+def test_ensure_lora_parameters_trainable_reenables_frozen_lora_params() -> None:
+    class _FakeParameter:
+        def __init__(self, *, numel: int, requires_grad: bool) -> None:
+            self._numel = numel
+            self.requires_grad = requires_grad
+            self.grad = None
+
+        def numel(self) -> int:
+            return self._numel
+
+    class _DummyModel:
+        def __init__(self) -> None:
+            self._params = [
+                ("base_model.model.layers.0.mixer.in_proj.lora_A.weight", _FakeParameter(numel=4, requires_grad=False)),
+                ("base_model.model.layers.0.mixer.in_proj.lora_B.weight", _FakeParameter(numel=4, requires_grad=False)),
+                ("base_model.model.layers.0.mixer.in_proj.weight", _FakeParameter(numel=4, requires_grad=False)),
+            ]
+
+        def named_parameters(self):
+            return list(self._params)
+
+    model = _DummyModel()
+
+    summary = ensure_lora_parameters_trainable(model)
+
+    assert summary["lora_parameter_tensors"] == 2
+    assert summary["trainable_lora_parameter_tensors"] == 2
+    assert summary["reenabled_lora_parameter_tensors"] == 2
+    assert all(parameter.requires_grad for name, parameter in model.named_parameters() if "lora_" in name)
+    assert not next(parameter for name, parameter in model.named_parameters() if "lora_" not in name).requires_grad
+
+
+def test_summarise_lora_gradients_reports_nonzero_gradients() -> None:
+    class _FakeNorm:
+        def __init__(self, value: float) -> None:
+            self.value = value
+
+        def item(self) -> float:
+            return self.value
+
+    class _FakeGrad:
+        def __init__(self, norm_value: float) -> None:
+            self.norm_value = norm_value
+
+        def detach(self):
+            return self
+
+        def float(self):
+            return self
+
+        def norm(self):
+            return _FakeNorm(self.norm_value)
+
+    class _FakeParameter:
+        def __init__(self, *, requires_grad: bool, grad: _FakeGrad | None) -> None:
+            self.requires_grad = requires_grad
+            self.grad = grad
+
+        def numel(self) -> int:
+            return 4
+
+    class _DummyModel:
+        def __init__(self) -> None:
+            self._params = [
+                ("adapter.lora_A.weight", _FakeParameter(requires_grad=True, grad=_FakeGrad(1.0))),
+                ("adapter.lora_B.weight", _FakeParameter(requires_grad=True, grad=_FakeGrad(3.0))),
+            ]
+
+        def named_parameters(self):
+            return list(self._params)
+
+    summary = summarise_lora_gradients(_DummyModel())
+
+    assert summary["lora_parameter_tensors"] == 2
+    assert summary["trainable_lora_parameter_tensors"] == 2
+    assert summary["lora_tensors_with_grad"] == 2
+    assert summary["mean_grad_norm"] == pytest.approx((1.0 + 3.0) / 2.0)
+    assert summary["max_grad_norm"] == pytest.approx(3.0)
+
+
+def test_probe_saved_lora_artifact_reports_zero_lora_b(tmp_path: Path) -> None:
+    adapter_model_path = _write_adapter_safetensors(tmp_path / "adapter_model.safetensors")
+
+    probe = probe_saved_lora_artifact(adapter_model_path, max_tensors=8)
+
+    assert probe["lora_b_tensor_count"] == 3
+    assert probe["sampled_lora_b_zero_fraction"] == 1.0
+    assert probe["sampled_lora_b_max_abs"] == 0.0
+    assert len(probe["sampled_tensor_digest"]) == 64
+
+
+def test_assert_saved_lora_artifact_healthy_rejects_all_zero_lora_b(tmp_path: Path) -> None:
+    adapter_model_path = _write_adapter_safetensors(tmp_path / "adapter_model.safetensors")
+
+    with pytest.raises(RuntimeError, match="all-zero"):
+        assert_saved_lora_artifact_healthy(adapter_model_path, step_label="checkpoint-100")
+
+
+def test_assert_saved_lora_artifact_healthy_rejects_unchanged_init_adapter(tmp_path: Path) -> None:
+    init_path = _write_adapter_safetensors(
+        tmp_path / "init_adapter_model.safetensors",
+        lora_b_value=0.125,
+    )
+    current_path = _write_adapter_safetensors(
+        tmp_path / "current_adapter_model.safetensors",
+        lora_b_value=0.125,
+    )
+
+    init_probe = probe_saved_lora_artifact(init_path, max_tensors=8)
+
+    with pytest.raises(RuntimeError, match="byte-identical"):
+        assert_saved_lora_artifact_healthy(
+            current_path,
+            step_label="checkpoint-125",
+            initial_probe=init_probe,
+            max_tensors=8,
+        )
 
 
 def test_ensure_generation_output_aliases_backfills_missing_decoder_outputs() -> None:

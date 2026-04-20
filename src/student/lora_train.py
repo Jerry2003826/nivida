@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import inspect
 import math
@@ -403,6 +404,246 @@ def configure_model_for_training(model: Any, config: dict[str, Any]) -> Any:
     return model
 
 
+def _iter_lora_named_parameters(model: Any):
+    for name, parameter in model.named_parameters():
+        if "lora_" in name:
+            yield name, parameter
+
+
+def ensure_lora_parameters_trainable(model: Any) -> dict[str, Any]:
+    total_tensors = 0
+    total_numel = 0
+    trainable_tensors = 0
+    trainable_numel = 0
+    reenabled_names: list[str] = []
+
+    for name, parameter in _iter_lora_named_parameters(model):
+        total_tensors += 1
+        total_numel += int(parameter.numel())
+        if not parameter.requires_grad:
+            parameter.requires_grad = True
+            reenabled_names.append(name)
+        if parameter.requires_grad:
+            trainable_tensors += 1
+            trainable_numel += int(parameter.numel())
+
+    if total_tensors == 0:
+        raise ValueError("No LoRA parameters were found after adapter initialisation.")
+
+    return {
+        "lora_parameter_tensors": total_tensors,
+        "lora_parameter_numel": total_numel,
+        "trainable_lora_parameter_tensors": trainable_tensors,
+        "trainable_lora_parameter_numel": trainable_numel,
+        "reenabled_lora_parameter_tensors": len(reenabled_names),
+        "reenabled_lora_parameter_names": reenabled_names,
+    }
+
+
+def summarise_lora_gradients(model: Any) -> dict[str, Any]:
+    total_tensors = 0
+    trainable_tensors = 0
+    tensors_with_grad = 0
+    grad_norm_sum = 0.0
+    grad_norm_max = 0.0
+
+    for _name, parameter in _iter_lora_named_parameters(model):
+        total_tensors += 1
+        if parameter.requires_grad:
+            trainable_tensors += 1
+        if parameter.grad is None:
+            continue
+        tensors_with_grad += 1
+        grad_norm = float(parameter.grad.detach().float().norm().item())
+        grad_norm_sum += grad_norm
+        grad_norm_max = max(grad_norm_max, grad_norm)
+
+    mean_grad_norm = None
+    if tensors_with_grad:
+        mean_grad_norm = grad_norm_sum / tensors_with_grad
+
+    return {
+        "lora_parameter_tensors": total_tensors,
+        "trainable_lora_parameter_tensors": trainable_tensors,
+        "lora_tensors_with_grad": tensors_with_grad,
+        "mean_grad_norm": mean_grad_norm,
+        "max_grad_norm": grad_norm_max if tensors_with_grad else None,
+    }
+
+
+def _sample_keys_evenly(keys: list[str], limit: int) -> list[str]:
+    if len(keys) <= limit:
+        return list(keys)
+    if limit <= 1:
+        return [keys[0]]
+
+    last_index = len(keys) - 1
+    indexes = {
+        min(last_index, round(position * last_index / (limit - 1)))
+        for position in range(limit)
+    }
+    return [keys[index] for index in sorted(indexes)]
+
+
+def probe_saved_lora_artifact(
+    adapter_model_path: str | Path,
+    *,
+    max_tensors: int = 128,
+) -> dict[str, Any]:
+    try:
+        from safetensors import safe_open
+    except ImportError as exc:
+        raise ImportError(
+            "safetensors is required to inspect saved LoRA adapters during training diagnostics."
+        ) from exc
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise ImportError(
+            "numpy is required to inspect saved LoRA adapters during training diagnostics."
+        ) from exc
+
+    path = Path(adapter_model_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Saved adapter artifact is missing: {path}")
+
+    with safe_open(str(path), framework="np") as handle:
+        lora_keys = sorted(
+            key
+            for key in handle.keys()
+            if key.endswith(".lora_A.weight") or key.endswith(".lora_B.weight")
+        )
+        lora_b_keys = [key for key in lora_keys if key.endswith(".lora_B.weight")]
+        if not lora_keys:
+            raise ValueError(f"No LoRA tensors were found in saved adapter artifact: {path}")
+        sample_limit = max(1, int(max_tensors))
+        sampled_keys = _sample_keys_evenly(lora_keys, sample_limit)
+        sampled_b_keys = _sample_keys_evenly(lora_b_keys, sample_limit)
+
+        digest = hashlib.sha256()
+
+        for key in sampled_keys:
+            tensor = np.asarray(handle.get_tensor(key), dtype=np.float32)
+            digest.update(key.encode("utf-8"))
+            digest.update(str(tuple(int(dim) for dim in tensor.shape)).encode("ascii"))
+            digest.update(tensor.tobytes())
+
+        sampled_b_total = 0
+        sampled_b_zero_count = 0
+        sampled_b_max_abs = 0.0
+        sampled_b_tensors = 0
+        for key in sampled_b_keys:
+            tensor = np.asarray(handle.get_tensor(key), dtype=np.float32)
+            sampled_b_tensors += 1
+            sampled_b_total += int(tensor.size)
+            sampled_b_zero_count += int((tensor == 0).sum())
+            tensor_max_abs = float(np.abs(tensor).max()) if tensor.size else 0.0
+            sampled_b_max_abs = max(sampled_b_max_abs, tensor_max_abs)
+
+    sampled_b_zero_fraction = None
+    if sampled_b_total:
+        sampled_b_zero_fraction = sampled_b_zero_count / sampled_b_total
+
+    return {
+        "adapter_model_path": str(path),
+        "sampled_tensor_count": len(sampled_keys),
+        "sampled_tensor_names": sampled_keys,
+        "sampled_tensor_digest": digest.hexdigest(),
+        "lora_b_tensor_count": len(lora_b_keys),
+        "sampled_lora_b_tensor_count": sampled_b_tensors,
+        "sampled_lora_b_zero_fraction": sampled_b_zero_fraction,
+        "sampled_lora_b_max_abs": sampled_b_max_abs if sampled_b_tensors else None,
+    }
+
+
+def assert_saved_lora_artifact_healthy(
+    adapter_model_path: str | Path,
+    *,
+    step_label: str,
+    initial_probe: dict[str, Any] | None = None,
+    max_tensors: int = 128,
+) -> dict[str, Any]:
+    probe = probe_saved_lora_artifact(adapter_model_path, max_tensors=max_tensors)
+
+    if probe["sampled_lora_b_tensor_count"] <= 0:
+        raise RuntimeError(
+            f"[LoRA] {step_label}: sampled checkpoint did not contain any lora_B tensors at "
+            f"{probe['adapter_model_path']}"
+        )
+
+    zero_fraction = probe["sampled_lora_b_zero_fraction"]
+    max_abs = probe["sampled_lora_b_max_abs"]
+    if zero_fraction == 1.0 or max_abs == 0.0:
+        raise RuntimeError(
+            f"[LoRA] {step_label}: sampled lora_B tensors are still all-zero after save "
+            f"(zero_fraction={zero_fraction}, max_abs={max_abs})."
+        )
+
+    if initial_probe and probe["sampled_tensor_digest"] == initial_probe["sampled_tensor_digest"]:
+        raise RuntimeError(
+            f"[LoRA] {step_label}: sampled saved adapter tensors are byte-identical to the init adapter "
+            f"({probe['adapter_model_path']})."
+        )
+
+    return probe
+
+
+class LoraTrainingHealth:
+    def __init__(
+        self,
+        *,
+        output_dir: str | Path,
+        initial_probe: dict[str, Any] | None,
+        probe_tensor_limit: int,
+    ) -> None:
+        self.output_dir = Path(output_dir)
+        self.initial_probe = initial_probe
+        self.probe_tensor_limit = max(1, int(probe_tensor_limit))
+        self.last_logged_step = -1
+        self.last_grad_summary: dict[str, Any] | None = None
+        self.last_saved_probe: dict[str, Any] | None = None
+
+    def log_trainable_summary(self, summary: dict[str, Any]) -> None:
+        print(
+            "[LoRA] trainable tensors="
+            f"{summary['trainable_lora_parameter_tensors']}/{summary['lora_parameter_tensors']} "
+            f"numel={summary['trainable_lora_parameter_numel']}/{summary['lora_parameter_numel']} "
+            f"reenabled={summary['reenabled_lora_parameter_tensors']}"
+        )
+
+    def maybe_log_gradients(self, *, model: Any, global_step: int, logging_steps: int) -> None:
+        logging_every = max(1, int(logging_steps))
+        candidate_step = max(1, int(global_step) + 1)
+        if candidate_step == self.last_logged_step or candidate_step % logging_every != 0:
+            return
+
+        summary = summarise_lora_gradients(model)
+        self.last_grad_summary = summary
+        self.last_logged_step = candidate_step
+        print(
+            "[LoRA] step="
+            f"{candidate_step} grad_norm mean={summary['mean_grad_norm']} "
+            f"max={summary['max_grad_norm']} tensors_with_grad="
+            f"{summary['lora_tensors_with_grad']}/{summary['trainable_lora_parameter_tensors']}"
+        )
+
+    def verify_saved_artifact(self, output_dir: str | Path) -> dict[str, Any]:
+        adapter_model_path = Path(output_dir) / "adapter_model.safetensors"
+        probe = assert_saved_lora_artifact_healthy(
+            adapter_model_path,
+            step_label=Path(output_dir).name,
+            initial_probe=self.initial_probe,
+            max_tensors=self.probe_tensor_limit,
+        )
+        self.last_saved_probe = probe
+        print(
+            "[LoRA] saved "
+            f"{Path(output_dir).name} sampled_lora_b_zero_fraction={probe['sampled_lora_b_zero_fraction']} "
+            f"sampled_lora_b_max_abs={probe['sampled_lora_b_max_abs']}"
+        )
+        return probe
+
+
 def _load_trainable_adapter(peft_module: Any, model: Any, adapter_dir: str | Path) -> Any:
     try:
         return peft_module.PeftModel.from_pretrained(model, str(adapter_dir), is_trainable=True)
@@ -516,6 +757,25 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
     )
     model = configure_model_for_training(model, config)
     model, lora_initialisation = initialise_lora_model(model, peft, config)
+    lora_trainable_summary = ensure_lora_parameters_trainable(model)
+
+    training_config = dict(config.get("training", {}))
+    probe_tensor_limit = int(training_config.get("lora_probe_tensor_limit", 128))
+    initial_probe = None
+    init_adapter_dir = lora_initialisation.get("init_adapter_dir")
+    if init_adapter_dir:
+        init_adapter_model_path = Path(init_adapter_dir) / "adapter_model.safetensors"
+        if init_adapter_model_path.exists():
+            initial_probe = probe_saved_lora_artifact(
+                init_adapter_model_path,
+                max_tensors=probe_tensor_limit,
+            )
+    lora_health = LoraTrainingHealth(
+        output_dir=output_dir,
+        initial_probe=initial_probe,
+        probe_tensor_limit=probe_tensor_limit,
+    )
+    lora_health.log_trainable_summary(lora_trainable_summary)
 
     class PromptCompletionDataset(torch.utils.data.Dataset):
         def __init__(self, items: list[SupervisedRecord]) -> None:
@@ -568,7 +828,21 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         )
     )
 
-    trainer = transformers.Trainer(
+    class DiagnosticTrainer(transformers.Trainer):
+        def training_step(self, model: Any, inputs: dict[str, Any], *args: Any, **kwargs: Any):
+            loss = super().training_step(model, inputs, *args, **kwargs)
+            lora_health.maybe_log_gradients(
+                model=model,
+                global_step=int(getattr(self.state, "global_step", 0)),
+                logging_steps=int(getattr(self.args, "logging_steps", 10)),
+            )
+            return loss
+
+        def _save(self, output_dir: str | None = None, state_dict: Any = None) -> None:
+            super()._save(output_dir=output_dir, state_dict=state_dict)
+            lora_health.verify_saved_artifact(output_dir or self.args.output_dir)
+
+    trainer = DiagnosticTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -577,7 +851,7 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
     )
     trainer.train(resume_from_checkpoint=config["training"].get("resume_from_checkpoint"))
 
-    model.save_pretrained(output_dir)
+    trainer.save_model(str(output_dir))
     adapter_files = sorted(path.name for path in output_dir.iterdir() if path.is_file())
     metadata = {
         "base_model": config.get("base_model"),
@@ -597,6 +871,10 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         "init_adapter_dir": lora_initialisation["init_adapter_dir"],
         "init_adapter_rank": lora_initialisation["init_adapter_rank"],
         "init_adapter_target_modules": lora_initialisation["init_adapter_target_modules"],
+        "lora_trainable_summary": lora_trainable_summary,
+        "initial_saved_probe": initial_probe,
+        "last_grad_summary": lora_health.last_grad_summary,
+        "last_saved_probe": lora_health.last_saved_probe,
         "dataset_stats": summarise_supervised_records(
             records,
             max_seq_length=resolved_max_seq_length,
