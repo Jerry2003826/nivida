@@ -471,6 +471,82 @@ def summarise_lora_gradients(model: Any) -> dict[str, Any]:
     }
 
 
+def summarise_lora_runtime_state(model: Any) -> dict[str, Any]:
+    lora_modules = 0
+    disabled_modules = 0
+    merged_modules = 0
+    active_adapters: set[str] = set()
+
+    for _name, module in model.named_modules():
+        if not (hasattr(module, "lora_A") or hasattr(module, "lora_B")):
+            continue
+        lora_modules += 1
+        if bool(getattr(module, "disable_adapters", False)):
+            disabled_modules += 1
+        if bool(getattr(module, "merged", False)):
+            merged_modules += 1
+
+        current_active = getattr(module, "active_adapters", None)
+        if current_active is None:
+            current_active = getattr(module, "active_adapter", None)
+        if current_active is None:
+            continue
+        if isinstance(current_active, str):
+            active_adapters.add(current_active)
+            continue
+        if isinstance(current_active, (list, tuple, set)):
+            active_adapters.update(str(item) for item in current_active)
+            continue
+        active_adapters.add(str(current_active))
+
+    return {
+        "lora_module_count": lora_modules,
+        "disabled_lora_module_count": disabled_modules,
+        "merged_lora_module_count": merged_modules,
+        "active_adapters": sorted(active_adapters),
+    }
+
+
+def _to_float_scalar(value: Any) -> float | None:
+    if value is None:
+        return None
+    candidate = value
+    if hasattr(candidate, "detach"):
+        candidate = candidate.detach()
+    if hasattr(candidate, "float"):
+        candidate = candidate.float()
+    if hasattr(candidate, "item"):
+        try:
+            return float(candidate.item())
+        except (TypeError, ValueError):
+            return None
+    try:
+        return float(candidate)
+    except (TypeError, ValueError):
+        return None
+
+
+def summarise_model_losses(outputs: Any) -> dict[str, float]:
+    summary: dict[str, float] = {}
+    keys = (
+        "loss",
+        "aux_loss",
+        "router_aux_loss",
+        "router_z_loss",
+        "moe_aux_loss",
+        "z_loss",
+    )
+    for key in keys:
+        if isinstance(outputs, dict):
+            value = outputs.get(key)
+        else:
+            value = getattr(outputs, key, None)
+        scalar = _to_float_scalar(value)
+        if scalar is not None:
+            summary[key] = scalar
+    return summary
+
+
 def _sample_keys_evenly(keys: list[str], limit: int) -> list[str]:
     if len(keys) <= limit:
         return list(keys)
@@ -562,6 +638,7 @@ def assert_saved_lora_artifact_healthy(
     step_label: str,
     initial_probe: dict[str, Any] | None = None,
     max_tensors: int = 128,
+    require_divergence_from_initial: bool = True,
 ) -> dict[str, Any]:
     probe = probe_saved_lora_artifact(adapter_model_path, max_tensors=max_tensors)
 
@@ -579,7 +656,11 @@ def assert_saved_lora_artifact_healthy(
             f"(zero_fraction={zero_fraction}, max_abs={max_abs})."
         )
 
-    if initial_probe and probe["sampled_tensor_digest"] == initial_probe["sampled_tensor_digest"]:
+    if (
+        require_divergence_from_initial
+        and initial_probe
+        and probe["sampled_tensor_digest"] == initial_probe["sampled_tensor_digest"]
+    ):
         raise RuntimeError(
             f"[LoRA] {step_label}: sampled saved adapter tensors are byte-identical to the init adapter "
             f"({probe['adapter_model_path']})."
@@ -600,7 +681,11 @@ class LoraTrainingHealth:
         self.initial_probe = initial_probe
         self.probe_tensor_limit = max(1, int(probe_tensor_limit))
         self.last_logged_step = -1
+        self.last_loss_logged_step = -1
         self.last_grad_summary: dict[str, Any] | None = None
+        self.last_loss_summary: dict[str, Any] | None = None
+        self.last_eval_metrics: dict[str, Any] | None = None
+        self.last_eval_runtime_state: dict[str, Any] | None = None
         self.last_saved_probe: dict[str, Any] | None = None
 
     def log_trainable_summary(self, summary: dict[str, Any]) -> None:
@@ -627,13 +712,49 @@ class LoraTrainingHealth:
             f"{summary['lora_tensors_with_grad']}/{summary['trainable_lora_parameter_tensors']}"
         )
 
-    def verify_saved_artifact(self, output_dir: str | Path) -> dict[str, Any]:
+    def maybe_log_losses(self, *, outputs: Any, global_step: int, logging_steps: int) -> None:
+        logging_every = max(1, int(logging_steps))
+        candidate_step = max(1, int(global_step) + 1)
+        if candidate_step == self.last_loss_logged_step or candidate_step % logging_every != 0:
+            return
+
+        summary = summarise_model_losses(outputs)
+        self.last_loss_logged_step = candidate_step
+        self.last_loss_summary = summary
+        if summary:
+            formatted = " ".join(f"{key}={value}" for key, value in summary.items())
+            print(f"[LossDiag] step={candidate_step} {formatted}")
+        else:
+            print(f"[LossDiag] step={candidate_step} no_named_loss_components_found")
+
+    def log_eval_diagnostics(self, *, model: Any, global_step: int, metrics: dict[str, Any]) -> None:
+        runtime_state = summarise_lora_runtime_state(model)
+        param_state = summarise_lora_gradients(model)
+        self.last_eval_runtime_state = runtime_state
+        self.last_eval_metrics = dict(metrics)
+        print(
+            "[EvalDiag] step="
+            f"{int(global_step)} eval_loss={metrics.get('eval_loss')!r} "
+            f"trainable_tensors={param_state['trainable_lora_parameter_tensors']}/"
+            f"{param_state['lora_parameter_tensors']} disabled_modules="
+            f"{runtime_state['disabled_lora_module_count']}/{runtime_state['lora_module_count']} "
+            f"merged_modules={runtime_state['merged_lora_module_count']} "
+            f"active_adapters={runtime_state['active_adapters']}"
+        )
+
+    def verify_saved_artifact(
+        self,
+        output_dir: str | Path,
+        *,
+        require_divergence_from_initial: bool,
+    ) -> dict[str, Any]:
         adapter_model_path = Path(output_dir) / "adapter_model.safetensors"
         probe = assert_saved_lora_artifact_healthy(
             adapter_model_path,
             step_label=Path(output_dir).name,
             initial_probe=self.initial_probe,
             max_tensors=self.probe_tensor_limit,
+            require_divergence_from_initial=require_divergence_from_initial,
         )
         self.last_saved_probe = probe
         print(
@@ -829,6 +950,31 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
     )
 
     class DiagnosticTrainer(transformers.Trainer):
+        def compute_loss(
+            self,
+            model: Any,
+            inputs: dict[str, Any],
+            return_outputs: bool = False,
+            *args: Any,
+            **kwargs: Any,
+        ):
+            loss, outputs = super().compute_loss(
+                model,
+                inputs,
+                return_outputs=True,
+                *args,
+                **kwargs,
+            )
+            if getattr(model, "training", False):
+                lora_health.maybe_log_losses(
+                    outputs=outputs,
+                    global_step=int(getattr(self.state, "global_step", 0)),
+                    logging_steps=int(getattr(self.args, "logging_steps", 10)),
+                )
+            if return_outputs:
+                return loss, outputs
+            return loss
+
         def training_step(self, model: Any, inputs: dict[str, Any], *args: Any, **kwargs: Any):
             loss = super().training_step(model, inputs, *args, **kwargs)
             lora_health.maybe_log_gradients(
@@ -838,9 +984,21 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
             )
             return loss
 
+        def evaluate(self, *args: Any, **kwargs: Any):
+            metrics = super().evaluate(*args, **kwargs)
+            lora_health.log_eval_diagnostics(
+                model=self.model,
+                global_step=int(getattr(self.state, "global_step", 0)),
+                metrics=metrics,
+            )
+            return metrics
+
         def _save(self, output_dir: str | None = None, state_dict: Any = None) -> None:
             super()._save(output_dir=output_dir, state_dict=state_dict)
-            lora_health.verify_saved_artifact(output_dir or self.args.output_dir)
+            lora_health.verify_saved_artifact(
+                output_dir or self.args.output_dir,
+                require_divergence_from_initial=False,
+            )
 
     trainer = DiagnosticTrainer(
         model=model,
@@ -851,7 +1009,11 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
     )
     trainer.train(resume_from_checkpoint=config["training"].get("resume_from_checkpoint"))
 
-    trainer.save_model(str(output_dir))
+    model.save_pretrained(str(output_dir))
+    lora_health.verify_saved_artifact(
+        output_dir,
+        require_divergence_from_initial=True,
+    )
     adapter_files = sorted(path.name for path in output_dir.iterdir() if path.is_file())
     metadata = {
         "base_model": config.get("base_model"),
@@ -874,6 +1036,9 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         "lora_trainable_summary": lora_trainable_summary,
         "initial_saved_probe": initial_probe,
         "last_grad_summary": lora_health.last_grad_summary,
+        "last_loss_summary": lora_health.last_loss_summary,
+        "last_eval_metrics": lora_health.last_eval_metrics,
+        "last_eval_runtime_state": lora_health.last_eval_runtime_state,
         "last_saved_probe": lora_health.last_saved_probe,
         "dataset_stats": summarise_supervised_records(
             records,

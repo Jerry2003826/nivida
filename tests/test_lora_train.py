@@ -25,6 +25,8 @@ from src.student.lora_train import (
     normalise_target_modules,
     probe_saved_lora_artifact,
     requires_mamba_ssm,
+    summarise_lora_runtime_state,
+    summarise_model_losses,
     summarise_supervised_records,
     summarise_lora_gradients,
     validate_init_adapter_compatibility,
@@ -370,6 +372,27 @@ def test_probe_saved_lora_artifact_reports_zero_lora_b(tmp_path: Path) -> None:
     assert len(probe["sampled_tensor_digest"]) == 64
 
 
+def test_probe_saved_lora_artifact_digest_normalises_storage_dtype(tmp_path: Path) -> None:
+    fp32_path = tmp_path / "adapter_fp32.safetensors"
+    fp16_path = tmp_path / "adapter_fp16.safetensors"
+    tensors_fp32 = {
+        "base_model.model.backbone.layers.0.mixer.in_proj.lora_A.weight": np.full((2, 4), 0.5, dtype=np.float32),
+        "base_model.model.backbone.layers.0.mixer.in_proj.lora_B.weight": np.full((4, 2), 0.125, dtype=np.float32),
+    }
+    tensors_fp16 = {
+        key: value.astype(np.float16)
+        for key, value in tensors_fp32.items()
+    }
+    save_file(tensors_fp32, str(fp32_path))
+    save_file(tensors_fp16, str(fp16_path))
+
+    fp32_probe = probe_saved_lora_artifact(fp32_path, max_tensors=8)
+    fp16_probe = probe_saved_lora_artifact(fp16_path, max_tensors=8)
+
+    assert fp32_probe["sampled_tensor_digest"] == fp16_probe["sampled_tensor_digest"]
+    assert fp32_probe["sampled_lora_b_zero_fraction"] == fp16_probe["sampled_lora_b_zero_fraction"]
+
+
 def test_assert_saved_lora_artifact_healthy_rejects_all_zero_lora_b(tmp_path: Path) -> None:
     adapter_model_path = _write_adapter_safetensors(tmp_path / "adapter_model.safetensors")
 
@@ -396,6 +419,90 @@ def test_assert_saved_lora_artifact_healthy_rejects_unchanged_init_adapter(tmp_p
             initial_probe=init_probe,
             max_tensors=8,
         )
+
+
+def test_assert_saved_lora_artifact_checkpoint_mode_allows_init_identical_digest(tmp_path: Path) -> None:
+    init_path = _write_adapter_safetensors(
+        tmp_path / "init_adapter_model.safetensors",
+        lora_b_value=0.125,
+    )
+    checkpoint_path = _write_adapter_safetensors(
+        tmp_path / "checkpoint_adapter_model.safetensors",
+        lora_b_value=0.125,
+    )
+
+    init_probe = probe_saved_lora_artifact(init_path, max_tensors=8)
+
+    probe = assert_saved_lora_artifact_healthy(
+        checkpoint_path,
+        step_label="checkpoint-125",
+        initial_probe=init_probe,
+        max_tensors=8,
+        require_divergence_from_initial=False,
+    )
+
+    assert probe["sampled_tensor_digest"] == init_probe["sampled_tensor_digest"]
+
+
+def test_summarise_model_losses_extracts_named_components() -> None:
+    class _TensorLike:
+        def __init__(self, value: float) -> None:
+            self.value = value
+
+        def detach(self):
+            return self
+
+        def float(self):
+            return self
+
+        def item(self) -> float:
+            return self.value
+
+    outputs = type(
+        "Outputs",
+        (),
+        {
+            "loss": _TensorLike(2.5),
+            "aux_loss": _TensorLike(0.75),
+            "router_aux_loss": _TensorLike(0.125),
+        },
+    )()
+
+    summary = summarise_model_losses(outputs)
+
+    assert summary == {
+        "loss": pytest.approx(2.5),
+        "aux_loss": pytest.approx(0.75),
+        "router_aux_loss": pytest.approx(0.125),
+    }
+
+
+def test_summarise_lora_runtime_state_reports_disabled_and_active_adapters() -> None:
+    class _LoraModule:
+        def __init__(self, *, disabled: bool, merged: bool, active_adapters) -> None:
+            self.lora_A = {"default": object()}
+            self.lora_B = {"default": object()}
+            self.disable_adapters = disabled
+            self.merged = merged
+            self.active_adapters = active_adapters
+
+    class _DummyModel:
+        def named_modules(self):
+            return [
+                ("", self),
+                ("layers.0.mixer.in_proj", _LoraModule(disabled=False, merged=False, active_adapters=["default"])),
+                ("layers.0.mixer.out_proj", _LoraModule(disabled=True, merged=True, active_adapters=["repair"])),
+                ("layers.0.mixer.core", object()),
+            ]
+
+    summary = summarise_lora_runtime_state(_DummyModel())
+
+    assert summary == {
+        "lora_module_count": 2,
+        "disabled_lora_module_count": 1,
+        "merged_lora_module_count": 1,
+        "active_adapters": ["default", "repair"],
+    }
 
 
 def test_ensure_generation_output_aliases_backfills_missing_decoder_outputs() -> None:
