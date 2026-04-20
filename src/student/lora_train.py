@@ -610,6 +610,114 @@ def safe_clip_lora_gradients(
     }
 
 
+def summarise_lora_b_parameters(model: Any) -> dict[str, Any]:
+    total_tensors = 0
+    total_numel = 0
+    zero_count = 0
+    max_abs = 0.0
+    tensors_with_grad = 0
+    grad_total_numel = 0
+    grad_zero_count = 0
+    grad_max_abs = 0.0
+    try:
+        import torch
+    except Exception:
+        torch = None
+
+    for name, parameter in _iter_lora_named_parameters(model):
+        if not name.endswith(".lora_B.weight"):
+            continue
+        total_tensors += 1
+        value = parameter.detach()
+        if hasattr(value, "float"):
+            value = value.float()
+        if torch is not None and hasattr(value, "cpu"):
+            value = value.cpu()
+        if torch is not None and hasattr(value, "numel"):
+            current_numel = int(value.numel())
+            current_zero_count = int((value == 0).sum().item())
+            current_max_abs = float(value.abs().max().item()) if current_numel else 0.0
+        else:
+            current_numel = int(parameter.numel())
+            current_zero_count = 0
+            current_max_abs = 0.0
+        total_numel += current_numel
+        zero_count += current_zero_count
+        max_abs = max(max_abs, current_max_abs)
+
+        gradient = parameter.grad
+        if gradient is None:
+            continue
+        tensors_with_grad += 1
+        if hasattr(gradient, "detach"):
+            gradient = gradient.detach()
+        if hasattr(gradient, "float"):
+            gradient = gradient.float()
+        if torch is not None and hasattr(gradient, "cpu"):
+            gradient = gradient.cpu()
+        if torch is not None and hasattr(gradient, "numel"):
+            current_grad_numel = int(gradient.numel())
+            current_grad_zero_count = int((gradient == 0).sum().item())
+            current_grad_max_abs = float(gradient.abs().max().item()) if current_grad_numel else 0.0
+        else:
+            current_grad_numel = 0
+            current_grad_zero_count = 0
+            current_grad_max_abs = 0.0
+        grad_total_numel += current_grad_numel
+        grad_zero_count += current_grad_zero_count
+        grad_max_abs = max(grad_max_abs, current_grad_max_abs)
+
+    zero_fraction = None
+    if total_numel:
+        zero_fraction = zero_count / total_numel
+    grad_zero_fraction = None
+    if grad_total_numel:
+        grad_zero_fraction = grad_zero_count / grad_total_numel
+
+    return {
+        "lora_b_tensors": total_tensors,
+        "lora_b_numel": total_numel,
+        "lora_b_zero_fraction": zero_fraction,
+        "lora_b_max_abs": max_abs if total_tensors else None,
+        "lora_b_tensors_with_grad": tensors_with_grad,
+        "lora_b_grad_zero_fraction": grad_zero_fraction,
+        "lora_b_grad_max_abs": grad_max_abs if tensors_with_grad else None,
+    }
+
+
+def apply_safe_lora_gradient_controls(
+    *,
+    model: Any,
+    global_step: int,
+    logging_steps: int,
+    max_grad_norm: float,
+    lora_health: "LoraTrainingHealth",
+) -> dict[str, Any]:
+    sanitize_summary = lora_health.maybe_sanitize_gradients(
+        model=model,
+        global_step=global_step,
+        logging_steps=logging_steps,
+    )
+    clip_summary = safe_clip_lora_gradients(
+        model,
+        max_norm=max_grad_norm,
+    )
+    lora_health.maybe_log_safe_clip(
+        global_step=global_step,
+        logging_steps=logging_steps,
+        summary=clip_summary,
+    )
+    lora_health.maybe_log_lora_b_parameters(
+        model=model,
+        global_step=global_step,
+        logging_steps=logging_steps,
+    )
+    return {
+        "sanitize_summary": sanitize_summary,
+        "clip_summary": clip_summary,
+    }
+
+
 def _to_float_scalar(value: Any) -> float | None:
     if value is None:
         return None
@@ -877,6 +985,8 @@ class LoraTrainingHealth:
         self.last_sanitized_step = -1
         self.first_nonfinite_grad_step: int | None = None
         self.last_clipped_step = -1
+        self.last_lora_b_logged_step = -1
+        self.last_lora_b_summary: dict[str, Any] | None = None
 
     def _emit_diagnostic(self, message: str) -> None:
         print(message, flush=True)
@@ -1013,6 +1123,23 @@ class LoraTrainingHealth:
             f"clip_coefficient={summary['clip_coefficient']} "
             f"clipped_tensors={summary['clipped_parameter_tensors']}/"
             f"{summary['lora_tensors_with_grad']}"
+        )
+
+    def maybe_log_lora_b_parameters(self, *, model: Any, global_step: int, logging_steps: int) -> None:
+        logging_every = max(1, int(logging_steps))
+        candidate_step = max(1, int(global_step) + 1)
+        if candidate_step == self.last_lora_b_logged_step or candidate_step % logging_every != 0:
+            return
+        summary = summarise_lora_b_parameters(model)
+        self.last_lora_b_logged_step = candidate_step
+        self.last_lora_b_summary = summary
+        self._emit_diagnostic(
+            "[LoRA] step="
+            f"{candidate_step} lora_B_zero_fraction={summary['lora_b_zero_fraction']} "
+            f"lora_B_max_abs={summary['lora_b_max_abs']} tensors_with_grad="
+            f"{summary['lora_b_tensors_with_grad']}/{summary['lora_b_tensors']} "
+            f"lora_B_grad_zero_fraction={summary['lora_b_grad_zero_fraction']} "
+            f"lora_B_grad_max_abs={summary['lora_b_grad_max_abs']}"
         )
 
 
@@ -1205,6 +1332,12 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
             has_eval_dataset=eval_dataset is not None,
         )
     )
+    requested_max_grad_norm = float(getattr(training_args, "max_grad_norm", 0.0) or 0.0)
+    if requested_max_grad_norm > 0.0:
+        # Transformers 4.48 clips gradients inline inside the training loop and does
+        # not expose an overridable `_clip_grad_norm` hook. Disable the built-in clip
+        # and apply our LoRA-only float64-stable clip from `on_pre_optimizer_step`.
+        training_args.max_grad_norm = 0.0
 
     class DiagnosticTrainer(transformers.Trainer):
         def compute_loss(
@@ -1263,25 +1396,6 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
             )
             return metrics
 
-        def _clip_grad_norm(self, model: Any):
-            sanitize_summary = lora_health.maybe_sanitize_gradients(
-                model=model,
-                global_step=int(getattr(self.state, "global_step", 0)),
-                logging_steps=int(getattr(self.args, "logging_steps", 10)),
-            )
-            clip_summary = safe_clip_lora_gradients(
-                model,
-                max_norm=float(getattr(self.args, "max_grad_norm", 0.0)),
-            )
-            lora_health.maybe_log_safe_clip(
-                global_step=int(getattr(self.state, "global_step", 0)),
-                logging_steps=int(getattr(self.args, "logging_steps", 10)),
-                summary=clip_summary,
-            )
-            if sanitize_summary["nonfinite_grad_tensors"] > 0 and clip_summary["clip_coefficient"] == 1.0:
-                return clip_summary["total_grad_norm"]
-            return clip_summary["total_grad_norm"]
-
         def _save(self, output_dir: str | None = None, state_dict: Any = None) -> None:
             super()._save(output_dir=output_dir, state_dict=state_dict)
             if hasattr(self.args, "get_warmup_steps"):
@@ -1296,6 +1410,20 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
                 ),
             )
 
+    class LoraOptimizerStepCallback(transformers.TrainerCallback):
+        def on_pre_optimizer_step(self, args: Any, state: Any, control: Any, **kwargs: Any):
+            model = kwargs.get("model")
+            if model is None or requested_max_grad_norm <= 0.0:
+                return control
+            apply_safe_lora_gradient_controls(
+                model=model,
+                global_step=int(getattr(state, "global_step", 0)),
+                logging_steps=int(getattr(args, "logging_steps", 10)),
+                max_grad_norm=requested_max_grad_norm,
+                lora_health=lora_health,
+            )
+            return control
+
     trainer = DiagnosticTrainer(
         model=model,
         args=training_args,
@@ -1303,6 +1431,7 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         eval_dataset=eval_dataset,
         data_collator=SupervisedCollator(),
     )
+    trainer.add_callback(LoraOptimizerStepCallback())
     trainer.train(resume_from_checkpoint=config["training"].get("resume_from_checkpoint"))
 
     model.save_pretrained(str(output_dir))
@@ -1332,10 +1461,13 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         "init_adapter_target_modules": lora_initialisation["init_adapter_target_modules"],
         "lora_trainable_summary": lora_trainable_summary,
         "initial_saved_probe": initial_probe,
+        "requested_max_grad_norm": requested_max_grad_norm,
+        "effective_trainer_max_grad_norm": float(getattr(training_args, "max_grad_norm", 0.0) or 0.0),
         "strict_divergence_after_step": strict_divergence_after_step,
         "strict_divergence_after_warmup_multiplier": strict_divergence_after_warmup_multiplier,
         "last_grad_summary": lora_health.last_grad_summary,
         "last_loss_summary": lora_health.last_loss_summary,
+        "last_lora_b_summary": lora_health.last_lora_b_summary,
         "last_eval_metrics": lora_health.last_eval_metrics,
         "last_eval_runtime_state": lora_health.last_eval_runtime_state,
         "last_saved_probe": lora_health.last_saved_probe,

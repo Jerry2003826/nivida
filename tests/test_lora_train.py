@@ -14,6 +14,7 @@ import src.student.preflight as preflight
 from src.common.io import write_json, write_jsonl
 from src.student.adapter_submission_budget import _HYPOTHETICAL_OVER_LIMIT_TARGET_REGEX
 from src.student.lora_train import (
+    apply_safe_lora_gradient_controls,
     apply_runtime_environment,
     assert_saved_lora_artifact_healthy,
     build_training_arguments_kwargs,
@@ -32,6 +33,7 @@ from src.student.lora_train import (
     safe_clip_lora_gradients,
     should_capture_loss_outputs,
     should_require_strict_divergence_check,
+    summarise_lora_b_parameters,
     summarise_lora_runtime_state,
     summarise_model_losses,
     summarise_supervised_records,
@@ -521,6 +523,73 @@ def test_safe_clip_lora_gradients_scales_large_finite_gradients_without_overflow
     for _name, parameter in model.named_parameters():
         norm = float(torch.linalg.vector_norm(parameter.grad.to(dtype=torch.float64)).item())
         assert norm < 1e20
+
+
+def test_summarise_lora_b_parameters_reports_zero_fraction_and_grad_state() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _DummyModel:
+        def __init__(self) -> None:
+            self.a = torch.nn.Parameter(torch.full((2, 2), 0.5, dtype=torch.float32))
+            self.b = torch.nn.Parameter(torch.zeros((2, 2), dtype=torch.float32))
+            self.b.grad = torch.tensor([[1.0, 0.0], [0.0, 2.0]], dtype=torch.float32)
+
+        def named_parameters(self):
+            return [
+                ("adapter.lora_A.weight", self.a),
+                ("adapter.lora_B.weight", self.b),
+            ]
+
+    summary = summarise_lora_b_parameters(_DummyModel())
+
+    assert summary["lora_b_tensors"] == 1
+    assert summary["lora_b_zero_fraction"] == 1.0
+    assert summary["lora_b_max_abs"] == 0.0
+    assert summary["lora_b_tensors_with_grad"] == 1
+    assert summary["lora_b_grad_zero_fraction"] == pytest.approx(0.5)
+    assert summary["lora_b_grad_max_abs"] == pytest.approx(2.0)
+
+
+def test_apply_safe_lora_gradient_controls_logs_clip_and_lora_b_state() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _DummyModel:
+        def __init__(self) -> None:
+            self.a = torch.nn.Parameter(torch.full((1024,), 1e20, dtype=torch.float32))
+            self.a.grad = torch.full((1024,), 1e20, dtype=torch.float32)
+            self.b = torch.nn.Parameter(torch.zeros((1024,), dtype=torch.float32))
+            self.b.grad = torch.full((1024,), 5e19, dtype=torch.float32)
+
+        def named_parameters(self):
+            return [
+                ("adapter.lora_A.weight", self.a),
+                ("adapter.lora_B.weight", self.b),
+            ]
+
+    temp_dir = Path(tempfile.mkdtemp(dir=Path.cwd()))
+    try:
+        health = LoraTrainingHealth(
+            output_dir=temp_dir,
+            initial_probe=None,
+            probe_tensor_limit=8,
+            strict_divergence_after_step=250,
+            strict_divergence_after_warmup_multiplier=2.0,
+        )
+
+        result = apply_safe_lora_gradient_controls(
+            model=_DummyModel(),
+            global_step=9,
+            logging_steps=10,
+            max_grad_norm=1.0,
+            lora_health=health,
+        )
+
+        assert result["clip_summary"]["clip_coefficient"] < 1.0
+        log_lines = (temp_dir / "training_diagnostics.log").read_text(encoding="utf-8").splitlines()
+        assert any("safe_total_grad_norm=" in line for line in log_lines)
+        assert any("lora_B_zero_fraction=1.0" in line for line in log_lines)
+    finally:
+        shutil.rmtree(temp_dir)
 
 
 def test_lora_training_health_emits_diagnostics_to_stdout_and_file(capsys: pytest.CaptureFixture[str]) -> None:
