@@ -7,9 +7,9 @@ device_map: auto
 torch_dtype: bfloat16
 lora:
   rank: 32
-  alpha: 64
+  alpha: 32
   dropout: 0.05
-  target_modules: ".*\\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$"
+  target_modules: ".*\\.(out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$"
   bias: none
 training:
   output_dir: artifacts/adapter_stage1_format_align

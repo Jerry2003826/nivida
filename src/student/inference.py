@@ -92,6 +92,21 @@ def generate_single_prediction(
     return postprocess_generation(raw_text), raw_text
 
 
+# Official Kaggle evaluation harness parameters (from
+# 官方资料/kaggle_metric/nvidia-nemotron-metric.ipynb). The leaderboard uses
+# vLLM with do_sample=True, temperature=1.0, top_p=1.0, max_tokens=3584,
+# max_model_len=4096, and no fixed seed. Use ``official_eval=True`` to mirror
+# those settings in local inference.
+OFFICIAL_EVAL_PARAMS = {
+    "max_new_tokens": 3584,
+    "do_sample": True,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "repetition_penalty": 1.0,
+    "prompt_mode": PROMPT_MODE_CHAT_THINKING,
+}
+
+
 def run_inference(
     config: dict[str, Any],
     *,
@@ -99,8 +114,11 @@ def run_inference(
     adapter_dir: str | Path,
     output_path: str | Path,
     max_new_tokens: int | None = None,
+    official_eval: bool = False,
 ) -> Path:
     inference_config = dict(config.get("inference", {}))
+    if official_eval:
+        inference_config.update(OFFICIAL_EVAL_PARAMS)
     prompt_mode = str(inference_config.get("prompt_mode", PROMPT_MODE_RAW_WITH_GUARD))
     max_tokens = int(max_new_tokens or inference_config.get("max_new_tokens", 128))
     do_sample = bool(inference_config.get("do_sample", False))
@@ -158,6 +176,14 @@ def main() -> None:
     parser.add_argument("--adapter-dir", required=True)
     parser.add_argument("--output", default="data/processed/inference_predictions.jsonl")
     parser.add_argument("--max-new-tokens", type=int)
+    parser.add_argument(
+        "--official-eval",
+        action="store_true",
+        help=(
+            "Override inference config to match the official Kaggle leaderboard: "
+            "chat_thinking prompt, do_sample=True, T=1.0, top_p=1.0, max_new_tokens=3584."
+        ),
+    )
     args = parser.parse_args()
 
     config = read_yaml(args.config)
@@ -167,6 +193,7 @@ def main() -> None:
         adapter_dir=args.adapter_dir,
         output_path=args.output,
         max_new_tokens=args.max_new_tokens,
+        official_eval=args.official_eval,
     )
 
 
