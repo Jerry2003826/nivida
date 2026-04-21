@@ -424,7 +424,7 @@ def test_sanitize_nonfinite_lora_gradients_zeroes_only_nonfinite_entries() -> No
 
     model = _DummyModel()
 
-    summary = sanitize_nonfinite_lora_gradients(model)
+    summary = sanitize_nonfinite_lora_gradients(model, nonfinite_action="sanitize")
 
     assert summary["lora_tensors_with_grad"] == 2
     assert summary["nonfinite_grad_tensors"] == 1
@@ -438,6 +438,33 @@ def test_sanitize_nonfinite_lora_gradients_zeroes_only_nonfinite_entries() -> No
         model._params[1][1].grad,
         torch.tensor([[0.5, -0.25]], dtype=torch.float32),
     )
+
+
+def test_sanitize_nonfinite_lora_gradients_raises_by_default() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _Parameter:
+        def __init__(self, grad: torch.Tensor) -> None:
+            self.requires_grad = True
+            self.grad = grad
+
+        def numel(self) -> int:
+            return int(self.grad.numel())
+
+    class _DummyModel:
+        def __init__(self) -> None:
+            self._params = [
+                (
+                    "adapter.lora_A.weight",
+                    _Parameter(torch.tensor([[1.0, float("nan")]], dtype=torch.float32)),
+                ),
+            ]
+
+        def named_parameters(self):
+            return list(self._params)
+
+    with pytest.raises(RuntimeError, match="non-finite gradients"):
+        sanitize_nonfinite_lora_gradients(_DummyModel())
 
 
 def test_summarise_lora_gradients_reports_nonfinite_counts_without_inf_norm() -> None:

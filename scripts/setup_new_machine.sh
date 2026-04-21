@@ -10,8 +10,8 @@
 #   5. stage1 full training + acceptance check
 #   6. stage2 distill (full script, includes bestproxy selection)
 #   7. stage3 repair (full script, includes bestproxy selection)
-#   8. select_final_adapter (stage2-vs-stage3 decision)
-#   9. validate_submission + build submission.zip
+#   8. run_local_final_acceptance: select_final_adapter + probe + validate+package
+#      (canonical final closeout; writes artifacts/final_acceptance_report.json)
 #
 # Configuration via env vars:
 #   WORKSPACE_DIR (default /workspace/nivida_h200_run)
@@ -167,31 +167,57 @@ if [[ ! -f "$STAGE3_BEST_DIR/adapter_model.safetensors" ]]; then
 fi
 
 ######################################################################
-# 8. Select final adapter (stage2 vs stage3)
+# 8. Final acceptance chain (select + probe + validate + package)
+#
+# Uses scripts/run_local_final_acceptance.py which has correct defaults for
+# smoke_input / labels / splits, so validate_submission.py gets the required
+# arguments (previous pipeline called validate_submission.py without smoke/
+# labels which is a hard error inside that script).  It also writes the
+# canonical `artifacts/adapter_final_selected/` and
+# `data/processed/final_adapter_selection.json` paths that README / downstream
+# tooling expects.
 ######################################################################
-FINAL_DIR=artifacts/adapter_final
-FINAL_JSON=artifacts/final_adapter_selection.json
-run python scripts/select_final_adapter.py \
-  --stage2-hard-eval data/processed/stage2_bestproxy_hard_eval.json \
-  --stage2-all-eval  data/processed/stage2_bestproxy_all_eval.json \
+FINAL_DIR=artifacts/adapter_final_selected
+FINAL_SELECTION_JSON=data/processed/final_adapter_selection.json
+SUBMISSION_ZIP="${SUBMISSION_ZIP:-submission.zip}"
+
+run python scripts/run_local_final_acceptance.py \
   --stage2-adapter-dir "$STAGE2_BEST_DIR" \
-  --stage3-hard-eval data/processed/stage3_bestproxy_hard_eval.json \
-  --stage3-all-eval  data/processed/stage3_bestproxy_all_eval.json \
   --stage3-adapter-dir "$STAGE3_BEST_DIR" \
   --output-adapter-dir "$FINAL_DIR" \
-  --output-json "$FINAL_JSON"
-
-######################################################################
-# 9. Validate submission + package zip
-######################################################################
-SUBMISSION_ZIP="${SUBMISSION_ZIP:-submission.zip}"
-run python scripts/validate_submission.py \
-  --config configs/train_stage3_repair.yaml \
-  --adapter-dir "$FINAL_DIR" \
-  --output artifacts/submission_validation.json \
-  --package-output "$SUBMISSION_ZIP"
+  --selection-json "$FINAL_SELECTION_JSON" \
+  --probe-json artifacts/adapter_submission_probe.json \
+  --validation-json artifacts/submission_validation.json \
+  --summary-json artifacts/final_acceptance_report.json \
+  --submission-zip "$SUBMISSION_ZIP" \
+  --config configs/train_stage3_repair.yaml
 
 log "Done. Final adapter: $FINAL_DIR"
 log "Submission zip   : $SUBMISSION_ZIP"
-log "Selection report : $FINAL_JSON"
+log "Selection report : $FINAL_SELECTION_JSON"
+log "Acceptance summary: artifacts/final_acceptance_report.json"
 log "All step logs    : $LOG_DIR/${STAMP}.*.log"
+
+######################################################################
+# 9. Auto-submit to Kaggle (idempotent; uses submission.zip sha256 to dedupe)
+######################################################################
+if [[ -f ~/.kaggle/kaggle.json && -f "$SUBMISSION_ZIP" ]]; then
+  log "Auto-submitting $SUBMISSION_ZIP to Kaggle"
+  MSG="auto full-run $(git rev-parse --short HEAD 2>/dev/null || echo ?) $(date -u +%Y%m%dT%H%M%SZ)"
+  kaggle competitions submit -c nvidia-nemotron-model-reasoning-challenge \
+    -f "$SUBMISSION_ZIP" -m "$MSG" 2>&1 | tee "$LOG_DIR/${STAMP}.kaggle_submit.log" || log "Kaggle submit FAILED (non-fatal)"
+  log "Polling LB score every 60s (timeout 30min)..."
+  for i in $(seq 1 30); do
+    sleep 60
+    OUT=$(kaggle competitions submissions -c nvidia-nemotron-model-reasoning-challenge 2>/dev/null | head -4)
+    echo "[poll $i/30] $(date -u +%H:%M:%S) -- $(echo "$OUT" | tail -1)"
+    SCORE=$(echo "$OUT" | tail -1 | awk '{print $(NF-1)}')
+    if [[ -n "$SCORE" && "$SCORE" != "None" && "$SCORE" != "publicScore" ]]; then
+      log "KAGGLE_PUBLIC_SCORE=$SCORE"
+      echo "$SCORE" > artifacts/kaggle_public_score.txt
+      break
+    fi
+  done
+else
+  log "Skipping Kaggle auto-submit (no kaggle.json or no zip)"
+fi

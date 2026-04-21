@@ -162,18 +162,31 @@ Stage3 failure / success buckets are produced by `scripts/train_stage3_repair.sh
 
 ### Submission size budget
 
-All canonical LoRA training configs share a single submission-safe
-`target_modules` regex so the final `submission.zip` stays below the
-Kaggle 1GB single-file limit:
+`src/student/adapter_submission_budget.py` is the single source of truth
+for canonical `target_modules` regexes. Three named variants exist; all
+docs, tests and configs must import by name rather than hardcoding
+strings:
+
+- `DEMO_BASELINE_TARGET_REGEX` - `(in_proj|out_proj|up_proj|down_proj)`.
+  Legacy demo default; retained only for reproducing old runs.
+- `WIDE_WITH_IN_PROJ_TARGET_REGEX` - legacy "submission safe wide"
+  target that includes `in_proj` + attention. Observed to overflow on
+  Blackwell (RF-2 audit). Do NOT use in production.
+- `BLACKWELL_NARROW_TARGET_REGEX` - production target shipped with
+  `configs/train_stage{1,2,3}*.yaml`. Drops `in_proj` because the Mamba
+  in_proj matmul produces non-finite gradients under bf16 at alpha=32,
+  rank=32.
+
+Production regex (`BLACKWELL_NARROW_TARGET_REGEX`):
 
 ```text
-.*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$
+.*\.(out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$
 ```
 
 This regex covers the real LoRA-compatible Nemotron-H Linear modules we
 currently rely on:
 
-- Mamba: `in_proj`, `out_proj`
+- Mamba: `out_proj` (in_proj excluded on Blackwell)
 - MoE experts: `up_proj`, `down_proj`
 - Attention: `q_proj`, `k_proj`, `v_proj`, `o_proj`
 

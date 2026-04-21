@@ -106,6 +106,31 @@ def is_valid_candidate(candidate_dir: Path) -> bool:
     return True
 
 
+def _average_proxy_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    """Average numeric fields across repeated proxy eval payloads.
+
+    Non-numeric fields are taken from the last run; repeat-level breakdowns are
+    preserved under the ``repeats`` key for audit.
+    """
+    if not payloads:
+        raise ValueError("no payloads to average")
+    if len(payloads) == 1:
+        return payloads[0]
+    numeric_keys: set[str] = set()
+    for payload in payloads:
+        for key, value in payload.items():
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                numeric_keys.add(key)
+    averaged = dict(payloads[-1])
+    for key in numeric_keys:
+        averaged[key] = sum(float(p.get(key, 0.0)) for p in payloads) / len(payloads)
+    averaged["num_repeats"] = len(payloads)
+    averaged["repeats"] = payloads
+    return averaged
+
+
 def run_proxy_pair(
     *,
     config: dict[str, Any],
@@ -115,26 +140,52 @@ def run_proxy_pair(
     candidate_name: str,
     proxy_label: str,
     max_new_tokens: int,
+    official_eval: bool = True,
+    num_repeats: int = 3,
 ) -> tuple[Path, dict[str, Any]]:
     """Run run_inference + evaluate_replica for one (candidate, proxy) pair.
 
+    Always uses the official Kaggle harness sampling parameters (do_sample=True,
+    T=1.0, top_p=1.0, max_new_tokens=3584, chat_thinking prompt) by default, and
+    averages ``num_repeats`` sampled runs because the leaderboard scorer is
+    itself a sampling-based judge.
+
     Returns ``(eval_json_path, structured_eval_dict)``.
     """
-    pred_path = workdir / f"{candidate_name}_{proxy_label}_pred.jsonl"
     eval_path = workdir / f"{candidate_name}_{proxy_label}_eval.json"
-    run_inference(
-        config,
-        input_path=input_path,
-        adapter_dir=adapter_dir,
-        output_path=pred_path,
-        max_new_tokens=max_new_tokens,
-    )
-    payload = evaluate_replica(
-        prediction_path=pred_path,
-        label_path=input_path,
-        require_complete_coverage=True,
-    )
-    write_json(eval_path, payload)
+    # When official_eval is on, prefer the official max_new_tokens=3584 unless
+    # the caller explicitly opts to clip with a smaller value.
+    effective_max_tokens = max_new_tokens
+    if official_eval and max_new_tokens and max_new_tokens < 3584:
+        effective_max_tokens = 3584
+    payloads: list[dict[str, Any]] = []
+    pred_paths: list[Path] = []
+    repeats = max(1, int(num_repeats) if official_eval else 1)
+    for repeat_idx in range(repeats):
+        suffix = f"_r{repeat_idx}" if repeats > 1 else ""
+        pred_path = workdir / f"{candidate_name}_{proxy_label}_pred{suffix}.jsonl"
+        run_inference(
+            config,
+            input_path=input_path,
+            adapter_dir=adapter_dir,
+            output_path=pred_path,
+            max_new_tokens=effective_max_tokens,
+            official_eval=official_eval,
+        )
+        payload = evaluate_replica(
+            prediction_path=pred_path,
+            label_path=input_path,
+            require_complete_coverage=True,
+        )
+        payload["_repeat_index"] = repeat_idx
+        payload["_prediction_path"] = str(pred_path)
+        payloads.append(payload)
+        pred_paths.append(pred_path)
+    averaged = _average_proxy_payloads(payloads)
+    averaged["official_eval"] = official_eval
+    averaged["max_new_tokens_used"] = effective_max_tokens
+    averaged["prediction_paths"] = [str(p) for p in pred_paths]
+    write_json(eval_path, averaged)
     return eval_path, load_proxy_eval(eval_path)
 
 
@@ -150,6 +201,8 @@ def select_best_checkpoint(
     output_json: Path,
     max_new_tokens: int,
     workdir: Path | None,
+    official_eval: bool = True,
+    num_repeats: int = 3,
 ) -> dict[str, Any]:
     if workdir is None:
         workdir = derive_default_workdir(stage_output_dir)
@@ -187,6 +240,8 @@ def select_best_checkpoint(
             candidate_name=name,
             proxy_label="hard",
             max_new_tokens=max_new_tokens,
+            official_eval=official_eval,
+            num_repeats=num_repeats,
         )
         all_path, all_eval = run_proxy_pair(
             config=config,
@@ -196,6 +251,8 @@ def select_best_checkpoint(
             candidate_name=name,
             proxy_label="all",
             max_new_tokens=max_new_tokens,
+            official_eval=official_eval,
+            num_repeats=num_repeats,
         )
         record["hard_eval"] = hard_eval
         record["all_eval"] = all_eval
@@ -273,12 +330,30 @@ def main() -> None:
     parser.add_argument("--output-hard-eval", required=True, type=Path)
     parser.add_argument("--output-all-eval", required=True, type=Path)
     parser.add_argument("--output-json", required=True, type=Path)
-    parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument("--max-new-tokens", type=int, default=3584)
     parser.add_argument(
         "--workdir",
         type=Path,
         default=None,
         help="Directory for per-candidate prediction / eval intermediates.",
+    )
+    parser.add_argument(
+        "--no-official-eval",
+        action="store_true",
+        help=(
+            "Disable the official Kaggle harness sampling override. Only useful "
+            "for debugging; production selection must mirror the leaderboard."
+        ),
+    )
+    parser.add_argument(
+        "--num-repeats",
+        type=int,
+        default=3,
+        help=(
+            "Number of sampled generations per candidate per proxy; payload "
+            "numerics are averaged across repeats. Only used when official "
+            "eval is on (do_sample=True)."
+        ),
     )
     args = parser.parse_args()
 
@@ -294,6 +369,8 @@ def main() -> None:
         output_json=args.output_json,
         max_new_tokens=args.max_new_tokens,
         workdir=args.workdir,
+        official_eval=(not args.no_official_eval),
+        num_repeats=args.num_repeats,
     )
 
 

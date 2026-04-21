@@ -12,6 +12,20 @@ from src.student.adapter_submission_budget import KAGGLE_SINGLE_FILE_LIMIT_BYTES
 REQUIRED_ADAPTER_FILES = {"adapter_config.json"}
 ADAPTER_WEIGHT_CANDIDATES = ("adapter_model.safetensors", "adapter_model.bin")
 
+# Kaggle / PEFT only need these two files at the zip root.  We deliberately do
+# NOT ship any other file (optimizer state, README, tokenizer, extra safetensors
+# shards) because:
+#   * the upstream metric notebook recursively searches for adapter_config.json
+#     and builds a vLLM LoRARequest from that directory; extra files waste the
+#     1 GB single-file budget and can confuse the loader.
+#   * training-only files like optimizer.pt or scheduler.pt can accidentally
+#     leak if saved into the adapter dir.
+SUBMISSION_ZIP_ALLOWLIST = (
+    "adapter_config.json",
+    "adapter_model.safetensors",
+    "adapter_model.bin",
+)
+
 
 def validate_adapter_dir(adapter_dir: str | Path) -> list[str]:
     path = Path(adapter_dir)
@@ -76,10 +90,34 @@ def build_submission_zip(adapter_dir: str | Path, output_path: str | Path) -> Pa
     validate_adapter_dir(adapter_path)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Allowlist-only packaging.  Prefer adapter_model.safetensors over
+    # adapter_model.bin; never ship both.
+    included: list[str] = ["adapter_config.json"]
+    if (adapter_path / "adapter_model.safetensors").is_file():
+        included.append("adapter_model.safetensors")
+    elif (adapter_path / "adapter_model.bin").is_file():
+        included.append("adapter_model.bin")
+    else:
+        raise FileNotFoundError(
+            f"No adapter_model.safetensors or adapter_model.bin in {adapter_path}"
+        )
+
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for file_path in adapter_path.iterdir():
-            if file_path.is_file():
-                archive.write(file_path, arcname=file_path.name)
+        for name in included:
+            src = adapter_path / name
+            if not src.is_file():
+                raise FileNotFoundError(f"Allowlisted file missing in adapter dir: {src}")
+            archive.write(src, arcname=name)
+
+    # Post-condition: zip roundtrip must contain exactly the allowlisted files.
+    with zipfile.ZipFile(output_path, "r") as archive:
+        names = archive.namelist()
+    if set(names) != set(included):
+        raise RuntimeError(
+            f"submission.zip contents {names} do not match allowlist {included}"
+        )
+
     validate_submission_zip_size(output_path)
     return output_path
 

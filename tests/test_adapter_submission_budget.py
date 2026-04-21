@@ -5,13 +5,17 @@ import pytest
 import src.student.adapter_submission_budget as budget_module
 from src.common.io import read_yaml
 from src.student.adapter_submission_budget import (
+    BLACKWELL_NARROW_TARGET_REGEX,
     CANDIDATE_WIDE_SUFFIXES,
     DEFAULT_TARGET_REGEX,
+    DEMO_BASELINE_TARGET_REGEX,
     FULL_WIDE_TARGET_REGEX,
+    KAGGLE_SINGLE_FILE_LIMIT_BYTES,
     KNOWN_TARGET_SUFFIXES,
     NEMOTRON_3_NANO_30B_FALLBACK,
     SAFE_ADDITION_PRIORITY,
     SUBMISSION_SAFE_WIDE_TARGET_REGEX,
+    WIDE_WITH_IN_PROJ_TARGET_REGEX,
     _HYPOTHETICAL_OVER_LIMIT_TARGET_REGEX,
     estimate_submission_budget,
     propose_size_safe_target_modules,
@@ -187,7 +191,21 @@ def test_canonical_projected_zip_matches_analytic_value() -> None:
     assert budget["projected_submission_zip_bytes"] == 888_873_792
 
 
-def test_canonical_stage_configs_share_submission_safe_target_modules() -> None:
+def test_named_target_regexes_are_distinct_and_consistent() -> None:
+    # Audit D1: the budget module is the single source of truth for named
+    # target-module regex variants. Validate each is distinct and the legacy
+    # back-compat aliases still point at the right canonical name.
+    assert DEMO_BASELINE_TARGET_REGEX != WIDE_WITH_IN_PROJ_TARGET_REGEX
+    assert WIDE_WITH_IN_PROJ_TARGET_REGEX != BLACKWELL_NARROW_TARGET_REGEX
+    assert DEMO_BASELINE_TARGET_REGEX != BLACKWELL_NARROW_TARGET_REGEX
+    assert "in_proj" not in BLACKWELL_NARROW_TARGET_REGEX
+    assert "in_proj" in WIDE_WITH_IN_PROJ_TARGET_REGEX
+    assert SUBMISSION_SAFE_WIDE_TARGET_REGEX == WIDE_WITH_IN_PROJ_TARGET_REGEX
+
+
+def test_canonical_stage_configs_share_blackwell_narrow_target_modules() -> None:
+    # Production configs must share the BLACKWELL_NARROW target since Blackwell
+    # overflow required dropping in_proj (see commit 5c50d1c).
     config_paths = [
         "configs/train_stage1_format.yaml",
         "configs/train_stage2_selected_trace.yaml",
@@ -199,13 +217,16 @@ def test_canonical_stage_configs_share_submission_safe_target_modules() -> None:
         read_yaml(path)["lora"]["target_modules"]
         for path in config_paths
     }
-    assert observed_regexes == {SUBMISSION_SAFE_WIDE_TARGET_REGEX}
+    assert observed_regexes == {BLACKWELL_NARROW_TARGET_REGEX}
 
     for path in config_paths:
         budget = estimate_submission_budget(read_yaml(path))
         assert budget["status"] == "ok", path
-        assert budget["target_modules"] == SUBMISSION_SAFE_WIDE_TARGET_REGEX, path
-        assert 880_000_000 <= budget["projected_submission_zip_bytes"] <= 900_000_000, (
+        assert budget["target_modules"] == BLACKWELL_NARROW_TARGET_REGEX, path
+        # BLACKWELL_NARROW drops in_proj relative to the wide regex, so the
+        # projected zip is smaller than the wide 880-900M window. Still must
+        # stay well under Kaggle's 1GB single-file limit.
+        assert budget["projected_submission_zip_bytes"] <= KAGGLE_SINGLE_FILE_LIMIT_BYTES, (
             f"{path} projected zip {budget['projected_submission_zip_bytes']} "
-            "fell outside the expected 880M-900M canonical window"
+            "exceeds Kaggle 1GB limit"
         )

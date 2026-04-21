@@ -546,7 +546,22 @@ def summarise_lora_runtime_state(model: Any) -> dict[str, Any]:
     }
 
 
-def sanitize_nonfinite_lora_gradients(model: Any) -> dict[str, Any]:
+def sanitize_nonfinite_lora_gradients(
+    model: Any,
+    *,
+    nonfinite_action: str = "raise",
+    global_step: int | None = None,
+) -> dict[str, Any]:
+    """Inspect LoRA gradients for NaN/Inf and either hard-fail or sanitize.
+
+    ``nonfinite_action``:
+      * ``"raise"`` (default, post-audit): raise RuntimeError with diagnostic
+        info listing offending parameter names and counts. This matches the
+        GPT-5.4 Pro audit recommendation to fail fast instead of silently
+        masking bad gradients (RF-4).
+      * ``"sanitize"``: legacy behavior - zero out nonfinite elements and
+        continue. Only use for debugging.
+    """
     try:
         import torch
     except ImportError as exc:
@@ -558,6 +573,7 @@ def sanitize_nonfinite_lora_gradients(model: Any) -> dict[str, Any]:
     nonfinite_grad_tensors = 0
     nonfinite_grad_elements = 0
     sanitized_parameter_names: list[str] = []
+    offender_samples: list[dict[str, Any]] = []
 
     for name, parameter in _iter_lora_named_parameters(model):
         if parameter.grad is None:
@@ -569,14 +585,37 @@ def sanitize_nonfinite_lora_gradients(model: Any) -> dict[str, Any]:
         nonfinite_grad_tensors += 1
         current_nonfinite = int((~finite_mask).sum().item())
         nonfinite_grad_elements += current_nonfinite
-        parameter.grad.masked_fill_(~finite_mask, 0)
-        sanitized_parameter_names.append(name)
+        if len(offender_samples) < 8:
+            offender_samples.append(
+                {
+                    "name": name,
+                    "nonfinite_elements": current_nonfinite,
+                    "total_elements": int(parameter.grad.numel()),
+                }
+            )
+        if nonfinite_action == "sanitize":
+            parameter.grad.masked_fill_(~finite_mask, 0)
+            sanitized_parameter_names.append(name)
+
+    if nonfinite_grad_tensors > 0 and nonfinite_action == "raise":
+        raise RuntimeError(
+            "[LoRA] non-finite gradients detected; refusing to step. "
+            f"global_step={global_step} "
+            f"nonfinite_grad_tensors={nonfinite_grad_tensors}/{tensors_with_grad} "
+            f"nonfinite_grad_elements={nonfinite_grad_elements} "
+            f"offenders_head={offender_samples}. "
+            "Hard-fail per GPT-5.4 Pro audit RF-4: masking NaN/Inf as zero "
+            "silently corrupts optimizer state. Investigate upstream "
+            "(loss, label mask, dtype) instead."
+        )
 
     return {
         "lora_tensors_with_grad": tensors_with_grad,
         "nonfinite_grad_tensors": nonfinite_grad_tensors,
         "nonfinite_grad_elements": nonfinite_grad_elements,
         "sanitized_parameter_names": sanitized_parameter_names,
+        "offender_samples": offender_samples,
+        "nonfinite_action": nonfinite_action,
     }
 
 
@@ -708,11 +747,13 @@ def apply_safe_lora_gradient_controls(
     logging_steps: int,
     max_grad_norm: float,
     lora_health: "LoraTrainingHealth",
+    nonfinite_action: str = "raise",
 ) -> dict[str, Any]:
     sanitize_summary = lora_health.maybe_sanitize_gradients(
         model=model,
         global_step=global_step,
         logging_steps=logging_steps,
+        nonfinite_action=nonfinite_action,
     )
     clip_summary = safe_clip_lora_gradients(
         model,
@@ -1097,10 +1138,21 @@ class LoraTrainingHealth:
             warmup_multiplier=self.strict_divergence_after_warmup_multiplier,
         )
 
-    def maybe_sanitize_gradients(self, *, model: Any, global_step: int, logging_steps: int) -> dict[str, Any]:
+    def maybe_sanitize_gradients(
+        self,
+        *,
+        model: Any,
+        global_step: int,
+        logging_steps: int,
+        nonfinite_action: str = "raise",
+    ) -> dict[str, Any]:
         logging_every = max(1, int(logging_steps))
         candidate_step = max(1, int(global_step) + 1)
-        summary = sanitize_nonfinite_lora_gradients(model)
+        summary = sanitize_nonfinite_lora_gradients(
+            model,
+            nonfinite_action=nonfinite_action,
+            global_step=candidate_step,
+        )
         if summary["nonfinite_grad_tensors"] <= 0:
             return summary
 
@@ -1298,9 +1350,74 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
     )
     lora_health.log_trainable_summary(lora_trainable_summary)
 
+    # --- GPT-5.4 Pro audit RF-D (dataset guard) -----------------------------
+    # Reject samples that would contribute zero supervision (all labels == -100)
+    # or whose final answer got right-truncated by resolved_max_seq_length.
+    # Configurable via training.dataset_guard: {strict: bool, max_drop_ratio: 0.05}.
+    dataset_guard_cfg = dict(training_config.get("dataset_guard", {}))
+    strict_dataset_guard = bool(dataset_guard_cfg.get("strict", False))
+    dataset_guard_log_first_n = int(dataset_guard_cfg.get("log_first_n", 5))
+    dataset_guard_max_drop_ratio = float(dataset_guard_cfg.get("max_drop_ratio", 0.05))
+
     class PromptCompletionDataset(torch.utils.data.Dataset):
-        def __init__(self, items: list[SupervisedRecord]) -> None:
-            self.items = items
+        def __init__(
+            self,
+            items: list[SupervisedRecord],
+            *,
+            split_name: str,
+        ) -> None:
+            self.split_name = split_name
+            eos_token = tokenizer.eos_token or ""
+            kept: list[SupervisedRecord] = []
+            dropped: list[tuple[int, str]] = []
+            for orig_idx, item in enumerate(items):
+                prompt_ids = tokenizer(
+                    item.prompt.rstrip() + "\n",
+                    add_special_tokens=False,
+                    truncation=True,
+                    max_length=resolved_max_seq_length,
+                )["input_ids"]
+                full_text = _build_text_sample(item, eos_token)
+                full_ids_untrunc = tokenizer(
+                    full_text,
+                    add_special_tokens=False,
+                    truncation=False,
+                )["input_ids"]
+                full_ids = full_ids_untrunc[:resolved_max_seq_length]
+                prompt_len = min(len(prompt_ids), len(full_ids))
+                supervised_len = max(0, len(full_ids) - prompt_len)
+                if supervised_len <= 0:
+                    dropped.append((orig_idx, "zero_supervised_tokens"))
+                    continue
+                if len(full_ids_untrunc) > resolved_max_seq_length:
+                    dropped.append((orig_idx, "answer_right_truncated"))
+                    continue
+                kept.append(item)
+            total = len(items)
+            drop_count = len(dropped)
+            drop_ratio = (drop_count / total) if total > 0 else 0.0
+            print(
+                f"[dataset_guard] split={split_name} total={total} "
+                f"kept={len(kept)} dropped={drop_count} ({drop_ratio:.3%}) "
+                f"first_reasons={[r for _, r in dropped[:dataset_guard_log_first_n]]}",
+                flush=True,
+            )
+            if strict_dataset_guard and drop_count > 0:
+                raise RuntimeError(
+                    f"[dataset_guard] strict mode: {drop_count} samples in split={split_name} "
+                    f"failed guard. First offenders: {dropped[:dataset_guard_log_first_n]}"
+                )
+            if drop_ratio > dataset_guard_max_drop_ratio:
+                raise RuntimeError(
+                    f"[dataset_guard] drop_ratio {drop_ratio:.3%} exceeds "
+                    f"max_drop_ratio {dataset_guard_max_drop_ratio:.3%} for split={split_name}. "
+                    f"Likely too-small max_seq_length or malformed prompt template."
+                )
+            if not kept:
+                raise RuntimeError(
+                    f"[dataset_guard] split={split_name} is empty after filtering."
+                )
+            self.items = kept
 
         def __len__(self) -> int:
             return len(self.items)
@@ -1322,11 +1439,18 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
             labels = list(full_ids)
             prompt_len = min(len(prompt_ids), len(labels))
             labels[:prompt_len] = [-100] * prompt_len
+            if not any(lbl != -100 for lbl in labels):
+                raise RuntimeError(
+                    f"[dataset_guard/runtime] split={getattr(self, 'split_name', '?')} "
+                    f"idx={idx} has zero supervised tokens."
+                )
             attention_mask = [1] * len(full_ids)
             return {"input_ids": full_ids, "labels": labels, "attention_mask": attention_mask}
 
-    train_dataset = PromptCompletionDataset(records)
-    eval_dataset = PromptCompletionDataset(eval_records) if eval_records else None
+    train_dataset = PromptCompletionDataset(records, split_name="train")
+    eval_dataset = (
+        PromptCompletionDataset(eval_records, split_name="eval") if eval_records else None
+    )
 
     class SupervisedCollator:
         def __call__(self, features: list[dict[str, list[int]]]) -> dict[str, Any]:
@@ -1426,6 +1550,17 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
                 ),
             )
 
+    # GPT-5.4 Pro audit RF-4 recommends hard-failing on non-finite LoRA
+    # gradients rather than silently zero-masking them. Keep a config escape
+    # hatch (training.lora_nonfinite_action) for debug fallback.
+    lora_nonfinite_action = str(
+        training_config.get("lora_nonfinite_action", "raise")
+    ).lower()
+    if lora_nonfinite_action not in {"raise", "sanitize"}:
+        raise ValueError(
+            f"training.lora_nonfinite_action must be 'raise' or 'sanitize', got {lora_nonfinite_action!r}"
+        )
+
     class LoraOptimizerStepCallback(transformers.TrainerCallback):
         def on_pre_optimizer_step(self, args: Any, state: Any, control: Any, **kwargs: Any):
             model = kwargs.get("model")
@@ -1437,6 +1572,7 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
                 logging_steps=int(getattr(args, "logging_steps", 10)),
                 max_grad_norm=requested_max_grad_norm,
                 lora_health=lora_health,
+                nonfinite_action=lora_nonfinite_action,
             )
             return control
 

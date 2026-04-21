@@ -53,10 +53,34 @@ SAFE_ADDITION_PRIORITY: tuple[str, ...] = (
     "v_proj",
     "o_proj",
 )
-DEFAULT_TARGET_REGEX = r".*\.(in_proj|out_proj|up_proj|down_proj)$"
-SUBMISSION_SAFE_WIDE_TARGET_REGEX = (
+# Canonical target-module regexes. GPT-5.4 Pro audit D1 required that this file
+# be the single source of truth; README / tests / other scripts must import
+# these names instead of hardcoding strings, so that changing a target list
+# stays coherent across docs, budget checks, and training configs.
+#
+# * DEMO_BASELINE_TARGET_REGEX -- legacy demo config targeting only the Mamba
+#   in_proj/out_proj and MLP up_proj/down_proj suffixes. Historical default
+#   before 2026-04-15; retained for reproduction of old runs only.
+# * WIDE_WITH_IN_PROJ_TARGET_REGEX -- full-surface attention + MLP wide target
+#   INCLUDING in_proj. Matches SUBMISSION_SAFE_WIDE_TARGET_REGEX below. On
+#   Blackwell RTX PRO 6000 we observed overflow with this target plus
+#   alpha=32 rank=32 (RF-2 audit finding), so it is NOT the production choice.
+# * BLACKWELL_NARROW_TARGET_REGEX -- Blackwell-managed production target: drops
+#   in_proj because the Mamba in_proj has long sequence x hidden matmul that
+#   routinely produces non-finite gradients under bf16 + alpha/rank=1 scaling.
+#   This is what configs/train_stage{1,2,3}*.yaml ship with since commit
+#   5c50d1c "drop Mamba in_proj from LoRA targets".
+DEMO_BASELINE_TARGET_REGEX = r".*\.(in_proj|out_proj|up_proj|down_proj)$"
+WIDE_WITH_IN_PROJ_TARGET_REGEX = (
     r".*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$"
 )
+BLACKWELL_NARROW_TARGET_REGEX = (
+    r".*\.(out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$"
+)
+
+# Back-compat aliases. Prefer the explicit names above in new code.
+DEFAULT_TARGET_REGEX = DEMO_BASELINE_TARGET_REGEX
+SUBMISSION_SAFE_WIDE_TARGET_REGEX = WIDE_WITH_IN_PROJ_TARGET_REGEX
 # NOTE: gate_proj is intentionally absent. The current HF Nemotron-H
 # implementation does not expose a gate_proj nn.Linear. NemotronHMLP has only
 # up_proj and down_proj; NemotronHMOE.gate is a router module, not a
@@ -64,6 +88,7 @@ SUBMISSION_SAFE_WIDE_TARGET_REGEX = (
 # Linear, update these suffix lists only after verifying it with
 # scripts/list_model_linear_modules.py against the actual model source.
 FULL_WIDE_TARGET_REGEX = SUBMISSION_SAFE_WIDE_TARGET_REGEX
+PRODUCTION_TARGET_REGEX = BLACKWELL_NARROW_TARGET_REGEX
 _HYPOTHETICAL_OVER_LIMIT_TARGET_REGEX = (
     r".*\.(in_proj|out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj|hypothetical_bulk_proj)$"
 )
