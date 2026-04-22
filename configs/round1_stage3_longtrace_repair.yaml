@@ -1,0 +1,99 @@
+# round1_stage3_longtrace_repair.yaml
+# =====================================
+# Stage 3 complete-trace repair config — Round 1 replacement for the old
+# "format repair" stage.
+#
+# Rationale (GPT-5.4 Pro Round 3):
+#   The Kaggle submission runtime allows max_model_len=8192 and
+#   max_tokens=7680.  During Round 0 stage2, the student routinely hits
+#   the 4096-token training seq_len cap and emits truncated trajectories.
+#   Truncated trajectories miss \boxed{...}, which the official `verify()`
+#   rejects regardless of semantic correctness.  Rather than teach the
+#   model to output *shorter* chains (that loses accuracy on Tier-C hard
+#   problems), we teach it to finish *longer* chains cleanly.
+#
+# Key decisions (locked):
+#   1. Sequence length:    4096 tokens (primary), 6144 for the 10% hard
+#                          bucket.  DO NOT modify RoPE scaling — the
+#                          base model is already trained at 8192.
+#   2. Length mix:
+#        60% concise   (≤2048 tokens)
+#        30% medium    (2048–4096 tokens)
+#        10% hard      (4096–6000 tokens)
+#         0% truncated (trajectories without \boxed{} are dropped, not
+#                       masked)
+#   3. Loss weighting:     1.0 for answer tokens (the \boxed{...} span),
+#                          0.5 for chain-of-thought rationale, 3.0 for
+#                          the final-answer literal (numeric or LaTeX).
+#                          See round1_gcd_teacher_distill.py for token
+#                          weight logic.
+#   4. Training schedule:  2 epochs, cosine LR, peak 5e-5, warmup 50 steps.
+#                          Effective batch 32 (micro 4 × grad-accum 8).
+#   5. LoRA targets:       inherit from round1_lora_target_sweep.yaml
+#                          (attn_plus_mamba_out), rank=32, alpha=64.
+# ---------------------------------------------------------------------------
+
+name: round1_stage3_longtrace_repair
+description: >-
+  Complete-trace repair — teach the student to finish 4096-token chains
+  with a valid \boxed{} answer.  Replaces the old format-repair stage3.
+
+stage: stage3
+parent_adapter: artifacts/adapter_stage2_bestproxy/
+
+data:
+  # Source: GCD-distilled + optional Tinker hard-bucket filler
+  primary_jsonl: data/processed/round1_gcd_distill.jsonl
+  hard_filler_jsonl: data/processed/round1_hard_trace_filler.jsonl  # optional
+  length_mix:
+    concise_pct: 0.60        # ≤2048 tokens
+    medium_pct:  0.30        # 2048–4096
+    hard_pct:    0.10        # 4096–6000
+    drop_truncated: true     # discard rows without final \boxed{}
+  length_buckets_tokens:
+    concise_max: 2048
+    medium_max: 4096
+    hard_max:   6000
+
+training:
+  seq_len_primary: 4096
+  seq_len_hard:    6144         # used only for the 10% hard bucket
+  epochs: 2
+  micro_batch_size: 4
+  grad_accum_steps: 8
+  # effective batch = 32
+  optimizer: adamw_torch_fused
+  lr: 5.0e-5
+  lr_scheduler: cosine
+  warmup_steps: 50
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  bf16: true
+  # DO NOT touch RoPE — base model is trained at 8192 already.
+  rope_scaling: null
+
+loss:
+  # Token-level weighting — applied in the SFT collator
+  weight_final_answer: 3.0     # the numeric / LaTeX answer literal inside \boxed{}
+  weight_boxed_wrapper: 1.0    # the literal '\\boxed{' and '}' tokens
+  weight_rationale: 0.5        # tokens inside <think>...</think>
+  weight_other: 1.0
+
+lora:
+  rank: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules_preset: attn_plus_mamba_out  # from round1_lora_target_sweep.yaml
+
+eval:
+  contract: runtime              # matches official_metric_contract.RUNTIME_*
+  every_n_steps: 250
+  proxy_subset_size: 500
+  # Stage3 must not regress LB vs stage2 bestproxy by more than 1 point.
+  regression_guard: 0.01
+
+# Acceptance gate — stage3 checkpoint promoted to adapter_final iff ALL hold:
+acceptance:
+  min_competition_correct_rate: 0.74   # stage2 bestproxy floor + small margin
+  min_boxed_answer_rate:        0.98   # trace-completeness check
+  max_avg_output_tokens:        3200   # don't over-generate

@@ -1,8 +1,33 @@
 """round1_gcd_teacher_distill.py
 ================================
 Greedy Consensus Distillation (GCD): generate N teacher trajectories per
-prompt, cluster by answer equivalence, and select the shortest verified
-trajectory from the majority cluster as the student's SFT target.
+prompt, cluster by answer equivalence, and retain 1–2 verified concise
+trajectories from the majority cluster as student SFT targets, with
+support-weighted per-sample weights.
+
+Round 3 updates (GPT-5.4 Pro, 2026-04-22)
+-----------------------------------------
+The original GCD design sampled a fixed N=16 and kept only the single
+shortest verified trajectory per prompt.  Evidence-grounded Round 3
+revision changes three things:
+
+  1. **Adaptive N**  — N=4 → 8 → 16 tiered.  We first sample N=4; if a
+     strict majority is already established (>50% agreement) AND the
+     shortest verified trajectory is ≤2048 chars, we stop.  Otherwise we
+     bump to N=8, then N=16.  This saves ~40–60% of teacher tokens on
+     easy prompts.
+  2. **Multi-trace retention** — keep 1 or 2 verified concise trajectories
+     per prompt (not only the shortest).  The second retained trace
+     must be the SECOND-shortest verified trajectory AND within 1.35×
+     the length of the shortest.  This diversifies reasoning styles
+     without pulling in noisy long chains.
+  3. **Support-weighted sample weight** — each SFT row carries
+     ``sample_weight = 1.0 + 2.0 * support / N``, where ``support`` is
+     the size of the majority cluster (how many of N samples agreed).
+     High-support prompts (unanimous or near-unanimous) get up to 3x
+     the gradient contribution of noisy ones.  Token-level weights are
+     3.0 on the final answer literal inside \\boxed{} and 0.5 on the
+     rationale tokens inside <think>...</think>.
 
 Theory
 ------
@@ -10,7 +35,7 @@ Standard best-of-N distillation selects any correct trajectory, which biases
 the student toward longer, noisier reasoning chains.  GCD tightens this:
 
   1. Sample N completions from the teacher at temperature=1.0 (diverse but
-     not degenerate).
+     not degenerate) — adaptive N=4 → 8 → 16 per Round 3.
   2. Cluster the completions by answer equivalence using the competition's
      ``verify()`` function.  Each cluster's "canonical answer" is the
      extracted answer of its first member.
@@ -19,8 +44,8 @@ the student toward longer, noisier reasoning chains.  GCD tightens this:
   4. Within the majority cluster, keep only trajectories whose extracted
      answer ``verify()``-matches the ground-truth answer (or, if no ground
      truth is available, the majority-cluster canonical answer).
-  5. From those verified trajectories, select the one with the fewest tokens
-     as the SFT target.  Shorter chains are preferred because they reduce the
+  5. From those verified trajectories, select 1–2 concise trajectories
+     as SFT targets.  Shorter chains are preferred because they reduce the
      student's tendency to over-generate during greedy inference (see PCPO,
      ACL Findings 2025).
 
@@ -58,10 +83,13 @@ Output schema (per row)
       "id":                     str,
       "prompt":                 str,   # raw problem text (not chat-templated)
       "completion":             str,   # selected trajectory: <think>...</think>\\boxed{ans}
-      "teacher_num_samples":    int,   # N requested from teacher
+      "teacher_num_samples":    int,   # N actually requested from teacher (adaptive)
       "teacher_majority_size":  int,   # size of the majority answer cluster
-      "teacher_selected_length": int,  # token count of selected trajectory
+      "teacher_selected_length": int,  # char count of selected trajectory
       "teacher_answer":         str,   # extracted answer from selected trajectory
+      "sample_weight":          float, # 1.0 + 2.0 * support / N  (Round 3)
+      "retention_rank":         int,   # 1 = primary shortest, 2 = secondary (multi-trace)
+      "token_weights":          dict,  # {"final_answer": 3.0, "rationale": 0.5, ...}
     }
 
 Report schema
@@ -192,11 +220,28 @@ def _pick_shortest_verified(
 ) -> int | None:
     """Return the index (into *trajectories*) of the shortest verified sample.
 
-    From the subset of trajectories given by *indices*, filters to those
-    whose extracted answer verify()-matches *target_answer* (when provided).
-    Among the verified subset, returns the index of the trajectory with the
-    fewest characters (used as a token-count proxy to avoid loading a
-    tokenizer in the distillation loop).
+    Kept as a thin wrapper over _pick_topk_verified for backwards
+    compatibility with existing call sites.
+    """
+    picks = _pick_topk_verified(trajectories, indices, target_answer, k=1)
+    return picks[0] if picks else None
+
+
+def _pick_topk_verified(
+    trajectories: list[str],
+    indices: list[int],
+    target_answer: str | None,
+    k: int = 2,
+    secondary_length_ratio: float = 1.35,
+) -> list[int]:
+    """Return up to *k* shortest verified sample indices from the majority
+    cluster.  Round 3 multi-trace retention.
+
+    The primary pick (rank 1) is the shortest verified trajectory.  Any
+    additional picks (rank 2..k) must satisfy
+    ``len(traj) <= secondary_length_ratio * len(primary)`` — otherwise we
+    stop early.  This prevents the student from being trained on a
+    noticeably longer second chain when only one clean chain exists.
 
     Parameters
     ----------
@@ -205,16 +250,22 @@ def _pick_shortest_verified(
     indices:
         Indices into *trajectories* to consider (the majority cluster).
     target_answer:
-        Ground-truth answer string.  If None or empty, the majority-cluster
-        canonical answer is used (passed by the caller).
+        Ground-truth answer string.  If None or empty, all cluster members
+        are treated as verified (caller passes the majority canonical
+        answer in that case).
+    k:
+        Max number of trajectories to retain (1 or 2 in Round 3 practice).
+    secondary_length_ratio:
+        Upper bound on (secondary_length / primary_length) for any pick
+        beyond the first.  1.35 matches the Round 3 recommendation.
 
     Returns
     -------
-    Index into *trajectories* of the selected trajectory, or None if no
-    verified trajectory exists in the cluster.
+    List of indices (into *trajectories*) in retention order (primary
+    first).  Empty list when no verified trajectory exists in the cluster.
     """
-    if not indices:
-        return None
+    if not indices or k <= 0:
+        return []
     verified: list[tuple[int, int]] = []  # (index, char_len)
     for idx in indices:
         traj = trajectories[idx]
@@ -222,13 +273,51 @@ def _pick_shortest_verified(
         if target_answer and verify(str(target_answer), extracted):
             verified.append((idx, len(traj)))
         elif not target_answer:
-            # No ground truth: accept all cluster members
             verified.append((idx, len(traj)))
     if not verified:
-        return None
-    # Sort ascending by char length; pick shortest
+        return []
     verified.sort(key=lambda pair: pair[1])
-    return verified[0][0]
+    picks = [verified[0][0]]
+    primary_len = verified[0][1]
+    if primary_len <= 0:
+        primary_len = 1
+    for idx, clen in verified[1:]:
+        if len(picks) >= k:
+            break
+        if clen > secondary_length_ratio * primary_len:
+            break
+        # Dedup (different sample indices may have identical text)
+        if trajectories[idx] == trajectories[picks[0]]:
+            continue
+        picks.append(idx)
+    return picks
+
+
+# ---------------------------------------------------------------------------
+# Token-level weight recipe (Round 3)
+# ---------------------------------------------------------------------------
+
+# Exposed at module scope so the SFT collator and tests can import a single
+# source of truth.  Consumer: src.student.lora_train (Round 1 milestone).
+TOKEN_WEIGHT_RECIPE: dict[str, float] = {
+    "final_answer":   3.0,   # numeric / LaTeX literal inside \\boxed{}
+    "boxed_wrapper":  1.0,   # the tokens for "\\boxed{" and "}"
+    "rationale":      0.5,   # tokens inside <think>...</think>
+    "other":          1.0,
+}
+
+
+def _compute_sample_weight(support: int, n: int) -> float:
+    """Support-weighted sample weight: 1 + 2 * support / N.
+
+    Round 3 decision.  Unanimous agreement (support==N) yields weight 3.0;
+    a bare majority on N=4 (support==3) yields 1 + 1.5 = 2.5; a weak
+    agreement (support==1 on N=16, which would normally be dropped) yields
+    1.125.
+    """
+    if n <= 0:
+        return 1.0
+    return 1.0 + 2.0 * (float(support) / float(n))
 
 
 def _build_gcd_sft_row(
@@ -236,12 +325,30 @@ def _build_gcd_sft_row(
     completions: list[str],
     num_samples: int,
 ) -> dict[str, Any] | None:
-    """Apply GCD to a single prompt's teacher completions.
+    """Backward-compat single-row builder (Round 0 behaviour).
 
-    Returns a GCD SFT row dict, or None when no valid trajectory was found.
+    Returns the primary (rank-1) row only.  Prefer _build_gcd_sft_rows
+    for Round 3 multi-trace output.
+    """
+    rows = _build_gcd_sft_rows(prompt_row, completions, num_samples, max_traces=1)
+    return rows[0] if rows else None
+
+
+def _build_gcd_sft_rows(
+    prompt_row: dict[str, Any],
+    completions: list[str],
+    num_samples: int,
+    max_traces: int = 2,
+) -> list[dict[str, Any]]:
+    """Apply GCD to a single prompt's teacher completions; return up to
+    *max_traces* SFT rows (Round 3 multi-trace retention).
+
+    Each returned row carries support-weighted ``sample_weight`` and the
+    token-level ``TOKEN_WEIGHT_RECIPE`` (the SFT collator applies the
+    token weights at train time).
     """
     if not completions:
-        return None
+        return []
 
     # Step 1: extract answers
     extracted: list[str] = [extract_final_answer(c) for c in completions]
@@ -251,44 +358,85 @@ def _build_gcd_sft_row(
 
     # Step 3: find majority cluster (tie-break: alphabetically first canonical)
     if not clusters:
-        return None
-    majority_canonical = max(
-        clusters.keys(),
-        key=lambda k: (len(clusters[k]), -ord(k[0]) if k else 0),
-    )
-    # Use sorted to make tie-breaking deterministic
-    majority_canonical = max(
-        clusters.keys(),
-        key=lambda k: len(clusters[k]),
-    )
-    # Stable tie-break by canonical string (alphabetically first)
+        return []
     max_size = max(len(v) for v in clusters.values())
     tied = sorted(k for k, v in clusters.items() if len(v) == max_size)
     majority_canonical = tied[0]
     majority_indices = clusters[majority_canonical]
 
-    # Step 4: pick shortest verified trajectory from majority cluster
+    # Step 4: pick up to max_traces shortest verified trajectories
     ground_truth = str(prompt_row.get("target_answer", "") or "").strip() or None
     if not ground_truth:
-        # Fall back to majority-cluster canonical answer when no GT
         ground_truth = majority_canonical
 
-    selected_idx = _pick_shortest_verified(completions, majority_indices, ground_truth)
-    if selected_idx is None:
-        return None
+    picks = _pick_topk_verified(
+        completions, majority_indices, ground_truth, k=max_traces
+    )
+    if not picks:
+        return []
 
-    selected_traj = completions[selected_idx]
-    teacher_answer = extract_final_answer(selected_traj)
+    support = len(majority_indices)
+    sample_weight = _compute_sample_weight(support, num_samples)
 
-    return {
+    rows: list[dict[str, Any]] = []
+    base = {
         "id": str(prompt_row.get("id", "")),
         "prompt": str(prompt_row.get("prompt", "")),
-        "completion": selected_traj,
         "teacher_num_samples": num_samples,
-        "teacher_majority_size": len(majority_indices),
-        "teacher_selected_length": len(selected_traj),
-        "teacher_answer": teacher_answer,
+        "teacher_majority_size": support,
+        "sample_weight": sample_weight,
+        "token_weights": dict(TOKEN_WEIGHT_RECIPE),
     }
+    for rank, sel_idx in enumerate(picks, start=1):
+        traj = completions[sel_idx]
+        row = dict(base)
+        row.update({
+            "id": f"{base['id']}__r{rank}" if rank > 1 else base["id"],
+            "completion": traj,
+            "teacher_selected_length": len(traj),
+            "teacher_answer": extract_final_answer(traj),
+            "retention_rank": rank,
+        })
+        rows.append(row)
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Adaptive-N early-stop criterion (Round 3)
+# ---------------------------------------------------------------------------
+
+def _adaptive_n_should_stop(
+    completions: list[str],
+    majority_size_threshold: float = 0.5,
+    primary_length_cap: int = 2048,
+) -> bool:
+    """Return True when the current *completions* already support a
+    confident SFT target, letting us skip further teacher sampling.
+
+    Stop criteria (both must hold):
+      * majority cluster covers > majority_size_threshold of samples
+      * the shortest verified trajectory in the majority cluster has
+        length ≤ primary_length_cap characters
+
+    2048 chars ≈ 512 tokens on average — well inside the concise bucket
+    for stage3 long-trace repair.  Increasing N beyond this point rarely
+    improves sample quality.
+    """
+    if not completions:
+        return False
+    extracted = [extract_final_answer(c) for c in completions]
+    clusters = _cluster_answers(extracted)
+    if not clusters:
+        return False
+    max_size = max(len(v) for v in clusters.values())
+    if max_size / len(completions) <= majority_size_threshold:
+        return False
+    tied = sorted(k for k, v in clusters.items() if len(v) == max_size)
+    majority_indices = clusters[tied[0]]
+    picks = _pick_topk_verified(completions, majority_indices, tied[0], k=1)
+    if not picks:
+        return False
+    return len(completions[picks[0]]) <= primary_length_cap
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +512,8 @@ def run_teacher_distillation(
     max_tokens: int,
     workdir: Path,
     dry_run: bool,
+    adaptive_n_tiers: list[int] | None = None,
+    max_traces_per_prompt: int = 2,
 ) -> dict[str, Any]:
     """Orchestrate GCD teacher distillation over *input_rows*.
 
@@ -405,11 +555,23 @@ def run_teacher_distillation(
     """
     workdir.mkdir(parents=True, exist_ok=True)
 
+    # Adaptive-N tiers (Round 3).  If None, fall back to single-tier at
+    # *num_samples* (Round 0 behaviour).
+    if adaptive_n_tiers is None:
+        adaptive_n_tiers = [num_samples]
+    # Enforce strictly increasing and final tier == num_samples
+    adaptive_n_tiers = sorted(set(int(t) for t in adaptive_n_tiers))
+    if adaptive_n_tiers[-1] != num_samples:
+        adaptive_n_tiers.append(num_samples)
+        adaptive_n_tiers = sorted(set(adaptive_n_tiers))
+
     output_rows: list[dict[str, Any]] = []
     n_no_majority = 0
     n_no_verified = 0
     total_selected_len = 0
     total_majority_size = 0
+    tier_stop_counts: dict[int, int] = {t: 0 for t in adaptive_n_tiers}
+    total_samples_drawn = 0
 
     if dry_run:
         print(
@@ -418,7 +580,9 @@ def run_teacher_distillation(
             flush=True,
         )
         llm = None
-        get_completions = lambda row: _make_mock_completions(row, num_samples)  # noqa: E731
+        get_completions = lambda row: _make_mock_completions(  # noqa: E731
+            row, int(row.get("_gcd_n", num_samples))
+        )
     else:
         # --- vLLM integration point ---
         # TODO: Confirm the base model path is downloadable / cached before
@@ -453,11 +617,15 @@ def run_teacher_distillation(
         from src.competition.official_metric_contract import build_official_prompt  # noqa: PLC0415
 
         def get_completions(row: dict[str, Any]) -> list[str]:
-            """Run teacher N times for a single row and collect completions."""
+            """Run teacher N_requested times for a single row and collect
+            completions.  N_requested is taken from row['_gcd_n'] (set by
+            the adaptive-N loop) and falls back to num_samples.
+            """
             prompt_text = str(row.get("prompt", ""))
+            n_req = int(row.get("_gcd_n", num_samples))
             formatted = build_official_prompt(prompt_text, tokenizer)
             completions_local: list[str] = []
-            for _ in range(num_samples):
+            for _ in range(n_req):
                 outputs = llm.generate(
                     [formatted],
                     sampling_params=sampling_params,
@@ -468,24 +636,49 @@ def run_teacher_distillation(
 
     t0 = time.monotonic()
     for i, row in enumerate(input_rows):
-        completions = get_completions(row)
-        sft_row = _build_gcd_sft_row(row, completions, num_samples)
-        if sft_row is None:
-            # GCD found no majority cluster or no verified trajectory
+        # ---- Adaptive-N sampling loop ----
+        # Progressively draw samples, checking the early-stop criterion
+        # after each tier.  get_completions() always returns the *full*
+        # N for simplicity, so for tier expansion we draw only the
+        # incremental count.
+        completions: list[str] = []
+        stop_at_tier: int = adaptive_n_tiers[-1]
+        for tier in adaptive_n_tiers:
+            need = tier - len(completions)
+            if need > 0:
+                extra_row = dict(row)
+                extra_row["_gcd_n"] = need
+                new_comp = get_completions(extra_row)
+                # Respect whatever get_completions returned; pad/truncate
+                completions.extend(new_comp[:need])
+            total_samples_drawn += len(completions) - (len(completions) - need if need > 0 else 0)
+            if tier < adaptive_n_tiers[-1] and _adaptive_n_should_stop(completions):
+                stop_at_tier = tier
+                break
+            stop_at_tier = tier
+        tier_stop_counts[stop_at_tier] = tier_stop_counts.get(stop_at_tier, 0) + 1
+        actual_n = len(completions)
+
+        sft_rows_for_prompt = _build_gcd_sft_rows(
+            row, completions, actual_n, max_traces=max_traces_per_prompt
+        )
+        if not sft_rows_for_prompt:
             n_no_verified += 1
             continue
-        if sft_row["teacher_majority_size"] == 0:
-            n_no_majority += 1
-            continue
-        output_rows.append(sft_row)
-        total_selected_len += sft_row["teacher_selected_length"]
-        total_majority_size += sft_row["teacher_majority_size"]
+        for sft_row in sft_rows_for_prompt:
+            if sft_row["teacher_majority_size"] == 0:
+                n_no_majority += 1
+                continue
+            output_rows.append(sft_row)
+            total_selected_len += sft_row["teacher_selected_length"]
+            total_majority_size += sft_row["teacher_majority_size"]
 
         if (i + 1) % 100 == 0:
             elapsed = time.monotonic() - t0
             print(
                 f"[round1_gcd_teacher_distill] processed {i + 1}/{len(input_rows)} "
-                f"rows ({elapsed:.1f}s elapsed, {len(output_rows)} SFT rows so far)",
+                f"prompts ({elapsed:.1f}s, {len(output_rows)} SFT rows, "
+                f"tiers stopped: {tier_stop_counts})",
                 flush=True,
             )
 
@@ -496,12 +689,17 @@ def run_teacher_distillation(
         "num_no_verified": n_no_verified,
         "num_no_majority": n_no_majority,
         "teacher_num_samples": num_samples,
+        "adaptive_n_tiers": adaptive_n_tiers,
+        "adaptive_n_tier_stop_counts": tier_stop_counts,
+        "max_traces_per_prompt": max_traces_per_prompt,
+        "total_teacher_samples_drawn": total_samples_drawn,
         "teacher_temperature": teacher_temperature,
         "teacher_top_p": top_p,
         "teacher_max_tokens": max_tokens,
         "teacher_adapter_dir": str(teacher_adapter_dir) if teacher_adapter_dir else None,
         "mean_majority_size": (total_majority_size / n_out) if n_out else 0.0,
         "mean_selected_length_chars": (total_selected_len / n_out) if n_out else 0.0,
+        "token_weight_recipe": dict(TOKEN_WEIGHT_RECIPE),
         "dry_run": dry_run,
     }
     write_jsonl(output_path, output_rows)
@@ -609,6 +807,28 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "prompts.  Validates the full GCD pipeline on CPU with no GPU deps."
         ),
     )
+    parser.add_argument(
+        "--adaptive-n-tiers",
+        nargs="+",
+        type=int,
+        default=[4, 8, 16],
+        dest="adaptive_n_tiers",
+        help=(
+            "Tiered adaptive-N sampling sequence (default: 4 8 16 per Round 3). "
+            "Pass a single value to disable adaptive sampling."
+        ),
+    )
+    parser.add_argument(
+        "--max-traces-per-prompt",
+        type=int,
+        default=2,
+        dest="max_traces_per_prompt",
+        help=(
+            "Max number of verified concise trajectories to retain per "
+            "prompt (default 2 per Round 3).  Set to 1 to replicate "
+            "Round 0 single-trace behaviour."
+        ),
+    )
     return parser
 
 
@@ -648,6 +868,8 @@ def main(argv: list[str] | None = None) -> None:
         max_tokens=args.max_tokens,
         workdir=workdir,
         dry_run=dry_run,
+        adaptive_n_tiers=args.adaptive_n_tiers,
+        max_traces_per_prompt=args.max_traces_per_prompt,
     )
 
 
