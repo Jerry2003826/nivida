@@ -34,8 +34,10 @@ Theory
 Standard best-of-N distillation selects any correct trajectory, which biases
 the student toward longer, noisier reasoning chains.  GCD tightens this:
 
-  1. Sample N completions from the teacher at temperature=1.0 (diverse but
-     not degenerate) — adaptive N=4 → 8 → 16 per Round 3.
+  1. Sample N completions from the teacher at temperature=0.7 top_p=0.95
+     (Round 4 defaults — diverse but not degenerate) — adaptive
+     N=4 → 8 → 16 per Round 3.  Round 4 also optionally gates the full
+     run behind a 300-prompt majority-vs-greedy uplift check.
   2. Cluster the completions by answer equivalence using the competition's
      ``verify()`` function.  Each cluster's "canonical answer" is the
      extracted answer of its first member.
@@ -109,7 +111,8 @@ Usage
         --output data/processed/round1_gcd_distill.jsonl \\
         --config configs/train_lora.yaml \\
         --num-samples 16 \\
-        --teacher-temperature 1.0 \\
+        --teacher-temperature 0.7 --top-p 0.95 \\
+        --teacher-majority-gate --majority-gate-subset-size 300 \\
         --workdir data/workdir/round1_gcd
 """
 
@@ -399,6 +402,130 @@ def _build_gcd_sft_rows(
         })
         rows.append(row)
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Round 4: teacher majority-uplift gate
+# ---------------------------------------------------------------------------
+
+def _majority_answer(completions: list[str]) -> str | None:
+    """Return the canonical answer of the majority cluster for *completions*,
+    tie-broken alphabetically.  Returns None when *completions* is empty.
+    """
+    if not completions:
+        return None
+    extracted = [extract_final_answer(c) for c in completions]
+    clusters = _cluster_answers(extracted)
+    if not clusters:
+        return None
+    max_size = max(len(v) for v in clusters.values())
+    tied = sorted(k for k, v in clusters.items() if len(v) == max_size)
+    return tied[0]
+
+
+def run_teacher_majority_gate(
+    *,
+    input_rows: list[dict[str, Any]],
+    get_completions_greedy,
+    get_completions_sampled,
+    sampled_n: int,
+    subset_size: int,
+    min_uplift: float,
+    seed: int = 42,
+    report_path: Path | None = None,
+) -> dict[str, Any]:
+    """Evaluate majority-of-N vs greedy correctness on a prompt subset.
+
+    Used as a Round 4 precondition before launching full GCD.  If the
+    sampled teacher with majority voting does not beat greedy by at least
+    *min_uplift*, GCD is wasted compute — the teacher's output distribution
+    does not carry enough diverse-but-correct signal for consensus voting
+    to help.
+
+    Parameters
+    ----------
+    input_rows:
+        Candidate prompts.  A random subset of ``subset_size`` rows is
+        drawn with a fixed seed.  Each row must carry ``target_answer``.
+    get_completions_greedy:
+        Callable ``(row) -> str`` returning a single greedy completion.
+    get_completions_sampled:
+        Callable ``(row, n) -> list[str]`` returning *n* stochastic
+        completions at the configured teacher temperature / top_p.
+    sampled_n:
+        N per prompt for the majority branch.  Default 8 per Round 4.
+    subset_size:
+        Number of prompts to score.  Default 300.
+    min_uplift:
+        Minimum (majority_rate - greedy_rate) to return ``passed=True``.
+    seed:
+        RNG seed for subset selection (and mock-only tie-breaking).
+    report_path:
+        Optional JSON destination for the gate report.
+
+    Returns
+    -------
+    Report dict with keys: passed, greedy_correct, majority_correct,
+    uplift, subset_size, sampled_n, min_uplift, per_prompt.
+    """
+    import json as _json  # noqa: PLC0415
+    import random as _random  # noqa: PLC0415
+
+    rng = _random.Random(seed)
+    eligible = [r for r in input_rows if str(r.get("target_answer", "") or "").strip()]
+    if not eligible:
+        raise ValueError(
+            "majority-gate requires rows with non-empty target_answer"
+        )
+    n_eff = min(subset_size, len(eligible))
+    subset = rng.sample(eligible, n_eff) if n_eff < len(eligible) else list(eligible)
+
+    per_prompt: list[dict[str, Any]] = []
+    greedy_correct = 0
+    majority_correct = 0
+    for row in subset:
+        gt = str(row.get("target_answer", "") or "").strip()
+        # Greedy branch
+        greedy_text = get_completions_greedy(row)
+        greedy_ans = extract_final_answer(greedy_text)
+        greedy_ok = bool(verify(gt, greedy_ans))
+        # Majority branch
+        sampled_texts = get_completions_sampled(row, sampled_n)
+        majority_ans = _majority_answer(sampled_texts) or ""
+        majority_ok = bool(verify(gt, majority_ans))
+        greedy_correct += int(greedy_ok)
+        majority_correct += int(majority_ok)
+        per_prompt.append({
+            "id": str(row.get("id", "")),
+            "target_answer": gt,
+            "greedy_answer": greedy_ans,
+            "greedy_correct": greedy_ok,
+            "majority_answer": majority_ans,
+            "majority_correct": majority_ok,
+        })
+
+    total = len(subset)
+    greedy_rate = greedy_correct / total if total else 0.0
+    majority_rate = majority_correct / total if total else 0.0
+    uplift = majority_rate - greedy_rate
+    passed = uplift >= min_uplift
+    report: dict[str, Any] = {
+        "passed": passed,
+        "greedy_correct": greedy_correct,
+        "majority_correct": majority_correct,
+        "greedy_rate": greedy_rate,
+        "majority_rate": majority_rate,
+        "uplift": uplift,
+        "subset_size": total,
+        "sampled_n": sampled_n,
+        "min_uplift": min_uplift,
+        "seed": seed,
+        "per_prompt": per_prompt,
+    }
+    if report_path is not None:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(_json.dumps(report, ensure_ascii=False, indent=2))
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -769,19 +896,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--teacher-temperature",
         type=float,
-        default=1.0,
+        default=0.7,
         dest="teacher_temperature",
         help=(
-            "Sampling temperature for teacher. 1.0 (default) gives diverse "
-            "completions as required by the GCD clustering step."
+            "Sampling temperature for teacher.  Round 4 default: 0.7."
+            "  T=1.0 produced too many degenerate tails in the Nemotron-12B"
+            " teacher; 0.7 retains diversity required by GCD clustering"
+            " while cutting off low-probability noise (GPT-5.4 Pro R4)."
         ),
     )
     parser.add_argument(
         "--top-p",
         type=float,
-        default=1.0,
+        default=0.95,
         dest="top_p",
-        help="Nucleus sampling top-p value (default: 1.0).",
+        help=(
+            "Nucleus sampling top-p value.  Round 4 default: 0.95 (was 1.0)."
+        ),
     )
     parser.add_argument(
         "--max-tokens",
@@ -829,6 +960,61 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Round 0 single-trace behaviour."
         ),
     )
+    # ---- Round 4: teacher majority-uplift gate --------------------------
+    parser.add_argument(
+        "--teacher-majority-gate",
+        action="store_true",
+        dest="teacher_majority_gate",
+        help=(
+            "Round 4 precondition.  Before running full GCD, sample a"
+            " subset of prompts and compare greedy (T=0) correctness to"
+            " majority-of-N correctness at the configured teacher T/top_p."
+            "  If the uplift is below --majority-gate-min-uplift, abort"
+            " the run with a non-zero exit code — investing compute in"
+            " GCD is only worthwhile when majority voting actually"
+            " outperforms greedy on this teacher."
+        ),
+    )
+    parser.add_argument(
+        "--majority-gate-n",
+        type=int,
+        default=8,
+        dest="majority_gate_n",
+        help="Samples per prompt for the majority gate (default 8).",
+    )
+    parser.add_argument(
+        "--majority-gate-subset-size",
+        type=int,
+        default=300,
+        dest="majority_gate_subset_size",
+        help="Prompts used to evaluate the majority gate (default 300).",
+    )
+    parser.add_argument(
+        "--majority-gate-min-uplift",
+        type=float,
+        default=0.02,
+        dest="majority_gate_min_uplift",
+        help=(
+            "Minimum (majority_correct - greedy_correct) rate required to"
+            " proceed past the gate (default 0.02 = +2pp)."
+        ),
+    )
+    parser.add_argument(
+        "--majority-gate-seed",
+        type=int,
+        default=42,
+        dest="majority_gate_seed",
+        help="RNG seed for majority-gate subset sampling (default 42).",
+    )
+    parser.add_argument(
+        "--majority-gate-report",
+        default=None,
+        dest="majority_gate_report",
+        help=(
+            "Optional path for the majority-gate JSON report. "
+            "Defaults to <output>.majority_gate.json next to --output."
+        ),
+    )
     return parser
 
 
@@ -856,6 +1042,133 @@ def main(argv: list[str] | None = None) -> None:
             f"[round1_gcd_teacher_distill] loaded {len(input_rows)} rows.",
             flush=True,
         )
+
+    # ---- Round 4: optional teacher majority-uplift gate ----
+    if getattr(args, "teacher_majority_gate", False):
+        gate_report_path = (
+            Path(args.majority_gate_report)
+            if args.majority_gate_report
+            else output_path.with_suffix("").with_suffix(".majority_gate.json")
+        )
+        if dry_run:
+            # In dry-run we reuse the mock completions: greedy picks the
+            # first mock, sampled draws N mocks.  Target answers are
+            # already present on _DRY_RUN_PROMPTS, so the gate trivially
+            # passes (uplift = 0.0 since both branches are correct by
+            # construction; this still exercises the plumbing).
+            def _greedy_dry(row: dict[str, Any]) -> str:
+                return _make_mock_completions(row, 1)[0]
+
+            def _sampled_dry(row: dict[str, Any], n: int) -> list[str]:
+                return _make_mock_completions(row, n)
+
+            gate_report = run_teacher_majority_gate(
+                input_rows=input_rows,
+                get_completions_greedy=_greedy_dry,
+                get_completions_sampled=_sampled_dry,
+                sampled_n=args.majority_gate_n,
+                subset_size=min(args.majority_gate_subset_size, len(input_rows)),
+                min_uplift=0.0,  # dry-run always passes
+                seed=args.majority_gate_seed,
+                report_path=gate_report_path,
+            )
+        else:
+            # Real gate: instantiate vLLM once, run greedy (T=0) and
+            # sampled branches, then dispose.
+            print(
+                "[round1_gcd_teacher_distill] running teacher majority-uplift"
+                f" gate on {args.majority_gate_subset_size} prompts ...",
+                flush=True,
+            )
+            _instantiate_vllm, _build_sampling_params, _build_lora_request = (
+                _load_vllm_helpers()
+            )
+            from src.student.lora_train import resolve_model_path  # noqa: PLC0415
+            from src.competition.official_metric_contract import (  # noqa: PLC0415
+                build_official_prompt,
+            )
+
+            llm_kwargs = _build_teacher_llm_kwargs(config)
+            base_model_path = resolve_model_path(config)
+            gate_llm = _instantiate_vllm(str(base_model_path), llm_kwargs)
+            gate_tokenizer = gate_llm.get_tokenizer()
+            lora_request = (
+                _build_lora_request(args.teacher_adapter_dir)
+                if args.teacher_adapter_dir is not None
+                else None
+            )
+            sp_greedy = _build_sampling_params(
+                _build_teacher_sampling_kwargs(
+                    temperature=0.0, top_p=1.0,
+                    max_tokens=args.max_tokens, n=1,
+                )
+            )
+            sp_sampled = _build_sampling_params(
+                _build_teacher_sampling_kwargs(
+                    temperature=args.teacher_temperature,
+                    top_p=args.top_p,
+                    max_tokens=args.max_tokens, n=1,
+                )
+            )
+
+            def _greedy_real(row: dict[str, Any]) -> str:
+                formatted = build_official_prompt(
+                    str(row.get("prompt", "")), gate_tokenizer
+                )
+                out = gate_llm.generate(
+                    [formatted], sampling_params=sp_greedy,
+                    lora_request=lora_request,
+                )
+                return out[0].outputs[0].text
+
+            def _sampled_real(row: dict[str, Any], n: int) -> list[str]:
+                formatted = build_official_prompt(
+                    str(row.get("prompt", "")), gate_tokenizer
+                )
+                texts: list[str] = []
+                for _ in range(n):
+                    out = gate_llm.generate(
+                        [formatted], sampling_params=sp_sampled,
+                        lora_request=lora_request,
+                    )
+                    texts.append(out[0].outputs[0].text)
+                return texts
+
+            gate_report = run_teacher_majority_gate(
+                input_rows=input_rows,
+                get_completions_greedy=_greedy_real,
+                get_completions_sampled=_sampled_real,
+                sampled_n=args.majority_gate_n,
+                subset_size=args.majority_gate_subset_size,
+                min_uplift=args.majority_gate_min_uplift,
+                seed=args.majority_gate_seed,
+                report_path=gate_report_path,
+            )
+            # Release vLLM handle before the main distillation instantiates
+            # its own LLM, avoiding duplicate GPU footprint.
+            del gate_llm
+
+        print(
+            "[round1_gcd_teacher_distill] majority-gate report -> "
+            f"{gate_report_path}",
+            flush=True,
+        )
+        print(
+            "[round1_gcd_teacher_distill] greedy_rate="
+            f"{gate_report['greedy_rate']:.4f} majority_rate="
+            f"{gate_report['majority_rate']:.4f} uplift="
+            f"{gate_report['uplift']:+.4f} (min_uplift="
+            f"{gate_report['min_uplift']:+.4f})",
+            flush=True,
+        )
+        if not gate_report["passed"]:
+            print(
+                "[round1_gcd_teacher_distill] ABORT: majority-uplift gate"
+                " failed. Lower teacher T or pick a stronger teacher adapter"
+                " before investing compute in GCD.",
+                flush=True,
+            )
+            sys.exit(42)
 
     run_teacher_distillation(
         input_rows=input_rows,

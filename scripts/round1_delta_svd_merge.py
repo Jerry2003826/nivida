@@ -13,6 +13,28 @@ alongside submit #1 (the best single checkpoint).  Expected uplift per
 GPT-5.4 Pro Round 3 research: +0.005 – +0.02 LB over the best single
 adapter.
 
+Absolute vs residual delta (Round 4 fix)
+-----------------------------------------
+Each input adapter can be either:
+
+* **absolute** — its B @ A encodes the full ``W_i - W_0`` delta against
+  the pristine base.  This is the case in our pipeline because
+  ``src/student/lora_train.py`` resumes Stage-3 via
+  ``PeftModel.from_pretrained(base, stage2_adapter, is_trainable=True)``,
+  which *continues updating the same LoRA weights*.  Stage-3's A/B
+  thus still represents ``W_final - W_0``.
+
+* **residual** — produced by a different pipeline that merged a parent
+  adapter into the base (``merge_and_unload()``) and then trained a fresh
+  LoRA on top.  In that case the child adapter's B @ A only encodes
+  ``W_child - (W_0 + Δ_parent)`` and we must expand it back to absolute
+  space before mixing with the parent.  The caller passes
+  ``--mode residual`` and the script computes
+  ``Δ_abs[i] = Δ_abs[i-1] + Δ_residual[i]`` per input chain.
+
+Get this wrong and the merged adapter systematically under-weights the
+parent direction, which was the biggest Round 3 math concern.
+
 Why delta-space SVD (and not raw A/B averaging, TIES, or DARE)
 ----------------------------------------------------------------
 * Raw A/B averaging is algebraically wrong: ``(A1 + A2)/2 * (B1 + B2)/2``
@@ -258,8 +280,22 @@ def run_merge(
     out_rank: int,
     out_alpha: float | None,
     weights: list[float] | None,
+    mode: str = "absolute",
 ) -> dict[str, Any]:
-    """End-to-end merge of N LoRA adapters into a single rank-R adapter."""
+    """End-to-end merge of N LoRA adapters into a single rank-R adapter.
+
+    Parameters
+    ----------
+    mode:
+        * ``"absolute"`` (default) — each adapter's B @ A already encodes
+          its full delta vs the pristine base.  This is the case for our
+          Stage-2 / Stage-3 chain (``PeftModel.from_pretrained(..., is_trainable=True)``).
+        * ``"residual"`` — inputs are interpreted as a parent→child chain
+          where each child was trained on the merged parent.  We expand
+          child-k's delta as ``sum_{i≤k} Δ_i`` before mixing.  Use this
+          only if a future pipeline actually does ``merge_and_unload()``
+          between stages.
+    """
     import numpy as np  # local import
     from safetensors.numpy import save_file  # local import
 
@@ -293,6 +329,9 @@ def run_merge(
     w_sum = sum(weights)
     weights = [w * len(loaded) / w_sum for w in weights]
 
+    if mode not in ("absolute", "residual"):
+        raise ValueError(f"mode must be 'absolute' or 'residual', got {mode!r}")
+
     # Build per-adapter layer pairs
     per_adapter_pairs = [
         _collect_layer_pairs(ad["weights"], ad["rank"]) for ad in loaded
@@ -322,9 +361,39 @@ def run_merge(
             (pairs[layer_key]["A"], pairs[layer_key]["B"])
             for pairs in per_adapter_pairs
         ]
+        # Residual mode: expand each child's delta to absolute space by
+        # cumulatively adding all earlier adapters' deltas.  We can't just
+        # cumulatively add the A/B pairs (non-linear), so we synthesise an
+        # "effective" absolute delta as a rank-sum low-rank factor by
+        # stacking A/B into wider matrices: if absolute delta is D_k =
+        # sum_{i<=k} alpha_i/r_i * B_i @ A_i, we represent D_k by
+        # A_concat = concat_rows(A_i for i<=k), B_concat = concat_cols(B_i for i<=k)
+        # (with per-adapter alpha_i/r_i folded into B_i).  merge_one_layer
+        # receives the folded (A_concat, B_concat) with alpha_over_r=1.0.
+        if mode == "residual":
+            expanded_AB = []
+            for k in range(len(adapter_AB_list)):
+                A_stack = []
+                B_stack = []
+                for i in range(k + 1):
+                    A_i, B_i = adapter_AB_list[i]
+                    scale = alpha_over_r[i]
+                    A_stack.append(A_i)  # [r_i, in]
+                    B_stack.append(B_i * float(scale))  # [out, r_i]
+                import numpy as np  # local import
+
+                A_concat = np.concatenate(A_stack, axis=0)  # [sum r_i, in]
+                B_concat = np.concatenate(B_stack, axis=1)  # [out, sum r_i]
+                expanded_AB.append((A_concat.astype(np.float32), B_concat.astype(np.float32)))
+            effective_AB = expanded_AB
+            effective_alpha_over_r = [1.0] * len(effective_AB)
+        else:
+            effective_AB = adapter_AB_list
+            effective_alpha_over_r = alpha_over_r
+
         res = merge_one_layer(
-            adapter_AB_list=adapter_AB_list,
-            alpha_over_r_list=alpha_over_r,
+            adapter_AB_list=effective_AB,
+            alpha_over_r_list=effective_alpha_over_r,
             weights=weights,
             out_rank=out_rank,
             out_alpha=out_alpha,
@@ -355,6 +424,7 @@ def run_merge(
     report = {
         "num_input_adapters": len(loaded),
         "input_dirs": [str(d) for d in input_dirs],
+        "mode": mode,
         "weights_normalised": weights,
         "out_rank": out_rank,
         "out_alpha": out_alpha,
@@ -491,6 +561,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         dest="dry_run",
         help="Run numpy-only self-test on synthetic adapters.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["absolute", "residual"],
+        default="absolute",
+        help=(
+            "'absolute' (default): each adapter's B@A is the full delta "
+            "vs the pristine base model.  This matches our current pipeline "
+            "(PeftModel.from_pretrained(..., is_trainable=True)).  "
+            "'residual': inputs form a parent→child chain where each child "
+            "was trained on the merged parent; child delta is expanded to "
+            "absolute before mixing."
+        ),
+    )
     return parser
 
 
@@ -516,6 +599,7 @@ def main(argv: list[str] | None = None) -> None:
         out_rank=args.rank,
         out_alpha=args.alpha,
         weights=args.weights,
+        mode=args.mode,
     )
     print(
         "[delta_svd_merge] merged "
