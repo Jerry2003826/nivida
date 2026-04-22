@@ -26,6 +26,13 @@ METRIC_NOTEBOOK_RELATIVE_PATH = (
 METRIC_NOTEBOOK_SNAPSHOT_DATE = "2026-04-19"
 
 
+# === Notebook default snapshot (DO NOT USE FOR EVAL SELECTION) ===
+# These are the default values written inside the metric notebook's
+# ``score()`` function signature. They are byte-for-byte reproducible and
+# SHA-locked against the notebook, but Kaggle Staff (Ryan Holbrook) has
+# confirmed on discussion #687798 that the defaults are NOT what the
+# official runner uses. The Overview tab values (RUNTIME_* below) are
+# authoritative. Keep these here only for parity fingerprinting.
 OFFICIAL_LLM_KWARGS: dict[str, Any] = {
     "tensor_parallel_size": 1,
     "max_num_seqs": 128,
@@ -44,6 +51,50 @@ OFFICIAL_SAMPLING_KWARGS: dict[str, Any] = {
     "top_p": 1.0,
     "max_tokens": 3584,
 }
+
+# === Kaggle runtime contract (AUTHORITATIVE for eval/selection) ===
+# Source: Kaggle competition Overview/Evaluation tab table, confirmed by
+# Ryan Holbrook (Kaggle Staff) in discussion #687798:
+# "The defaults are only defaults. The correct parameters are in the
+#  Overview tab."
+# Last verified: 2026-04-22.
+# Authoritative URL:
+#   https://www.kaggle.com/competitions/nvidia-nemotron-model-reasoning-challenge/overview/evaluation
+#
+# KEY DIFFERENCES FROM NOTEBOOK DEFAULTS:
+#   * temperature: 1.0 -> 0.0          (greedy decoding, not sampled)
+#   * max_tokens: 3584 -> 7680          (2.14x generation budget)
+#   * max_model_len: 4096 -> 8192       (input + output combined)
+#   * max_num_seqs: 128 -> 64           (halved batch)
+#
+# Consequence: any local eval using OFFICIAL_* constants is selecting
+# checkpoints based on a temp=1.0 sampled distribution while the public LB
+# grades the temp=0.0 greedy top-1. These distributions are NOT the same.
+# Always prefer RUNTIME_* when the goal is checkpoint selection for
+# submission.
+RUNTIME_LLM_KWARGS: dict[str, Any] = {
+    "tensor_parallel_size": 1,
+    "max_num_seqs": 64,
+    "gpu_memory_utilization": 0.85,
+    "dtype": "auto",
+    "max_model_len": 8192,
+    "trust_remote_code": True,
+    "enable_lora": True,
+    "max_lora_rank": 32,
+    "enable_prefix_caching": True,
+    "enable_chunked_prefill": True,
+}
+
+RUNTIME_SAMPLING_KWARGS: dict[str, Any] = {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 7680,
+}
+
+RUNTIME_CONTRACT_SOURCE: str = (
+    "Kaggle Overview/Evaluation tab + discussion #687798 "
+    "(Ryan Holbrook, Kaggle Staff). Verified 2026-04-22."
+)
 
 OFFICIAL_GUARD_TEXT = (
     "\nPlease put your final answer inside `\\boxed{}`."

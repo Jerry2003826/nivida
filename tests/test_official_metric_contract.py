@@ -13,6 +13,9 @@ from src.competition.official_metric_contract import (
     OFFICIAL_GUARD_TEXT,
     OFFICIAL_LLM_KWARGS,
     OFFICIAL_SAMPLING_KWARGS,
+    RUNTIME_CONTRACT_SOURCE,
+    RUNTIME_LLM_KWARGS,
+    RUNTIME_SAMPLING_KWARGS,
     VERIFY_SHA256,
     current_contract_fingerprint,
     extract_final_answer,
@@ -41,6 +44,44 @@ def test_llm_kwargs_exact() -> None:
         "enable_prefix_caching": True,
         "enable_chunked_prefill": True,
     }
+
+
+def test_runtime_sampling_kwargs_exact() -> None:
+    # Authoritative Kaggle Overview/Evaluation tab, confirmed by
+    # Ryan Holbrook on discussion #687798.
+    assert RUNTIME_SAMPLING_KWARGS == {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_tokens": 7680,
+    }
+
+
+def test_runtime_llm_kwargs_exact() -> None:
+    assert RUNTIME_LLM_KWARGS == {
+        "tensor_parallel_size": 1,
+        "max_num_seqs": 64,
+        "gpu_memory_utilization": 0.85,
+        "dtype": "auto",
+        "max_model_len": 8192,
+        "trust_remote_code": True,
+        "enable_lora": True,
+        "max_lora_rank": 32,
+        "enable_prefix_caching": True,
+        "enable_chunked_prefill": True,
+    }
+
+
+def test_runtime_contract_source_non_empty() -> None:
+    assert "Kaggle" in RUNTIME_CONTRACT_SOURCE
+    assert "687798" in RUNTIME_CONTRACT_SOURCE
+
+
+def test_runtime_and_notebook_contracts_diverge() -> None:
+    # Guard rail: if these ever become equal again, the runtime contract
+    # must be re-verified against Kaggle Overview before selection is
+    # trusted.
+    assert RUNTIME_SAMPLING_KWARGS != OFFICIAL_SAMPLING_KWARGS
+    assert RUNTIME_LLM_KWARGS != OFFICIAL_LLM_KWARGS
 
 
 def test_guard_text_exact() -> None:

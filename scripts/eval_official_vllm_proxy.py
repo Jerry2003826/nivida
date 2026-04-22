@@ -15,6 +15,9 @@ from src.common.io import load_jsonl, read_yaml, write_json, write_jsonl
 from src.competition.official_metric_contract import (
     OFFICIAL_LLM_KWARGS,
     OFFICIAL_SAMPLING_KWARGS,
+    RUNTIME_LLM_KWARGS,
+    RUNTIME_SAMPLING_KWARGS,
+    RUNTIME_CONTRACT_SOURCE,
     build_official_prompt,
     current_contract_fingerprint,
     extract_final_answer,
@@ -24,19 +27,39 @@ from src.student.lora_train import resolve_model_path
 from src.student.package_submission import validate_adapter_dir
 
 
-def _instantiate_vllm(base_model_path: str):
+def _select_llm_kwargs(contract: str) -> dict[str, Any]:
+    if contract == "runtime":
+        return dict(RUNTIME_LLM_KWARGS)
+    if contract == "notebook":
+        return dict(OFFICIAL_LLM_KWARGS)
+    raise ValueError(
+        f"Unknown eval contract {contract!r}. Expected 'runtime' or 'notebook'."
+    )
+
+
+def _select_sampling_kwargs(contract: str) -> dict[str, Any]:
+    if contract == "runtime":
+        return dict(RUNTIME_SAMPLING_KWARGS)
+    if contract == "notebook":
+        return dict(OFFICIAL_SAMPLING_KWARGS)
+    raise ValueError(
+        f"Unknown eval contract {contract!r}. Expected 'runtime' or 'notebook'."
+    )
+
+
+def _instantiate_vllm(base_model_path: str, llm_kwargs: dict[str, Any]):
     from vllm import LLM
 
-    return LLM(model=str(base_model_path), **OFFICIAL_LLM_KWARGS)
+    return LLM(model=str(base_model_path), **llm_kwargs)
 
 
-def _build_sampling_params():
+def _build_sampling_params(sampling_kwargs: dict[str, Any]):
     from vllm import SamplingParams
 
-    assert "seed" not in OFFICIAL_SAMPLING_KWARGS
-    assert "stop" not in OFFICIAL_SAMPLING_KWARGS
-    assert "stop_token_ids" not in OFFICIAL_SAMPLING_KWARGS
-    return SamplingParams(**OFFICIAL_SAMPLING_KWARGS)
+    assert "seed" not in sampling_kwargs
+    assert "stop" not in sampling_kwargs
+    assert "stop_token_ids" not in sampling_kwargs
+    return SamplingParams(**sampling_kwargs)
 
 
 def _build_lora_request(adapter_dir: str | Path):
@@ -84,9 +107,26 @@ def evaluate_official_vllm_proxy(
     write_raw_predictions: bool,
     raw_predictions_dir: str | Path | None,
     no_load_base_model: bool,
+    contract: str = "runtime",
 ) -> dict[str, Any]:
     config = read_yaml(config_path)
     rows = load_jsonl(input_path)
+
+    llm_kwargs = _select_llm_kwargs(contract)
+    sampling_kwargs = _select_sampling_kwargs(contract)
+
+    if contract == "runtime" and num_repeats > 1 and float(sampling_kwargs["temperature"]) == 0.0:
+        # Runtime contract is greedy (temperature=0.0). Repeating greedy
+        # generation is deterministic, so num_repeats>1 is pure wasted GPU.
+        # Leave a loud warning in the result payload but still run once to
+        # avoid silent downstream breakage.
+        print(
+            f"[eval_official_vllm_proxy] WARNING: contract=runtime is greedy "
+            f"(temperature=0.0); requested num_repeats={num_repeats} will be "
+            f"executed but yield identical outputs. Forcing num_repeats=1.",
+            flush=True,
+        )
+        num_repeats = 1
 
     if not no_load_base_model:
         validate_adapter_dir(adapter_dir)
@@ -94,13 +134,13 @@ def evaluate_official_vllm_proxy(
     else:
         base_model_path = "__no_load_base_model__"
 
-    llm = _instantiate_vllm(str(base_model_path))
+    llm = _instantiate_vllm(str(base_model_path), llm_kwargs)
     tokenizer = llm.get_tokenizer()
     prompts = [
         build_official_prompt(str(row.get("prompt", row.get("raw_prompt", ""))), tokenizer)
         for row in rows
     ]
-    sampling = _build_sampling_params()
+    sampling = _build_sampling_params(sampling_kwargs)
     lora_request = None if no_load_base_model else _build_lora_request(adapter_dir)
 
     raw_dir = None if raw_predictions_dir is None else Path(raw_predictions_dir)
@@ -143,7 +183,7 @@ def evaluate_official_vllm_proxy(
                     "target_answer": str(row.get("target_answer", "")),
                     "generation": generation,
                     "token_count": token_count,
-                    "hit_max_tokens": token_count >= int(OFFICIAL_SAMPLING_KWARGS["max_tokens"]),
+                    "hit_max_tokens": token_count >= int(sampling_kwargs["max_tokens"]),
                     "extracted_answer": extracted_answer,
                     "fallback_used": fallback_used,
                     "competition_correct": competition_correct,
@@ -193,6 +233,13 @@ def evaluate_official_vllm_proxy(
         "input_path": str(input_path),
         "num_examples": len(rows),
         "num_repeats": num_repeats,
+        "eval_contract": contract,
+        "eval_contract_source": (
+            RUNTIME_CONTRACT_SOURCE if contract == "runtime"
+            else "Notebook default (NOT authoritative for LB selection)"
+        ),
+        "eval_llm_kwargs": llm_kwargs,
+        "eval_sampling_kwargs": sampling_kwargs,
         "contract_fingerprint": current_contract_fingerprint().to_dict(),
         "repeats": repeat_payloads,
         "mean_competition_correct_rate": mean_rate,
@@ -220,6 +267,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--write-raw-predictions", action="store_true")
     parser.add_argument("--raw-predictions-dir")
     parser.add_argument("--no-load-base-model", action="store_true")
+    parser.add_argument(
+        "--contract",
+        choices=["runtime", "notebook"],
+        default="runtime",
+        help=(
+            "Which eval contract to use. 'runtime' (default) mirrors the "
+            "Kaggle Overview tab (temperature=0.0, max_tokens=7680, "
+            "max_model_len=8192) and is authoritative for LB-correlated "
+            "checkpoint selection. 'notebook' mirrors the metric notebook "
+            "defaults (temperature=1.0, max_tokens=3584) and is retained "
+            "only for legacy parity fingerprinting."
+        ),
+    )
     return parser
 
 
@@ -236,6 +296,7 @@ def main(argv: list[str] | None = None) -> None:
         write_raw_predictions=bool(args.write_raw_predictions),
         raw_predictions_dir=args.raw_predictions_dir,
         no_load_base_model=bool(args.no_load_base_model),
+        contract=args.contract,
     )
 
 

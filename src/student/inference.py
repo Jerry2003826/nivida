@@ -92,15 +92,30 @@ def generate_single_prediction(
     return postprocess_generation(raw_text), raw_text
 
 
-# Official Kaggle evaluation harness parameters (from
-# 官方资料/kaggle_metric/nvidia-nemotron-metric.ipynb). The leaderboard uses
-# vLLM with do_sample=True, temperature=1.0, top_p=1.0, max_tokens=3584,
-# max_model_len=4096, and no fixed seed. Use ``official_eval=True`` to mirror
-# those settings in local inference.
+# === Metric notebook defaults (NOT authoritative for LB selection) ===
+# These mirror the ``score()`` signature inside
+# 官方资料/kaggle_metric/nvidia-nemotron-metric.ipynb. Ryan Holbrook (Kaggle
+# Staff) confirmed on discussion #687798 that these defaults are NOT what
+# the official runner uses. Kept for legacy parity and debugging only.
 OFFICIAL_EVAL_PARAMS = {
     "max_new_tokens": 3584,
     "do_sample": True,
     "temperature": 1.0,
+    "top_p": 1.0,
+    "repetition_penalty": 1.0,
+    "prompt_mode": PROMPT_MODE_CHAT_THINKING,
+}
+
+# === Kaggle runtime contract (AUTHORITATIVE) ===
+# Source: Kaggle competition Overview/Evaluation tab table, confirmed by
+# Ryan Holbrook (Kaggle Staff) in discussion #687798. Mirrors
+# ``RUNTIME_SAMPLING_KWARGS`` in src.competition.official_metric_contract.
+# Use ``runtime_eval=True`` (preferred) for any checkpoint selection or
+# LB-aligned local inference.
+RUNTIME_EVAL_PARAMS = {
+    "max_new_tokens": 7680,
+    "do_sample": False,
+    "temperature": 0.0,
     "top_p": 1.0,
     "repetition_penalty": 1.0,
     "prompt_mode": PROMPT_MODE_CHAT_THINKING,
@@ -115,9 +130,17 @@ def run_inference(
     output_path: str | Path,
     max_new_tokens: int | None = None,
     official_eval: bool = False,
+    runtime_eval: bool = False,
 ) -> Path:
+    if official_eval and runtime_eval:
+        raise ValueError(
+            "official_eval and runtime_eval are mutually exclusive; "
+            "prefer runtime_eval=True for LB-aligned selection."
+        )
     inference_config = dict(config.get("inference", {}))
-    if official_eval:
+    if runtime_eval:
+        inference_config.update(RUNTIME_EVAL_PARAMS)
+    elif official_eval:
         inference_config.update(OFFICIAL_EVAL_PARAMS)
     prompt_mode = str(inference_config.get("prompt_mode", PROMPT_MODE_RAW_WITH_GUARD))
     max_tokens = int(max_new_tokens or inference_config.get("max_new_tokens", 128))
@@ -180,11 +203,23 @@ def main() -> None:
         "--official-eval",
         action="store_true",
         help=(
-            "Override inference config to match the official Kaggle leaderboard: "
-            "chat_thinking prompt, do_sample=True, T=1.0, top_p=1.0, max_new_tokens=3584."
+            "Legacy metric-notebook defaults (do_sample=True, T=1.0, "
+            "max_new_tokens=3584). NOT authoritative for LB selection; "
+            "retained for parity fingerprinting only."
+        ),
+    )
+    parser.add_argument(
+        "--runtime-eval",
+        action="store_true",
+        help=(
+            "Mirror the Kaggle Overview-tab runtime contract: chat_thinking "
+            "prompt, do_sample=False (greedy), T=0.0, max_new_tokens=7680. "
+            "This is the authoritative setting for LB-aligned local inference."
         ),
     )
     args = parser.parse_args()
+    if args.official_eval and args.runtime_eval:
+        parser.error("--official-eval and --runtime-eval are mutually exclusive")
 
     config = read_yaml(args.config)
     run_inference(
@@ -194,6 +229,7 @@ def main() -> None:
         output_path=args.output,
         max_new_tokens=args.max_new_tokens,
         official_eval=args.official_eval,
+        runtime_eval=args.runtime_eval,
     )
 
 

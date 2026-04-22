@@ -59,7 +59,10 @@ def _install_fake_inference_and_replica(
                 return stem[: -len(suffix)], proxy
         raise ValueError(f"unexpected prediction filename: {path}")
 
-    def _fake_run_inference(config, *, input_path, adapter_dir, output_path, max_new_tokens):
+    def _fake_run_inference(config, *, input_path, adapter_dir, output_path, max_new_tokens, **_kwargs):
+        # Accept arbitrary extra kwargs (official_eval, runtime_eval, ...) so
+        # the fake stays forward-compatible with the real run_inference
+        # signature.
         candidate_name, _ = _candidate_from_pred_name(Path(output_path))
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text(
