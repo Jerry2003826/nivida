@@ -1,0 +1,119 @@
+# round1_lora_target_sweep.yaml
+# ==============================
+# SWEEP CONFIG — consumed by a future sweep runner (to be written in Round 1
+# proper).  This file is NOT a standalone training config.  Each named variant
+# below overrides only the lora.target_modules (and optionally rank/alpha) of
+# the base training config (configs/train_lora.yaml).
+#
+# Purpose
+# -------
+# Nemotron-3-Nano-30B-A3B-BF16 is a 52-layer hybrid architecture combining:
+#   - Mamba-2 SSM layers  (selective state-space, conv-based recurrence)
+#   - Mixture-of-Experts (MoE) feed-forward layers
+#   - Grouped-Query Attention (GQA) layers
+#
+# The baseline production config (train_lora.yaml) targets only GQA and MLP
+# projection matrices.  Round 1 sweeps three target-module strategies to
+# measure whether adding MLP gate matrices or Mamba out_proj improves
+# downstream accuracy without exceeding the Kaggle LoRA rank <= 32 constraint.
+#
+# Target-module naming conventions follow:
+#   * NVIDIA Megatron-LM / Nemotron naming (q_proj, k_proj, v_proj, o_proj,
+#     gate_proj, fc1, fc2, linear_qkv, linear_proj, linear_fc1, linear_fc2)
+#   * MambaPEFT conventions (in_proj / out_proj for SSM input/output gates).
+#     MambaPEFT (Cisneros et al., 2024) demonstrates that fine-tuning
+#     Mamba in_proj at non-trivial rank causes rank collapse due to the
+#     multiplicative gating structure of Mamba-2's selective scan.
+#     We therefore EXCLUDE Mamba in_proj from all sweep variants.
+#
+# Design rationale per variant is documented inline.
+#
+# Shared LoRA hyper-parameters (all variants)
+# -------------------------------------------
+#   rank:    32   (Kaggle hard ceiling — do not increase)
+#   alpha:   32   (alpha == rank: effective scale factor = 1.0)
+#   dropout: 0.05
+#   bias:    none
+# ---------------------------------------------------------------------------
+
+sweep:
+  # -------------------------------------------------------------------------
+  # Variant 1: attn_only_baseline
+  # -------------------------------------------------------------------------
+  # The current production regex from configs/train_lora.yaml.  Targets the
+  # eight standard GQA/MLP projection matrices that are safe to fine-tune
+  # across all layer types in the hybrid Nemotron-3 stack.
+  #
+  # out_proj / q_proj / k_proj / v_proj / o_proj are the GQA attention heads.
+  # up_proj / down_proj are the MoE feed-forward gate and down-projection.
+  #
+  # This is the baseline against which attn_plus_mlp and attn_plus_mamba_out
+  # are compared.  Any regression in Round 1 eval relative to this variant
+  # should abort the other two variants.
+  attn_only_baseline:
+    lora:
+      rank: 32
+      alpha: 32
+      dropout: 0.05
+      bias: none
+      # Regex matches: out_proj, up_proj, down_proj, q_proj, k_proj, v_proj, o_proj
+      # Note: this is the identical string from train_lora.yaml.
+      target_modules: ".*\\.(out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj)$"
+
+  # -------------------------------------------------------------------------
+  # Variant 2: attn_plus_mlp
+  # -------------------------------------------------------------------------
+  # Extends attn_only_baseline by adding MoE gating and dense MLP matrices:
+  #   gate_proj  — MoE per-expert gating linear (Nemotron MoE layers)
+  #   fc1        — dense MLP first linear (non-MoE hybrid layers)
+  #   fc2        — dense MLP second linear (non-MoE hybrid layers)
+  #
+  # Rationale: MoE routing decisions are determined by gate_proj weights;
+  # fine-tuning these may redirect activations toward math-relevant experts.
+  # fc1/fc2 are the primary representation-expansion matrices in dense MLP
+  # blocks and are standard LoRA targets in LLaMA/Qwen fine-tuning literature.
+  # Rank stays at 32 to respect the Kaggle ceiling; alpha == rank maintains
+  # the same scaling as the baseline.
+  attn_plus_mlp:
+    lora:
+      rank: 32
+      alpha: 32
+      dropout: 0.05
+      bias: none
+      # Adds gate_proj, fc1, fc2 to the baseline set.
+      target_modules: ".*\\.(out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj|gate_proj|fc1|fc2)$"
+
+  # -------------------------------------------------------------------------
+  # Variant 3: attn_plus_mamba_out
+  # -------------------------------------------------------------------------
+  # Further extends attn_plus_mlp by including Mamba-2 SSM matrices, with the
+  # critical constraint that Mamba in_proj is EXPLICITLY EXCLUDED.
+  #
+  # Included Mamba / Megatron-Bridge matrices:
+  #   linear_qkv    — fused QKV projection used in Megatron-Bridge GQA layers
+  #   linear_proj   — output projection in Megatron-Bridge attention
+  #   linear_fc1    — first linear of Megatron-Bridge MLP
+  #   linear_fc2    — second linear of Megatron-Bridge MLP
+  #   out_proj      — Mamba-2 SSM output gate (already in baseline regex, but
+  #                   listed here for clarity of intent)
+  #
+  # EXCLUDED (by omission from the regex):
+  #   in_proj       — Mamba-2 SSM input gate.  MambaPEFT (Cisneros et al., 2024)
+  #                   reports rank collapse when in_proj is fine-tuned at rank
+  #                   >= 8 because the input gating path has a multiplicative
+  #                   interaction with the selective-scan kernel that amplifies
+  #                   gradient variance.  The Blackwell-managed training branch
+  #                   (commit: 5c50d1c) already encodes this as a hard rule.
+  #
+  # Note on regex ordering: in_proj is NOT present in this regex string.
+  # The regex is written as an additive extension; any future maintainer must
+  # not add in_proj without first validating on a smoke run.
+  attn_plus_mamba_out:
+    lora:
+      rank: 32
+      alpha: 32
+      dropout: 0.05
+      bias: none
+      # Adds Megatron-Bridge linear_* names and explicitly covers Mamba out_proj.
+      # in_proj is intentionally absent.
+      target_modules: ".*\\.(out_proj|up_proj|down_proj|q_proj|k_proj|v_proj|o_proj|gate_proj|fc1|fc2|linear_qkv|linear_proj|linear_fc1|linear_fc2)$"
