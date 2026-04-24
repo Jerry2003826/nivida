@@ -88,6 +88,49 @@ def _build_text_sample(record: SupervisedRecord, eos_token: str = "") -> str:
     return f"{record.prompt.rstrip()}\n{record.completion.strip()}{eos_token}"
 
 
+def _last_boxed_span(text: str) -> tuple[int, int] | None:
+    matches = list(re.finditer(r"\\boxed\{[^{}]*\}", text))
+    if not matches:
+        return None
+    match = matches[-1]
+    return match.start(), match.end()
+
+
+def _build_final_answer_loss_weights(
+    *,
+    prompt: str,
+    completion: str,
+    labels: list[int],
+    tokenizer: Any,
+    multiplier: float,
+) -> list[float]:
+    weights = [0.0 if label == -100 else 1.0 for label in labels]
+    boxed_span = _last_boxed_span(completion.strip())
+    if boxed_span is None:
+        return weights
+
+    prompt_prefix = prompt.rstrip() + "\n"
+    completion_text = completion.strip()
+    span_start, span_end = boxed_span
+    prefix_ids = tokenizer(
+        prompt_prefix + completion_text[:span_start],
+        add_special_tokens=False,
+    )["input_ids"]
+    answer_ids = tokenizer(
+        completion_text[span_start:span_end],
+        add_special_tokens=False,
+    )["input_ids"]
+    if not answer_ids:
+        return weights
+
+    start = min(len(prefix_ids), len(weights))
+    end = min(len(weights), start + len(answer_ids))
+    for index in range(start, end):
+        if labels[index] != -100:
+            weights[index] = float(multiplier)
+    return weights
+
+
 def _simple_token_count(text: str) -> int:
     """Whitespace-based length fallback used when no tokenizer is available.
 
@@ -1332,6 +1375,14 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
     strict_divergence_after_warmup_multiplier = float(
         training_config.get("strict_divergence_after_warmup_multiplier", 2.0)
     )
+    final_answer_loss_config = dict(training_config.get("final_answer_loss", {}))
+    use_final_answer_loss = bool(final_answer_loss_config.get("enabled", False))
+    final_answer_loss_multiplier = float(final_answer_loss_config.get("multiplier", 3.0))
+    final_answer_loss_min_supervised_tokens = int(
+        final_answer_loss_config.get("min_supervised_tokens", 1)
+    )
+    if use_final_answer_loss and final_answer_loss_multiplier <= 0.0:
+        raise ValueError("training.final_answer_loss.multiplier must be positive when enabled.")
     initial_probe = None
     init_adapter_dir = lora_initialisation.get("init_adapter_dir")
     if init_adapter_dir:
@@ -1422,7 +1473,7 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         def __len__(self) -> int:
             return len(self.items)
 
-        def __getitem__(self, idx: int) -> dict[str, list[int]]:
+        def __getitem__(self, idx: int) -> dict[str, Any]:
             item = self.items[idx]
             prompt_ids = tokenizer(
                 item.prompt.rstrip() + "\n",
@@ -1445,7 +1496,21 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
                     f"idx={idx} has zero supervised tokens."
                 )
             attention_mask = [1] * len(full_ids)
-            return {"input_ids": full_ids, "labels": labels, "attention_mask": attention_mask}
+            sample: dict[str, Any] = {
+                "input_ids": full_ids,
+                "labels": labels,
+                "attention_mask": attention_mask,
+            }
+            supervised_tokens = sum(label != -100 for label in labels)
+            if use_final_answer_loss and supervised_tokens >= final_answer_loss_min_supervised_tokens:
+                sample["loss_weights"] = _build_final_answer_loss_weights(
+                    prompt=item.prompt,
+                    completion=item.completion,
+                    labels=labels,
+                    tokenizer=tokenizer,
+                    multiplier=final_answer_loss_multiplier,
+                )
+            return sample
 
     train_dataset = PromptCompletionDataset(records, split_name="train")
     eval_dataset = (
@@ -1453,16 +1518,28 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
     )
 
     class SupervisedCollator:
-        def __call__(self, features: list[dict[str, list[int]]]) -> dict[str, Any]:
+        def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
             max_length = max(len(feature["input_ids"]) for feature in features)
             pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
             batch = {"input_ids": [], "labels": [], "attention_mask": []}
+            has_loss_weights = any("loss_weights" in feature for feature in features)
+            if has_loss_weights:
+                batch["loss_weights"] = []
             for feature in features:
                 pad_len = max_length - len(feature["input_ids"])
                 batch["input_ids"].append(feature["input_ids"] + [pad_id] * pad_len)
                 batch["labels"].append(feature["labels"] + [-100] * pad_len)
                 batch["attention_mask"].append(feature["attention_mask"] + [0] * pad_len)
-            return {key: torch.tensor(value) for key, value in batch.items()}
+                if has_loss_weights:
+                    weights = feature.get("loss_weights")
+                    if weights is None:
+                        weights = [0.0 if label == -100 else 1.0 for label in feature["labels"]]
+                    batch["loss_weights"].append(list(weights) + [0.0] * pad_len)
+            tensors = {}
+            for key, value in batch.items():
+                dtype = torch.float32 if key == "loss_weights" else None
+                tensors[key] = torch.tensor(value, dtype=dtype) if dtype is not None else torch.tensor(value)
+            return tensors
 
     training_args = transformers.TrainingArguments(
         **build_training_arguments_kwargs(
@@ -1480,6 +1557,49 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         training_args.max_grad_norm = 0.0
 
     class DiagnosticTrainer(transformers.Trainer):
+        def _compute_final_answer_weighted_loss(
+            self,
+            model: Any,
+            inputs: dict[str, Any],
+            *,
+            return_outputs: bool = False,
+        ):
+            labels = inputs.pop("labels")
+            loss_weights = inputs.pop("loss_weights", None)
+            if loss_weights is None:
+                inputs["labels"] = labels
+                return super().compute_loss(
+                    model,
+                    inputs,
+                    return_outputs=return_outputs,
+                )
+
+            outputs = model(**inputs)
+            if isinstance(outputs, dict):
+                logits = outputs["logits"]
+            else:
+                logits = getattr(outputs, "logits", None)
+                if logits is None:
+                    logits = outputs[0]
+            labels = labels.to(logits.device)
+            loss_weights = loss_weights.to(logits.device)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            shift_weights = loss_weights[..., 1:].contiguous()
+
+            loss_fct = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
+            token_loss = loss_fct(
+                shift_logits.reshape(-1, shift_logits.size(-1)),
+                shift_labels.reshape(-1),
+            )
+            flat_weights = shift_weights.reshape(-1).to(token_loss.dtype)
+            weighted_loss = (token_loss * flat_weights).sum()
+            denom = flat_weights.sum().clamp_min(1.0)
+            loss = weighted_loss / denom
+            if return_outputs:
+                return loss, outputs
+            return loss
+
         def compute_loss(
             self,
             model: Any,
@@ -1494,13 +1614,20 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
                 return_outputs=return_outputs,
             )
             if capture_outputs:
-                loss, outputs = super().compute_loss(
-                    model,
-                    inputs,
-                    return_outputs=True,
-                    *args,
-                    **kwargs,
-                )
+                if use_final_answer_loss:
+                    loss, outputs = self._compute_final_answer_weighted_loss(
+                        model,
+                        inputs,
+                        return_outputs=True,
+                    )
+                else:
+                    loss, outputs = super().compute_loss(
+                        model,
+                        inputs,
+                        return_outputs=True,
+                        *args,
+                        **kwargs,
+                    )
                 if getattr(model, "training", False):
                     lora_health.maybe_log_losses(
                         outputs=outputs,
@@ -1510,6 +1637,12 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
                 if return_outputs:
                     return loss, outputs
                 return loss
+            if use_final_answer_loss:
+                return self._compute_final_answer_weighted_loss(
+                    model,
+                    inputs,
+                    return_outputs=return_outputs,
+                )
             return super().compute_loss(
                 model,
                 inputs,
@@ -1615,6 +1748,11 @@ def train_lora(config: dict[str, Any]) -> dict[str, Any]:
         "initial_saved_probe": initial_probe,
         "requested_max_grad_norm": requested_max_grad_norm,
         "effective_trainer_max_grad_norm": float(getattr(training_args, "max_grad_norm", 0.0) or 0.0),
+        "final_answer_loss": {
+            "enabled": use_final_answer_loss,
+            "multiplier": final_answer_loss_multiplier,
+            "min_supervised_tokens": final_answer_loss_min_supervised_tokens,
+        },
         "strict_divergence_after_step": strict_divergence_after_step,
         "strict_divergence_after_warmup_multiplier": strict_divergence_after_warmup_multiplier,
         "last_grad_summary": lora_health.last_grad_summary,

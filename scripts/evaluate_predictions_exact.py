@@ -12,6 +12,8 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 LOCAL_REPO = REPO_ROOT / "nemotron_local_repo"
 if LOCAL_REPO.is_dir() and str(LOCAL_REPO) not in sys.path:
     sys.path.insert(0, str(LOCAL_REPO))

@@ -10,6 +10,8 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 LOCAL_REPO = REPO_ROOT / "nemotron_local_repo"
 if LOCAL_REPO.is_dir() and str(LOCAL_REPO) not in sys.path:
     sys.path.insert(0, str(LOCAL_REPO))
@@ -25,6 +27,15 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
             if line:
                 rows.append(json.loads(line))
     return rows
+
+
+def resolve_existing_input(path: Path) -> Path:
+    if path.exists():
+        return path
+    workspace_sibling = REPO_ROOT.parent / path
+    if workspace_sibling.exists():
+        return workspace_sibling
+    return path
 
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -68,6 +79,11 @@ def subtype(row: dict[str, Any]) -> str:
 
 def row_id(row: dict[str, Any], fallback: int) -> str:
     return str(row.get("id") or row.get("sample_id") or row.get("uid") or fallback)
+
+
+def duplicate_ids(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts = Counter(row_id(row, idx) for idx, row in enumerate(rows))
+    return {rid: count for rid, count in sorted(counts.items()) if count > 1}
 
 
 def dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -115,8 +131,11 @@ def sample_by_subtype(rows: list[dict[str, Any]], per_subtype: int, seed: int) -
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     fam = Counter(family(row) for row in rows)
     sub = Counter(f"{family(row)}:{subtype(row)}" for row in rows)
+    dupes = duplicate_ids(rows)
     return {
         "num_rows": len(rows),
+        "num_duplicate_ids": sum(count - 1 for count in dupes.values()),
+        "duplicate_ids": dupes,
         "families": dict(fam.most_common()),
         "subtypes": dict(sub.most_common()),
     }
@@ -131,9 +150,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=20260424)
     args = parser.parse_args()
 
-    proxy = load_jsonl(args.proxy_all)
-    hard = load_jsonl(args.hard)
-    distill_valid = load_jsonl(args.distill_valid)
+    proxy = load_jsonl(resolve_existing_input(args.proxy_all))
+    hard = load_jsonl(resolve_existing_input(args.hard))
+    distill_valid = load_jsonl(resolve_existing_input(args.distill_valid))
     combined = dedupe_rows(proxy + hard)
 
     manifests: dict[str, list[dict[str, Any]]] = {
@@ -152,6 +171,11 @@ def main() -> None:
         path = args.output_dir / f"{name}.jsonl"
         write_jsonl(path, rows)
         summary[name] = {"path": str(path), **summarize(rows)}
+        if summary[name]["num_duplicate_ids"]:
+            raise SystemExit(
+                f"manifest {name} contains duplicate ids: "
+                f"{summary[name]['duplicate_ids']}"
+            )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = args.output_dir / "manifest_summary.json"
@@ -159,14 +183,17 @@ def main() -> None:
     md_lines = [
         "# Local Eval Manifests",
         "",
-        "Use these labeled JSONL files as cloud inference inputs. Score predictions locally with `tools/evaluate_predictions_exact.py`.",
+        "Use these labeled JSONL files as cloud inference inputs. Score predictions locally with `scripts/evaluate_predictions_exact.py`.",
         "",
-        "| manifest | rows | families | path |",
-        "| --- | ---: | --- | --- |",
+        "Default main manifest: `combined_balanced_48pf`. Auxiliary manifests: `proxy_all_balanced_64pf`, `hard_triad_full`.",
+        "",
+        "| manifest | rows | duplicate ids | families | path |",
+        "| --- | ---: | ---: | --- | --- |",
     ]
     for name, info in summary.items():
         md_lines.append(
-            f"| {name} | {info['num_rows']} | `{json.dumps(info['families'], ensure_ascii=False)}` | `{info['path']}` |"
+            f"| {name} | {info['num_rows']} | {info['num_duplicate_ids']} | "
+            f"`{json.dumps(info['families'], ensure_ascii=False)}` | `{info['path']}` |"
         )
     (args.output_dir / "README.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     print(json.dumps({"output_dir": str(args.output_dir), "manifests": len(manifests)}, indent=2))
