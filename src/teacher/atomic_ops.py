@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import itertools
 import random
 import re
 from dataclasses import dataclass, field
@@ -179,10 +180,25 @@ def _solve_gf2_system(rows: list[list[int]], targets: list[int]) -> list[int] | 
         if not any(row[:n_cols]) and row[n_cols]:
             return None
 
-    solution = [0] * n_cols
-    for row_index, col in enumerate(pivot_cols):
-        solution[col] = augmented[row_index][n_cols]
-    return solution
+    free_cols = [col for col in range(n_cols) if col not in pivot_cols]
+
+    def _solution_for(free_values: tuple[int, ...]) -> list[int]:
+        solution = [0] * n_cols
+        for col, value in zip(free_cols, free_values):
+            solution[col] = int(value) & 1
+        for row_index, col in enumerate(pivot_cols):
+            value = augmented[row_index][n_cols]
+            for free_col in free_cols:
+                if augmented[row_index][free_col] and solution[free_col]:
+                    value ^= 1
+            solution[col] = value
+        return solution
+
+    if len(free_cols) > 16:
+        return _solution_for(tuple(0 for _ in free_cols))
+
+    solutions = [_solution_for(values) for values in itertools.product((0, 1), repeat=len(free_cols))]
+    return min(solutions, key=lambda solution: (sum(solution[:-1]), solution[-1], tuple(solution)))
 
 
 def _int_to_roman(value: int) -> str:

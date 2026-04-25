@@ -30,9 +30,9 @@ Current audit summary:
 
 | manifest | query accuracy | support-full rate | main gap |
 | --- | ---: | ---: | --- |
-| `combined_balanced_48pf` | 0.6910 | 0.9722 | bit/equation extrapolation |
-| `proxy_all_balanced_64pf` | 0.7045 | 0.9545 | bit/equation extrapolation |
-| `hard_triad_full` | 0.4302 | 0.9394 | equation/bit |
+| `combined_balanced_48pf` | 0.7083 | 0.9722 | bit/equation extrapolation |
+| `proxy_all_balanced_64pf` | 0.7301 | 0.9545 | bit/equation extrapolation |
+| `hard_triad_full` | 0.4725 | 0.9394 | equation/bit |
 
 Note: these numbers use the official binary guard. Pure `0/1` answers are
 strict strings, so older audits overstated bit accuracy.
@@ -52,6 +52,10 @@ For cipher char-substitution prompts, chain search now prefers
 `vocabulary_cipher` before raw `fixed_substitution`. This lets the solver
 complete unseen query letters against the Wonderland vocabulary instead of
 passing unknown ciphertext through unchanged.
+
+For bit affine fits, GF(2) free variables are now selected by a sparse-solution
+prior. This improved `hard_triad_full` bit accuracy from `0.2750` to `0.4000`
+under the official binary-strict metric.
 
 ## Local First
 

@@ -147,6 +147,25 @@ def test_binary_equation_rule_op_handles_operator_feature_intersection() -> None
     assert fit.success is False
 
 
+def test_binary_affine_transform_prefers_sparse_underdetermined_solution() -> None:
+    op = BinaryAffineTransformOp()
+    fit = op.fit(
+        [
+            ("10011101", "10110010"),
+            ("00001010", "01000001"),
+            ("00010001", "00100010"),
+            ("00011011", "01100011"),
+            ("01111010", "01001111"),
+            ("10000001", "00110001"),
+            ("11000100", "10011001"),
+            ("10011110", "11010010"),
+            ("10111001", "00110110"),
+        ]
+    )
+    assert fit.success
+    assert op.apply("00111110", fit.params) == "11000111"
+
+
 def test_binary_ops_fit_and_apply() -> None:
     affine = BinaryAffineTransformOp()
     examples = []

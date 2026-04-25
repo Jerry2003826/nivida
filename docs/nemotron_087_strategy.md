@@ -24,9 +24,9 @@ Solver coverage audit on local manifests:
 
 | manifest | rows | query accuracy | support-full rate | read |
 | --- | ---: | ---: | ---: | --- |
-| `combined_balanced_48pf` | 288 | 0.6910 | 0.9722 | cipher mostly solved; bit/equation weak |
-| `proxy_all_balanced_64pf` | 352 | 0.7045 | 0.9545 | same pattern |
-| `hard_triad_full` | 709 | 0.4302 | 0.9394 | hard triad is still the gap |
+| `combined_balanced_48pf` | 288 | 0.7083 | 0.9722 | cipher mostly solved; bit/equation weak |
+| `proxy_all_balanced_64pf` | 352 | 0.7301 | 0.9545 | same pattern |
+| `hard_triad_full` | 709 | 0.4725 | 0.9394 | hard triad is still the gap |
 
 The important signal is the high support-full rate with low query accuracy.
 The rule search often fits all demonstrations but extrapolates the held-out
@@ -80,12 +80,13 @@ most support-consistent ambiguity remains.
 
 `bit_permutation`
 
-- query accuracy is 0.125-0.272 after switching the audit to official binary
-  strictness.
+- query accuracy is 0.229-0.397 after switching the audit to official binary
+  strictness and preferring sparse GF(2) affine solutions.
 - support failures still exist, but many failures are also wrong extrapolation.
 - Need a stronger permutation/affine disambiguation strategy. The current
-  `binary_affine_transform` is too expressive and often support-fits a simpler
-  hidden generator.
+  `binary_affine_transform` is still too expressive and often support-fits a
+  simpler hidden generator, but sparse free-variable selection removed many
+  arbitrary affine false positives.
 
 ## New Work Loop
 
