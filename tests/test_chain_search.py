@@ -187,6 +187,27 @@ def test_chain_search_solves_binary_equation_rule_example() -> None:
     assert candidates[0].steps[0].op_name == "binary_equation_rule"
 
 
+def test_chain_search_uses_query_operator_prior_for_numeric_equation() -> None:
+    engine = ChainSearchEngine(max_depth=1, beam_width=8)
+    example = PuzzleExample(
+        id="equation_numeric_query_prior",
+        raw_prompt="",
+        official_instruction="",
+        parsed_examples=[
+            PuzzlePair(input="73*57", output="6772"),
+            PuzzlePair(input="29*49", output="9468"),
+            PuzzlePair(input="56+16", output="1656"),
+        ],
+        query="22-84",
+        metadata=PuzzleMetadata(official_family="equation", subtype="numeric"),
+    )
+    candidates = engine.solve_example(example, top_k=3)
+
+    assert candidates
+    assert candidates[0].query_prediction == "-62"
+    assert candidates[0].steps[0].op_name == "binary_equation_rule"
+
+
 def test_chain_search_solves_binary_xor_mask_example() -> None:
     engine = ChainSearchEngine(max_depth=1, beam_width=8)
     example = PuzzleExample(

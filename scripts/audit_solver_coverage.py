@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.competition.metrics import competition_correct  # noqa: E402
 from src.competition.schema import PuzzleExample  # noqa: E402
 from src.teacher.chain_search import ChainSearchEngine  # noqa: E402
+from src.teacher.family_tagger import apply_family_tags  # noqa: E402
 from src.teacher.program_signature import canonicalize_candidate  # noqa: E402
 
 
@@ -80,8 +81,16 @@ def _classify(
     return "query_wrong_after_support_fit"
 
 
-def _audit_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: int) -> dict[str, Any]:
+def _audit_example(
+    engine: ChainSearchEngine,
+    row: dict[str, Any],
+    *,
+    top_k: int,
+    retag: bool,
+) -> dict[str, Any]:
     example = PuzzleExample.from_dict(row)
+    if retag:
+        apply_family_tags([example])
     family = example.metadata.official_family or "unknown"
     subtype = example.metadata.subtype or "unknown"
     candidates = engine.solve_example(example, top_k=top_k)
@@ -154,12 +163,13 @@ def _audit_file(
     max_depth: int,
     top_k: int,
     max_rows: int | None,
+    retag: bool,
 ) -> dict[str, Any]:
     rows = _load_jsonl(path)
     if max_rows is not None:
         rows = rows[:max_rows]
     engine = ChainSearchEngine(beam_width=beam_width, max_depth=max_depth)
-    records = [_audit_example(engine, row, top_k=top_k) for row in rows]
+    records = [_audit_example(engine, row, top_k=top_k, retag=retag) for row in rows]
     return {
         "path": str(path),
         "settings": {
@@ -167,6 +177,7 @@ def _audit_file(
             "max_depth": max_depth,
             "top_k": top_k,
             "max_rows": max_rows,
+            "retag": retag,
         },
         "overall": {
             "n": len(records),
@@ -245,6 +256,11 @@ def main() -> None:
     parser.add_argument("--max-depth", type=int, default=4)
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--max-rows", type=int)
+    parser.add_argument(
+        "--preserve-manifest-tags",
+        action="store_true",
+        help="Use family/subtype metadata stored in the input JSONL instead of retagging with current code.",
+    )
     parser.add_argument("--output-json", type=Path, default=Path("data/processed/solver_coverage_audit.json"))
     parser.add_argument("--output-csv", type=Path, default=Path("data/processed/solver_coverage_records.csv"))
     parser.add_argument("--output-md", type=Path, default=Path("docs/solver_coverage_audit_latest.md"))
@@ -262,6 +278,7 @@ def main() -> None:
             max_depth=args.max_depth,
             top_k=args.top_k,
             max_rows=args.max_rows,
+            retag=not args.preserve_manifest_tags,
         )
         for path in inputs
         if path.is_file()

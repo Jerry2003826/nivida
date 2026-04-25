@@ -24,9 +24,9 @@ Solver coverage audit on local manifests:
 
 | manifest | rows | query accuracy | support-full rate | read |
 | --- | ---: | ---: | ---: | --- |
-| `combined_balanced_48pf` | 288 | 0.7083 | 0.9722 | cipher mostly solved; bit/equation weak |
-| `proxy_all_balanced_64pf` | 352 | 0.7301 | 0.9545 | same pattern |
-| `hard_triad_full` | 709 | 0.4725 | 0.9394 | hard triad is still the gap |
+| `combined_balanced_48pf` | 288 | 0.7118 | 0.9757 | cipher mostly solved; bit/equation weak |
+| `proxy_all_balanced_64pf` | 352 | 0.7330 | 0.9574 | same pattern |
+| `hard_triad_full` | 709 | 0.4795 | 0.9478 | hard triad is still the gap |
 
 The important signal is the high support-full rate with low query accuracy.
 The rule search often fits all demonstrations but extrapolates the held-out
@@ -53,7 +53,7 @@ future gains.
 
 ### Tier 1: Highest Value
 
-`equation_position`
+Symbolic equation templates previously mislabeled as `equation_position`
 
 - `combined_balanced_48pf`: 0.0256 query accuracy
 - `proxy_all_balanced_64pf`: 0.0833
@@ -66,6 +66,17 @@ The first fix now prefers lower-risk operator templates: fewer literals,
 fewer repeated source positions, and more monotonic source-position reuse. It
 raised equation-position coverage without changing bit/cipher outcomes, but
 most support-consistent ambiguity remains.
+
+The subtype label itself was also too broad: any symbolic equation whose output
+was not longer than the input was tagged `equation_position`. The corrected
+tagger only uses `equation_position` when output characters can be supplied by
+the paired input. Literal-introducing outputs are now `equation_template`; on
+the current hard-triad manifest, audit retagging moves 190 / 193 old position
+rows to template-like.
+
+Numeric equations are a smaller but cleaner target. Query-aware operator priors
+and lookup fallbacks lifted `hard_triad_full` `equation_numeric` from `0.4500`
+to `0.5750` without hurting the other families.
 
 ### Tier 2
 
@@ -115,14 +126,14 @@ Start with:
 
 ```text
 failure_class = query_wrong_after_support_fit
-subtype = equation_position
+subtype = equation_template
 ```
 
-The next engineering target is a stricter `equation_position` verifier/ranker
-that detects underconstrained query paths, not just perfect support fit. Labeled
-examples now record whether the solver's query prediction matches the known
-target; strict stage2 trace selection rejects query-mismatch traces so wrong
-support-fitting programs do not become training rationales.
+The next engineering target is a stricter symbolic-equation template
+verifier/ranker that detects underconstrained query paths, not just perfect
+support fit. Labeled examples now record whether the solver's query prediction
+matches the known target; strict stage2 trace selection rejects query-mismatch
+traces so wrong support-fitting programs do not become training rationales.
 
 ## Training Policy
 

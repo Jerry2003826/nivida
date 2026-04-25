@@ -147,6 +147,22 @@ def test_binary_equation_rule_op_handles_operator_feature_intersection() -> None
     assert fit.success is False
 
 
+def test_binary_equation_rule_uses_lookup_for_unrelated_operators() -> None:
+    op = BinaryEquationRuleOp()
+    fit = op.fit([("65+83", "8365"), ("62-23", "-6"), ("69*72", "2952")])
+
+    assert fit.success
+    assert op.apply("72+44", fit.params) == "4472"
+
+
+def test_binary_equation_rule_prefers_abs_difference_when_direction_ambiguous() -> None:
+    op = BinaryEquationRuleOp()
+    fit = op.fit([("27:81", "54"), ("52:57", "5"), ("25:81", "56")])
+
+    assert fit.success
+    assert op.apply("80:32", fit.params) == "48"
+
+
 def test_binary_affine_transform_prefers_sparse_underdetermined_solution() -> None:
     op = BinaryAffineTransformOp()
     fit = op.fit(

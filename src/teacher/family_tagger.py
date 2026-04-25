@@ -78,8 +78,23 @@ def _classify_equation(example: PuzzleExample) -> str:
         for pair in example.parsed_examples
     ):
         return "equation_delete"
-    if example.parsed_examples and all(len(pair.output) <= len(pair.input) for pair in example.parsed_examples):
-        return "equation_position"
+
+    # Position transduction should be explainable by selecting, dropping, or
+    # rearranging characters from the input. If the output introduces literal
+    # symbols that are absent from the paired input, it is a template problem
+    # even when the output is shorter than the input.
+    if example.parsed_examples:
+        output_is_position_compatible = True
+        for pair in example.parsed_examples:
+            input_counts = Counter(pair.input)
+            output_counts = Counter(pair.output)
+            if len(pair.output) > len(pair.input) or any(
+                output_counts[char] > input_counts.get(char, 0) for char in output_counts
+            ):
+                output_is_position_compatible = False
+                break
+        if output_is_position_compatible:
+            return "equation_position"
     if example.parsed_examples and any(any(not char.isalnum() for char in pair.input) for pair in example.parsed_examples):
         return "equation_template"
     return "equation_symbolic"

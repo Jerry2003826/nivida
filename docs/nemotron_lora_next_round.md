@@ -30,16 +30,16 @@ Current audit summary:
 
 | manifest | query accuracy | support-full rate | main gap |
 | --- | ---: | ---: | --- |
-| `combined_balanced_48pf` | 0.7083 | 0.9722 | bit/equation extrapolation |
-| `proxy_all_balanced_64pf` | 0.7301 | 0.9545 | bit/equation extrapolation |
-| `hard_triad_full` | 0.4725 | 0.9394 | equation/bit |
+| `combined_balanced_48pf` | 0.7118 | 0.9757 | bit/equation extrapolation |
+| `proxy_all_balanced_64pf` | 0.7330 | 0.9574 | bit/equation extrapolation |
+| `hard_triad_full` | 0.4795 | 0.9478 | equation/bit |
 
 Note: these numbers use the official binary guard. Pure `0/1` answers are
 strict strings, so older audits overstated bit accuracy.
 
 Prioritize solver work in this order:
 
-1. `equation_position`
+1. symbolic equation templates previously mislabeled as `equation_position`
 2. `bit_permutation`
 3. residual `cipher_char_sub`
 
@@ -56,6 +56,18 @@ passing unknown ciphertext through unchanged.
 For bit affine fits, GF(2) free variables are now selected by a sparse-solution
 prior. This improved `hard_triad_full` bit accuracy from `0.2750` to `0.4000`
 under the official binary-strict metric.
+
+For equation tags, position transduction now only covers outputs explainable
+from input-position characters. If the output introduces literal symbols or
+uses a symbol more often than the input provides, the sample is tagged as an
+equation template instead. On the current hard-triad manifest, this reclassifies
+190 / 193 old `equation_position` rows as template-like in the current audit.
+
+For numeric equations, `binary_equation_rule` can now use exact lookup only for
+unrelated support operators while keeping a general rule for the query-relevant
+operator. Search also has a query-aware prior for unseen `+` and `-` operators.
+This raises `hard_triad_full` equation-numeric query accuracy from `0.4500` to
+`0.5750`.
 
 ## Local First
 

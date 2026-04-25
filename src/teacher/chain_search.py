@@ -295,7 +295,11 @@ class ChainSearchEngine:
             for state in beam:
                 current_examples = list(zip(state.transformed_inputs, targets))
                 for op in ops:
-                    params_list = op.candidate_params(current_examples)
+                    query_aware_params = getattr(op, "candidate_params_for_query", None)
+                    if query_aware_params is not None and state.query_value is not None:
+                        params_list = query_aware_params(current_examples, state.query_value)
+                    else:
+                        params_list = op.candidate_params(current_examples)
                     if not params_list:
                         continue
                     for params in params_list[:12]:

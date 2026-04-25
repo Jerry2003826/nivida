@@ -1099,6 +1099,12 @@ class BinaryEquationRuleOp(AtomicOp):
         return candidates
 
     def _render_rule(self, left_text: str, right_text: str, rule: dict[str, str]) -> str:
+        if rule["kind"] == "lookup":
+            key = f"{left_text}\t{right_text}"
+            values = rule.get("values", {})
+            if key not in values:
+                raise ValueError("unsupported equation lookup")
+            return str(values[key])
         feature_map = self._feature_map(left_text, right_text)
         if rule["kind"] == "single":
             return _normalise_numeric_string(feature_map[rule["feature"]], rule.get("strip_mode", "none"))
@@ -1106,7 +1112,59 @@ class BinaryEquationRuleOp(AtomicOp):
         right_value = _normalise_numeric_string(feature_map[rule["right_feature"]], rule.get("strip_mode", "none"))
         return left_value + right_value
 
-    def candidate_params(self, examples: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    def _rule_sort_key(self, rule: dict[str, str]) -> tuple[int, int, str]:
+        feature_priority = {
+            "left": 0,
+            "right": 1,
+            "concat_lr": 2,
+            "concat_rl": 3,
+            "add": 4,
+            "abs_sub": 5,
+            "sub": 6,
+            "rsub": 7,
+            "mul": 8,
+            "digit_add": 9,
+            "digit_abs": 10,
+            "digit_mul": 11,
+            "digit_add_cross": 12,
+            "digit_abs_cross": 13,
+            "digit_mul_cross": 14,
+        }
+        if rule["kind"] == "lookup":
+            return (3, 0, "")
+        if rule["kind"] == "single":
+            feature = rule.get("feature", "")
+            return (0, feature_priority.get(feature, 50), feature)
+        left_feature = rule.get("left_feature", "")
+        right_feature = rule.get("right_feature", "")
+        return (
+            1,
+            feature_priority.get(left_feature, 50) + feature_priority.get(right_feature, 50),
+            f"{left_feature}:{right_feature}",
+        )
+
+    def _lookup_rule(self, operator_examples: list[tuple[str, str, str]]) -> dict[str, Any] | None:
+        values: dict[str, str] = {}
+        for left_text, right_text, output_text in operator_examples:
+            key = f"{left_text}\t{right_text}"
+            if key in values and values[key] != output_text:
+                return None
+            values[key] = output_text
+        return {"kind": "lookup", "values": values}
+
+    def _default_rule_for_operator(self, operator: str) -> dict[str, str] | None:
+        if operator == "+":
+            return {"kind": "single", "feature": "concat_rl", "strip_mode": "none"}
+        if operator == "-":
+            return {"kind": "single", "feature": "sub", "strip_mode": "none"}
+        return None
+
+    def _candidate_params(
+        self,
+        examples: list[tuple[str, str]],
+        *,
+        query_operator: str | None = None,
+    ) -> list[dict[str, Any]]:
         parsed_examples: list[tuple[str, str, str, str]] = []
         for input_text, output_text in examples:
             parsed = _parse_binary_equation(input_text)
@@ -1114,7 +1172,7 @@ class BinaryEquationRuleOp(AtomicOp):
                 return []
             left_text, operator, right_text = parsed
             parsed_examples.append((left_text, operator, right_text, output_text.strip()))
-        rules_by_operator: dict[str, dict[str, str]] = {}
+        rules_by_operator_options: dict[str, list[dict[str, Any]]] = {}
         for operator in sorted({operator for _, operator, _, _ in parsed_examples}):
             operator_examples = [(left_text, right_text, output_text) for left_text, op, right_text, output_text in parsed_examples if op == operator]
             common_features = sorted(
@@ -1123,8 +1181,11 @@ class BinaryEquationRuleOp(AtomicOp):
                 )
             )
             if not common_features:
-                return []
-            chosen_rule: dict[str, str] | None = None
+                lookup = self._lookup_rule(operator_examples)
+                if lookup is None:
+                    return []
+                rules_by_operator_options[operator] = [lookup]
+                continue
             candidate_rules: list[dict[str, str]] = []
             for feature_name in common_features:
                 for strip_mode in ["none", "strip_leading", "strip_all"]:
@@ -1145,12 +1206,41 @@ class BinaryEquationRuleOp(AtomicOp):
             for rule in candidate_rules:
                 rendered = [self._render_rule(left_text, right_text, rule) for left_text, right_text, _ in operator_examples]
                 if rendered == [output_text for _, _, output_text in operator_examples]:
-                    chosen_rule = rule
-                    break
-            if chosen_rule is None:
-                return []
-            rules_by_operator[operator] = chosen_rule
-        return [{"rules_by_operator": rules_by_operator}]
+                    rules_by_operator_options.setdefault(operator, []).append(rule)
+            if not rules_by_operator_options.get(operator):
+                lookup = self._lookup_rule(operator_examples)
+                if lookup is None:
+                    return []
+                rules_by_operator_options[operator] = [lookup]
+            else:
+                rules_by_operator_options[operator].sort(key=self._rule_sort_key)
+                rules_by_operator_options[operator] = rules_by_operator_options[operator][:4]
+        if query_operator is not None and query_operator not in rules_by_operator_options:
+            default_rule = self._default_rule_for_operator(query_operator)
+            if default_rule is not None:
+                rules_by_operator_options[query_operator] = [default_rule]
+        if not any(
+            rule.get("kind") != "lookup"
+            for rules in rules_by_operator_options.values()
+            for rule in rules
+        ):
+            return []
+
+        operators = sorted(rules_by_operator_options)
+        params: list[dict[str, Any]] = []
+        for combination in itertools.product(*(rules_by_operator_options[operator] for operator in operators)):
+            params.append({"rules_by_operator": dict(zip(operators, combination))})
+            if len(params) >= 24:
+                break
+        return params
+
+    def candidate_params(self, examples: list[tuple[str, str]]) -> list[dict[str, Any]]:
+        return self._candidate_params(examples)
+
+    def candidate_params_for_query(self, examples: list[tuple[str, str]], query: str) -> list[dict[str, Any]]:
+        parsed_query = _parse_binary_equation(query)
+        query_operator = None if parsed_query is None else parsed_query[1]
+        return self._candidate_params(examples, query_operator=query_operator)
 
     def apply(self, text: str, params: dict[str, Any]) -> str:
         parsed = _parse_binary_equation(text)
@@ -1168,6 +1258,9 @@ class BinaryEquationRuleOp(AtomicOp):
     def complexity_penalty(self, params: dict[str, Any]) -> float:
         penalty = 0.0
         for rule in params.get("rules_by_operator", {}).values():
+            if rule.get("kind") == "lookup":
+                penalty += 0.02 * len(rule.get("values", {}))
+                continue
             if rule.get("kind") == "concat":
                 penalty += 0.01
             strip_mode = rule.get("strip_mode", "none")
