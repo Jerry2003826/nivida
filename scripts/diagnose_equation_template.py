@@ -83,6 +83,23 @@ def classify_template_risk(
     return "operator_gap_oracle_miss"
 
 
+def filter_diagnostics(
+    rows: list[dict[str, Any]],
+    *,
+    failure_class: str | None = None,
+    subtype: str | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    filtered = rows
+    if failure_class:
+        filtered = [row for row in filtered if str(row.get("risk_class")) == failure_class]
+    if subtype:
+        filtered = [row for row in filtered if str(row.get("subtype")) == subtype]
+    if limit is not None and limit >= 0:
+        filtered = filtered[:limit]
+    return filtered
+
+
 def _support_full(candidate: Any, example: PuzzleExample) -> bool:
     if candidate is None or len(candidate.predictions) != len(example.parsed_examples):
         return False
@@ -186,6 +203,12 @@ def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: i
         "subtype": example.metadata.subtype,
         "target": target,
         "query": example.query,
+        "support_inputs": [pair.input for pair in example.parsed_examples],
+        "support_outputs": [pair.output for pair in example.parsed_examples],
+        "support_pairs": [
+            {"input": pair.input, "output": pair.output}
+            for pair in example.parsed_examples
+        ],
         "num_pairs": len(example.parsed_examples),
         "top_prediction": "" if not candidates or candidates[0].query_prediction is None else str(candidates[0].query_prediction),
         "top_query_correct": oracle_rank == 1,
@@ -214,7 +237,17 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
         return
-    flat_rows = [{key: value for key, value in row.items() if key != "candidates"} for row in rows]
+    flat_rows: list[dict[str, Any]] = []
+    for row in rows:
+        flat: dict[str, Any] = {}
+        for key, value in row.items():
+            if key == "candidates":
+                continue
+            if isinstance(value, (list, dict)):
+                flat[key] = json.dumps(value, ensure_ascii=False)
+            else:
+                flat[key] = value
+        flat_rows.append(flat)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(flat_rows[0].keys()))
         writer.writeheader()
@@ -265,7 +298,8 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
     for row in misses:
         lines.append(
             f"- `{row['id']}` risk=`{row['risk_class']}` oracle_rank=`{row['oracle_rank']}` "
-            f"target=`{row['target']}` top=`{row['top_prediction']}`"
+            f"query=`{row['query']}` target=`{row['target']}` top=`{row['top_prediction']}` "
+            f"target_expressible=`{row['target_expressible']}`"
         )
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -287,13 +321,34 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Diagnose equation_template ambiguity and oracle-at-K.")
     parser.add_argument("--input", action="append", type=Path)
     parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument("--failure-class", help="Optional risk_class filter applied to diagnostic outputs.")
+    parser.add_argument("--subtype", default="equation_template", help="Optional subtype filter applied to outputs.")
+    parser.add_argument("--limit", type=int, help="Optional max rows after filters; use 0 for an empty smoke output.")
     parser.add_argument("--output-json", type=Path, default=Path("data/processed/equation_template_diagnostic.json"))
     parser.add_argument("--output-csv", type=Path, default=Path("data/processed/equation_template_diagnostic.csv"))
     parser.add_argument("--output-md", type=Path, default=Path("docs/equation_template_diagnostic_latest.md"))
     args = parser.parse_args()
 
-    rows = run_diagnostic(args.input or DEFAULT_INPUTS, top_k=args.top_k)
-    _write_json(args.output_json, {"settings": {"top_k": args.top_k}, "rows": rows})
+    all_rows = run_diagnostic(args.input or DEFAULT_INPUTS, top_k=args.top_k)
+    rows = filter_diagnostics(
+        all_rows,
+        failure_class=args.failure_class,
+        subtype=args.subtype,
+        limit=args.limit,
+    )
+    _write_json(
+        args.output_json,
+        {
+            "settings": {
+                "top_k": args.top_k,
+                "failure_class": args.failure_class,
+                "subtype": args.subtype,
+                "limit": args.limit,
+                "num_rows_before_filters": len(all_rows),
+            },
+            "rows": rows,
+        },
+    )
     _write_csv(args.output_csv, rows)
     _write_markdown(args.output_md, rows)
     print(

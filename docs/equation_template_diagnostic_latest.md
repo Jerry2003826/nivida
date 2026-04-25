@@ -27,23 +27,23 @@
 
 ## Top Misses
 
-- `0b0a3643` risk=`unseen_key_template_miss` oracle_rank=`None` target=`""` top=`-)'`
-- `1cce5949` risk=`unseen_key_template_miss` oracle_rank=`None` target=`[?}` top=``??`
-- `2ba4b99f` risk=`unseen_key_template_miss` oracle_rank=`None` target=`@:%>` top=`{`
-- `30e4b199` risk=`unseen_key_template_miss` oracle_rank=`None` target=`|:|` top=`)`
-- `36557a2e` risk=`unseen_key_template_miss` oracle_rank=`None` target=`!{}?` top=`)}!}`
-- `38c7aca1` risk=`unseen_key_template_miss` oracle_rank=`None` target=`!!]{` top=`!||{`
-- `398478f6` risk=`unseen_key_template_miss` oracle_rank=`None` target=`:[` top=`@|))`
-- `3cb3fd89` risk=`operator_gap_oracle_miss` oracle_rank=`None` target=`[[&]` top=`]|{\`
-- `4d8df95b` risk=`unseen_key_template_miss` oracle_rank=`None` target=`)` top=`-?"`
-- `51174a9d` risk=`unseen_literal_high_risk` oracle_rank=`None` target=`[/<` top=`$|||`
-- `563bf8f9` risk=`unseen_literal_high_risk` oracle_rank=`None` target=`-'/` top=`/"!$`
-- `6beb3a1f` risk=`operator_gap_oracle_miss` oracle_rank=`None` target=`??` top=`[)`
-- `6c7231ac` risk=`unseen_key_template_miss` oracle_rank=`None` target=`:/#` top=`#`
-- `6f8261d9` risk=`expressible_oracle_miss` oracle_rank=`None` target=`\` top=`(`
-- `8753cdcc` risk=`unseen_key_template_miss` oracle_rank=`None` target=`'""` top=`)%%`
-- `898bc85a` risk=`unseen_literal_high_risk` oracle_rank=`None` target=`^[[` top=`]>[`
-- `90feb0c5` risk=`unseen_literal_high_risk` oracle_rank=`None` target=`:<]` top=`?```
-- `948e5474` risk=`unseen_key_template_miss` oracle_rank=`None` target=`-&` top=`^%?%`
-- `9a4f2f47` risk=`operator_gap_oracle_miss` oracle_rank=`None` target=`('^` top=`!(}:`
-- `a3183159` risk=`unseen_key_template_miss` oracle_rank=`None` target=``{` top=`-]``
+- `0b0a3643` risk=`unseen_key_template_miss` oracle_rank=`None` query=`'/-%)` target=`""` top=`-)'` target_expressible=`True`
+- `1cce5949` risk=`unseen_key_template_miss` oracle_rank=`None` query=``\}`]` target=`[?}` top=``??` target_expressible=`True`
+- `2ba4b99f` risk=`unseen_key_template_miss` oracle_rank=`None` query=`@|(\|` target=`@:%>` top=`{` target_expressible=`True`
+- `30e4b199` risk=`unseen_key_template_miss` oracle_rank=`None` query=`@@\&&` target=`|:|` top=`)` target_expressible=`True`
+- `36557a2e` risk=`unseen_key_template_miss` oracle_rank=`None` query=`]%*)?` target=`!{}?` top=`)}!}` target_expressible=`True`
+- `38c7aca1` risk=`unseen_key_template_miss` oracle_rank=`None` query=`#{*&>` target=`!!]{` top=`!||{` target_expressible=`True`
+- `398478f6` risk=`unseen_key_template_miss` oracle_rank=`None` query=`|)+@)` target=`:[` top=`@|))` target_expressible=`True`
+- `3cb3fd89` risk=`operator_gap_oracle_miss` oracle_rank=`None` query=`]$*$)` target=`[[&]` top=`]|{\` target_expressible=`False`
+- `4d8df95b` risk=`unseen_key_template_miss` oracle_rank=`None` query=`??-??` target=`)` top=`-?"` target_expressible=`True`
+- `51174a9d` risk=`unseen_literal_high_risk` oracle_rank=`None` query=`$|}||` target=`[/<` top=`$|||` target_expressible=`False`
+- `563bf8f9` risk=`unseen_literal_high_risk` oracle_rank=`None` query=`"!-//` target=`-'/` top=`/"!$` target_expressible=`True`
+- `6beb3a1f` risk=`operator_gap_oracle_miss` oracle_rank=`None` query=``)-/[` target=`??` top=`[)` target_expressible=`False`
+- `6c7231ac` risk=`unseen_key_template_miss` oracle_rank=`None` query=`&}+#}` target=`:/#` top=`#` target_expressible=`True`
+- `6f8261d9` risk=`expressible_oracle_miss` oracle_rank=`None` query=`|(-|(` target=`\` top=`(` target_expressible=`True`
+- `8753cdcc` risk=`unseen_key_template_miss` oracle_rank=`None` query=`%%+)"` target=`'""` top=`)%%` target_expressible=`True`
+- `898bc85a` risk=`unseen_literal_high_risk` oracle_rank=`None` query=`}?+?)` target=`^[[` top=`]>[` target_expressible=`True`
+- `90feb0c5` risk=`unseen_literal_high_risk` oracle_rank=`None` query=`?>'>>` target=`:<]` top=`?``` target_expressible=`True`
+- `948e5474` risk=`unseen_key_template_miss` oracle_rank=`None` query=`?%-^%` target=`-&` top=`^%?%` target_expressible=`True`
+- `9a4f2f47` risk=`operator_gap_oracle_miss` oracle_rank=`None` query=`!?+)'` target=`('^` top=`!(}:` target_expressible=`False`
+- `a3183159` risk=`unseen_key_template_miss` oracle_rank=`None` query=``|-}"` target=``{` top=`-]`` target_expressible=`True`

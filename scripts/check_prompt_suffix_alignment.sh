@@ -30,8 +30,86 @@
 set -Eeuo pipefail
 
 if ! command -v jq >/dev/null 2>&1; then
-  echo "check_prompt_suffix_alignment.sh: jq is required but not on PATH" >&2
-  exit 2
+  python - "$@" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+EXPECTED_SUFFIX = "\nPlease put your final answer inside `\\boxed{}`. For example: `\\boxed{your answer}`"
+DEFAULTS = [
+    Path("data/processed/competition_train.jsonl"),
+    Path("data/processed/competition_val.jsonl"),
+    Path("data/processed/hard_triad_proxy.jsonl"),
+    Path("data/processed/all_family_proxy.jsonl"),
+]
+
+files = [Path(arg) for arg in sys.argv[1:]]
+if not files:
+    files = [path for path in DEFAULTS if path.is_file()]
+    if not files:
+        print(
+            "check_prompt_suffix_alignment.sh: no default data files found under data/processed/. Pass paths explicitly.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+total_bad = 0
+total_rows = 0
+for path in files:
+    if not path.is_file():
+        print(f"check_prompt_suffix_alignment.sh: file not found: {path}", file=sys.stderr)
+        raise SystemExit(2)
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    bad_prompt_rows = []
+    for row in rows:
+        prompt = str(row.get("prompt") or row.get("raw_prompt") or "")
+        # raw_with_guard prompts end with the guard. chat_thinking prompts wrap
+        # that guarded user message inside the tokenizer chat template, so the
+        # guard is followed by assistant-start tokens instead of being the
+        # physical end of the rendered prompt.
+        if not (prompt.endswith(EXPECTED_SUFFIX) or EXPECTED_SUFFIX in prompt):
+            bad_prompt_rows.append(row)
+    bad_completion_rows = [
+        row
+        for row in rows
+        if "\\boxed{" not in str(row.get("completion") or row.get("target_completion") or row.get("target") or "")
+    ]
+    file_bad = len(bad_prompt_rows) + len(bad_completion_rows)
+    total_bad += file_bad
+    total_rows += len(rows)
+    if file_bad == 0:
+        print(f"[OK]    {path} rows={len(rows)} suffix_ok=yes boxed_ok=yes")
+        continue
+    print(
+        f"[FAIL]  {path} rows={len(rows)} bad_suffix={len(bad_prompt_rows)} "
+        f"bad_completion={len(bad_completion_rows)}",
+        file=sys.stderr,
+    )
+    for label, bad_rows, field_names in [
+        ("first 5 rows missing the expected prompt suffix", bad_prompt_rows, ("prompt", "raw_prompt")),
+        ("first 5 rows missing a \\boxed{...} answer", bad_completion_rows, ("completion", "target_completion", "target")),
+    ]:
+        if not bad_rows:
+            continue
+        print(f"  {label}:", file=sys.stderr)
+        for row in bad_rows[:5]:
+            text = ""
+            for field in field_names:
+                if row.get(field) is not None:
+                    text = str(row.get(field))
+                    break
+            print(json.dumps({"id": row.get("id", "?"), "tail": text[-120:]}, ensure_ascii=False), file=sys.stderr)
+
+print("---")
+print(f"summary: files={len(files)} rows={total_rows} bad={total_bad}")
+raise SystemExit(1 if total_bad else 0)
+PY
+  exit $?
 fi
 
 # Exact byte-for-byte suffix expected on every training prompt.
@@ -68,10 +146,11 @@ for f in "${FILES[@]}"; do
   fi
 
   rows=$(wc -l < "$f" | tr -d ' ')
-  # Count rows whose 'prompt' field does NOT end with EXPECTED_SUFFIX.
+  # Count rows whose 'prompt' field does NOT carry EXPECTED_SUFFIX. Raw prompts
+  # end with it; chat-template prompts contain it inside the rendered user turn.
   bad_prompt=$(
     jq -c --arg suffix "$EXPECTED_SUFFIX" '
-      select((.prompt // .raw_prompt // "") | endswith($suffix) | not)
+      select((.prompt // .raw_prompt // "") as $prompt | (($prompt | endswith($suffix)) or ($prompt | contains($suffix))) | not)
     ' "$f" | wc -l | tr -d ' '
   )
   # Count rows whose 'completion' / 'target_completion' does NOT contain a
@@ -96,7 +175,7 @@ for f in "${FILES[@]}"; do
     if [[ "$bad_prompt" -gt 0 ]]; then
       echo "  first 5 rows missing the expected prompt suffix:" >&2
       jq -c --arg suffix "$EXPECTED_SUFFIX" '
-        select((.prompt // .raw_prompt // "") | endswith($suffix) | not)
+        select((.prompt // .raw_prompt // "") as $prompt | (($prompt | endswith($suffix)) or ($prompt | contains($suffix))) | not)
         | {id: (.id // "?"), tail: ((.prompt // .raw_prompt // "") | .[-120:])}
       ' "$f" | head -5 >&2 || true
     fi

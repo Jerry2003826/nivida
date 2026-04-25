@@ -88,16 +88,18 @@ The machine was shut down before the repaired vLLM environment was re-tested.
 
 ## Next GPU Boot
 
-First, verify that the persistent disk still has the trained adapter:
-
-```bash
-test -f /workspace/nivida_h200_run/artifacts/adapter_stage2_official_balanced_answer_only/adapter_model.safetensors
-```
-
-Then run the CPU-only vLLM preflight:
+First pull the latest local-only tooling and verify that the persistent disk
+still has the trained adapter:
 
 ```bash
 cd /workspace/nivida_h200_run
+git pull
+test -f /workspace/nivida_h200_run/artifacts/adapter_stage2_official_balanced_answer_only/adapter_model.safetensors
+```
+
+Then run the vLLM preflight:
+
+```bash
 bash scripts/check_cloud_vllm_env.sh
 ```
 
@@ -129,3 +131,6 @@ python scripts/score_vllm_exact_eval_outputs.py \
   --predictions-root data/processed/vllm_exact_eval_v3 \
   --output-root data/processed/eval/vllm_exact_eval_v3
 ```
+
+The scorer now defaults to `--baseline auto`, which prefers
+`official_balanced` over `b_thin` whenever both reports are present.

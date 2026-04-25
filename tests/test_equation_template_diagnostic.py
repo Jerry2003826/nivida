@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from scripts.diagnose_equation_template import (
     classify_template_risk,
+    filter_diagnostics,
     target_expressibility,
     target_char_provenance,
 )
@@ -97,3 +98,20 @@ def test_target_expressibility_detects_template_fit_with_query_target() -> None:
     assert expressibility["any"]
     assert expressibility["operator_template"]
     assert expressibility["operator_template_seen_query_key"]
+
+
+def test_filter_diagnostics_filters_risk_subtype_and_limit() -> None:
+    rows = [
+        {"id": "a", "risk_class": "operator_gap_oracle_miss", "subtype": "equation_template"},
+        {"id": "b", "risk_class": "unseen_key_template_miss", "subtype": "equation_template"},
+        {"id": "c", "risk_class": "unseen_key_template_miss", "subtype": "equation_numeric"},
+    ]
+
+    filtered = filter_diagnostics(
+        rows,
+        failure_class="unseen_key_template_miss",
+        subtype="equation_template",
+        limit=1,
+    )
+
+    assert filtered == [rows[1]]

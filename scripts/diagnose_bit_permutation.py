@@ -57,6 +57,48 @@ def classify_bit_candidate_gap(
     return "operator_gap_oracle_miss"
 
 
+def boolean_expression_features(expressions: list[dict[str, Any]]) -> dict[str, Any]:
+    ops = [str(expr.get("op", "")) for expr in expressions]
+    complexities = [int(expr.get("complexity", 0) or 0) for expr in expressions]
+    total = sum(complexities)
+    return {
+        "expression_ops": ",".join(ops),
+        "expression_complexity_total": total,
+        "expression_complexity_avg": 0.0 if not complexities else total / len(complexities),
+        "expression_complexity_max": 0 if not complexities else max(complexities),
+    }
+
+
+def _candidate_expression_features(candidate: Any) -> dict[str, Any]:
+    for step in getattr(candidate, "steps", []):
+        if getattr(step, "op_name", "") != "binary_boolean_expr":
+            continue
+        params = getattr(step, "params", {})
+        expressions = params.get("expressions", []) if isinstance(params, dict) else []
+        if isinstance(expressions, list):
+            return boolean_expression_features(
+                [expr for expr in expressions if isinstance(expr, dict)]
+            )
+    return boolean_expression_features([])
+
+
+def filter_diagnostics(
+    rows: list[dict[str, Any]],
+    *,
+    failure_class: str | None = None,
+    subtype: str | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    filtered = rows
+    if failure_class:
+        filtered = [row for row in filtered if str(row.get("risk_class")) == failure_class]
+    if subtype:
+        filtered = [row for row in filtered if str(row.get("subtype")) == subtype]
+    if limit is not None and limit >= 0:
+        filtered = filtered[:limit]
+    return filtered
+
+
 def _support_full(candidate: Any, example: PuzzleExample) -> bool:
     if candidate is None or len(candidate.predictions) != len(example.parsed_examples):
         return False
@@ -98,11 +140,14 @@ def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: i
                 "exact_ratio": float(candidate.exact_ratio),
                 "steps": ">".join(step.op_name for step in candidate.steps),
                 "complexity_penalty": float(candidate.debug.get("complexity_penalty", 0.0)),
+                **_candidate_expression_features(candidate),
             }
         )
 
     top = candidate_rows[0] if candidate_rows else None
+    oracle = candidate_rows[oracle_rank - 1] if oracle_rank is not None and oracle_rank <= len(candidate_rows) else None
     top_prediction = "" if top is None else str(top["prediction"])
+    oracle_prediction = "" if oracle is None else str(oracle["prediction"])
     top_correct = bool(top and top["query_correct"])
     top_support_full = bool(top and top["support_full"])
     risk_class = classify_bit_candidate_gap(
@@ -119,6 +164,15 @@ def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: i
         "num_pairs": len(example.parsed_examples),
         "top_prediction": top_prediction,
         "top_steps": "" if top is None else str(top["steps"]),
+        "top_hamming_to_target": "" if top is None else top["hamming_to_target"],
+        "top_expression_ops": "" if top is None else top["expression_ops"],
+        "top_expression_complexity_total": 0 if top is None else top["expression_complexity_total"],
+        "oracle_prediction": oracle_prediction,
+        "oracle_steps": "" if oracle is None else str(oracle["steps"]),
+        "oracle_hamming_to_target": "" if oracle is None else oracle["hamming_to_target"],
+        "oracle_expression_ops": "" if oracle is None else oracle["expression_ops"],
+        "oracle_expression_complexity_total": 0 if oracle is None else oracle["expression_complexity_total"],
+        "top_oracle_hamming": "" if not top_prediction or not oracle_prediction else hamming_distance(top_prediction, oracle_prediction),
         "top_query_correct": top_correct,
         "top_support_full": top_support_full,
         "oracle_rank": oracle_rank,
@@ -151,7 +205,17 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
         return
-    flat_rows = [{key: value for key, value in row.items() if key != "candidates"} for row in rows]
+    flat_rows: list[dict[str, Any]] = []
+    for row in rows:
+        flat: dict[str, Any] = {}
+        for key, value in row.items():
+            if key == "candidates":
+                continue
+            if isinstance(value, (list, dict)):
+                flat[key] = json.dumps(value, ensure_ascii=False)
+            else:
+                flat[key] = value
+        flat_rows.append(flat)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(flat_rows[0].keys()))
         writer.writeheader()
@@ -193,7 +257,10 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
     for row in misses:
         lines.append(
             f"- `{row['id']}` oracle_rank=`{row['oracle_rank']}` target=`{row['target']}` "
-            f"top=`{row['top_prediction']}` steps=`{row['top_steps']}`"
+            f"top=`{row['top_prediction']}` oracle=`{row['oracle_prediction']}` "
+            f"top_oracle_hamming=`{row['top_oracle_hamming']}` "
+            f"top_ops=`{row['top_expression_ops']}` oracle_ops=`{row['oracle_expression_ops']}` "
+            f"steps=`{row['top_steps']}`"
         )
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -204,16 +271,25 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--beam-width", type=int, default=12)
     parser.add_argument("--max-depth", type=int, default=4)
+    parser.add_argument("--failure-class", help="Optional risk_class filter applied to diagnostic outputs.")
+    parser.add_argument("--subtype", default="bit_permutation", help="Optional subtype filter applied to outputs.")
+    parser.add_argument("--limit", type=int, help="Optional max rows after filters; use 0 for an empty smoke output.")
     parser.add_argument("--output-json", type=Path, default=Path("data/processed/bit_permutation_diagnostic.json"))
     parser.add_argument("--output-csv", type=Path, default=Path("data/processed/bit_permutation_diagnostic.csv"))
     parser.add_argument("--output-md", type=Path, default=Path("docs/bit_permutation_diagnostic_latest.md"))
     args = parser.parse_args()
 
-    rows = run_diagnostic(
+    all_rows = run_diagnostic(
         args.input or DEFAULT_INPUTS,
         top_k=args.top_k,
         beam_width=args.beam_width,
         max_depth=args.max_depth,
+    )
+    rows = filter_diagnostics(
+        all_rows,
+        failure_class=args.failure_class,
+        subtype=args.subtype,
+        limit=args.limit,
     )
     _write_json(
         args.output_json,
@@ -222,6 +298,10 @@ def main() -> None:
                 "top_k": args.top_k,
                 "beam_width": args.beam_width,
                 "max_depth": args.max_depth,
+                "failure_class": args.failure_class,
+                "subtype": args.subtype,
+                "limit": args.limit,
+                "num_rows_before_filters": len(all_rows),
             },
             "rows": rows,
         },
