@@ -17,6 +17,7 @@ present.
 | Chat-template SHA recheck | done | `python scripts/recheck_chat_template_sha16.py --output data/processed/recheck_chat_template_sha16.json` |
 | Answer-focused datasets | done | answer-only train/valid rows `4689/658`; short-trace train/valid rows `4689/658` |
 | Cross-platform answer-focused builder | done | `python scripts/build_stage2_answer_focused_data.py --dry-run` resolves parent data on Windows |
+| No-GPU readiness gate | done | `make no-gpu-readiness` runs the full local pre-GPU gate and writes `data/processed/no_gpu_readiness_gate.json` |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10694 rows, bad `0` |
 | Fast local tests | done | `23 passed, 1 skipped` for diagnostic/cloud/shell/tokenizer tests |
 | Full local tests | done | `python -m pytest -q` -> `449 passed, 9 skipped` |
@@ -37,6 +38,10 @@ present.
 - `scripts/build_stage2_answer_focused_data.py` is now the canonical
   cross-platform entrypoint for answer-only and short-trace data preparation.
   The `.sh` file remains a thin Linux wrapper.
+- `scripts/run_no_gpu_readiness_gate.py` is now the canonical pre-GPU local
+  gate. It regenerates canonical reports, runs local checks and tests, records
+  known non-blocking teacher-provenance evidence gaps, and fails if tracked
+  reports drift.
 
 ## Current Solver Read
 
@@ -77,6 +82,18 @@ available or the dataset is rebuilt with provenance.
 ## Next GPU Boot
 
 Use GPU only for vLLM generation. Do not train first.
+
+Before starting any paid machine, run the local readiness gate and review the
+JSON report:
+
+```bash
+make no-gpu-readiness
+```
+
+Proceed only when `ready_for_gpu` is `true`. A known
+`teacher_gate_extractor_parity` `insufficient_evidence` blocker is acceptable
+for the next inference-only boot; tracked report drift is not acceptable and
+must be reviewed and committed first.
 
 ```bash
 cd /workspace/nivida_h200_run

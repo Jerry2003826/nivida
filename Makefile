@@ -1,6 +1,6 @@
 PYTHON ?= python
 
-.PHONY: test prepare baseline family-report dry-train probe-submission-size probe-submission-size-trained final-acceptance
+.PHONY: test prepare baseline family-report dry-train probe-submission-size probe-submission-size-trained final-acceptance no-gpu-readiness
 
 test:
 	$(PYTHON) -m pytest -q
@@ -34,3 +34,6 @@ probe-submission-size-trained:
 
 final-acceptance:
 	$(PYTHON) scripts/run_local_final_acceptance.py
+
+no-gpu-readiness:
+	$(PYTHON) scripts/run_no_gpu_readiness_gate.py --mode full
