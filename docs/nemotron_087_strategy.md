@@ -56,8 +56,8 @@ future gains.
 Symbolic equation templates previously mislabeled as `equation_position`
 
 - `combined_balanced_48pf`: 0.0256 query accuracy
-- `proxy_all_balanced_64pf`: 0.0833
-- `hard_triad_full`: 0.0777
+- `proxy_all_balanced_64pf`: 0.0652
+- `hard_triad_full`: 0.0737
 - support-full is near 1.0, so the search is overfitting demonstrations.
 
 This is the clearest system-cracking target.
@@ -73,6 +73,18 @@ tagger only uses `equation_position` when output characters can be supplied by
 the paired input. Literal-introducing outputs are now `equation_template`; on
 the current hard-triad manifest, audit retagging moves 190 / 193 old position
 rows to template-like.
+
+The latest equation-template diagnostic makes the next bottleneck clearer:
+across the three local manifests, only 18 / 275 rows are top-1 correct and only
+21 / 275 are oracle-at-10. The hard-triad slice is similar: 14 / 190 top-1 and
+16 / 190 oracle-at-10. Most misses are `operator_gap_oracle_miss`, so pure
+reranking cannot solve the bulk of this subtype; the operator/template search
+space itself needs expansion.
+
+Strict stage2 trace selection now rejects `equation_template` traces labeled as
+`ranker_miss_oracle_hit`, `operator_gap_oracle_miss`, or
+`unseen_literal_high_risk`. Those samples can still be used as answer-only
+silver supervision, but not as chain-of-thought/rationale traces.
 
 Numeric equations are a smaller but cleaner target. Query-aware operator priors
 and lookup fallbacks lifted `hard_triad_full` `equation_numeric` from `0.4500`
@@ -115,11 +127,13 @@ Use the audit output:
 
 ```bash
 python scripts/audit_solver_coverage.py
+python scripts/diagnose_equation_template.py
 ```
 
 Then open:
 
 - `docs/solver_coverage_audit_latest.md`
+- `docs/equation_template_diagnostic_latest.md`
 - `data/processed/solver_coverage_records.csv`
 
 Start with:
@@ -130,10 +144,11 @@ subtype = equation_template
 ```
 
 The next engineering target is a stricter symbolic-equation template
-verifier/ranker that detects underconstrained query paths, not just perfect
-support fit. Labeled examples now record whether the solver's query prediction
-matches the known target; strict stage2 trace selection rejects query-mismatch
-traces so wrong support-fitting programs do not become training rationales.
+operator expansion plus verifier/ranker that detects underconstrained query
+paths, not just perfect support fit. Labeled examples now record whether the
+solver's query prediction matches the known target; strict stage2 trace
+selection rejects query-mismatch and high-risk template traces so wrong
+support-fitting programs do not become training rationales.
 
 ## Training Policy
 

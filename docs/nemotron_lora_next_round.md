@@ -25,6 +25,8 @@ python scripts/audit_solver_coverage.py
 ```
 
 The markdown report is written to `docs/solver_coverage_audit_latest.md`.
+The equation-template diagnostic report is written to
+`docs/equation_template_diagnostic_latest.md`.
 
 Current audit summary:
 
@@ -43,10 +45,24 @@ Prioritize solver work in this order:
 2. `bit_permutation`
 3. residual `cipher_char_sub`
 
+For `equation_template`, the current diagnostic is blunt: across
+`combined_balanced_48pf`, `proxy_all_balanced_64pf`, and `hard_triad_full`,
+only 18 / 275 rows are top-1 correct and only 21 / 275 are oracle-at-10. On
+`hard_triad_full`, only 16 / 190 have a correct candidate in the top 10. This
+means the next useful local change is not just a better ranker; it is broader
+template/operator generation plus a verifier that can reject underconstrained
+support-perfect programs.
+
 Stage2 trace selection is now query-aware on labeled data. If a solver fits all
 support examples but its query prediction disagrees with the known target, the
 sample is rejected from the strict trace bucket and can only enter as
 answer-only silver supervision when that pool is enabled.
+
+Stage2 strict selection also rejects high-risk `equation_template` traces when
+the diagnostic labels them as `ranker_miss_oracle_hit`,
+`operator_gap_oracle_miss`, or `unseen_literal_high_risk`. This keeps bad
+template rationales out of trace training while still allowing the final answer
+to be used in answer-only variants.
 
 For cipher char-substitution prompts, chain search now prefers
 `vocabulary_cipher` before raw `fixed_substitution`. This lets the solver
@@ -75,6 +91,7 @@ Build fixed labeled manifests:
 
 ```bash
 python scripts/build_local_eval_manifests.py
+python scripts/diagnose_equation_template.py
 ```
 
 Main manifest:
