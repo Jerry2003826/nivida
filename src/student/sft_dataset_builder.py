@@ -1056,6 +1056,77 @@ def summarise_selected_sft(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _is_official_equation_template(example: PuzzleExample) -> bool:
+    return (
+        _source_kind(example) == "official"
+        and _metadata_value(example, "official_family") == "equation"
+        and _metadata_value(example, "subtype") == "equation_template"
+    )
+
+
+def _template_risk_class(example: PuzzleExample) -> str:
+    risk_class = (example.metadata.extras or {}).get("template_risk_class")
+    return str(risk_class) if risk_class else "missing"
+
+
+def _sorted_counter(counter: Counter[str]) -> dict[str, int]:
+    return dict(sorted(counter.items()))
+
+
+def _summarise_template_risk_diagnostics(
+    annotated: list[PuzzleExample],
+    *,
+    selected_strict: list[PuzzleExample],
+    silver_selected: list[PuzzleExample],
+    rejection_reasons_by_object: dict[int, str],
+) -> dict[str, Any]:
+    official_templates = [
+        example for example in annotated if _is_official_equation_template(example)
+    ]
+    strict_ids = {id(example) for example in selected_strict}
+    silver_ids = {id(example) for example in silver_selected}
+
+    by_risk_class: Counter[str] = Counter()
+    strict_by_risk_class: Counter[str] = Counter()
+    silver_by_risk_class: Counter[str] = Counter()
+    rejected_by_risk_class: Counter[str] = Counter()
+    high_risk_rejections_by_risk_class: Counter[str] = Counter()
+    rejection_reason_by_risk_class: dict[str, Counter[str]] = {}
+
+    for example in official_templates:
+        risk_class = _template_risk_class(example)
+        by_risk_class[risk_class] += 1
+        if id(example) in strict_ids:
+            strict_by_risk_class[risk_class] += 1
+        if id(example) in silver_ids:
+            silver_by_risk_class[risk_class] += 1
+        reason = rejection_reasons_by_object.get(id(example))
+        if reason:
+            rejected_by_risk_class[risk_class] += 1
+            reason_bucket = rejection_reason_by_risk_class.setdefault(
+                reason, Counter()
+            )
+            reason_bucket[risk_class] += 1
+            if reason == "high_risk_template_trace":
+                high_risk_rejections_by_risk_class[risk_class] += 1
+
+    return {
+        "num_official_equation_template": len(official_templates),
+        "by_risk_class": _sorted_counter(by_risk_class),
+        "accepted_strict_by_risk_class": _sorted_counter(strict_by_risk_class),
+        "accepted_silver_by_risk_class": _sorted_counter(silver_by_risk_class),
+        "rejected_by_risk_class": _sorted_counter(rejected_by_risk_class),
+        "high_risk_trace_classes": sorted(HIGH_RISK_TEMPLATE_TRACE_CLASSES),
+        "high_risk_trace_rejections_by_risk_class": _sorted_counter(
+            high_risk_rejections_by_risk_class
+        ),
+        "rejection_reason_by_risk_class": {
+            reason: _sorted_counter(risk_counts)
+            for reason, risk_counts in sorted(rejection_reason_by_risk_class.items())
+        },
+    }
+
+
 def _mark_stage3_record(
     record: dict[str, Any],
     *,
@@ -1180,6 +1251,7 @@ def build_selected_sft_with_report(
     # Phase 1: strict official + silver candidates + rejection diagnostics
     selected_strict: list[PuzzleExample] = []
     rejection_counter: dict[str, dict[str, int]] = {}
+    rejection_reasons_by_object: dict[int, str] = {}
     silver_candidates_by_family: dict[str, list[PuzzleExample]] = {
         family: [] for family in STAGE2_SILVER_FAMILY_PRIORITY
     }
@@ -1192,6 +1264,7 @@ def build_selected_sft_with_report(
             continue
         family = str(_metadata_value(example, "official_family") or "unknown")
         if reason is not None:
+            rejection_reasons_by_object[id(example)] = reason
             bucket = rejection_counter.setdefault(family, {})
             bucket[reason] = bucket.get(reason, 0) + 1
         if enable_silver_official and family in silver_candidates_by_family:
@@ -1298,6 +1371,12 @@ def build_selected_sft_with_report(
             "rescue_hint_transitions", {}
         ),
     }
+    template_risk_diagnostics = _summarise_template_risk_diagnostics(
+        annotated,
+        selected_strict=selected_strict,
+        silver_selected=silver_selected,
+        rejection_reasons_by_object=rejection_reasons_by_object,
+    )
 
     return {
         "records": ordered,
@@ -1312,6 +1391,7 @@ def build_selected_sft_with_report(
         },
         "rescue_diagnostics": rescue_diagnostics,
         "subtype_hint_diagnostics": merged_subtype_hint_diagnostics,
+        "template_risk_diagnostics": template_risk_diagnostics,
     }
 
 
@@ -1769,6 +1849,7 @@ def main() -> None:
         report["official_rejection_diagnostics"] = stage2_bundle["official_rejection_diagnostics"]
         report["rescue_diagnostics"] = stage2_bundle["rescue_diagnostics"]
         report["subtype_hint_diagnostics"] = stage2_bundle["subtype_hint_diagnostics"]
+        report["template_risk_diagnostics"] = stage2_bundle["template_risk_diagnostics"]
         default_output = "data/processed/stage2_distill.jsonl"
     else:
         if not args.repair_artifact:

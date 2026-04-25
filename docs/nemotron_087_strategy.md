@@ -98,7 +98,10 @@ Strict stage2 trace selection now rejects `equation_template` traces labeled as
 still be used as answer-only silver supervision, but not as
 chain-of-thought/rationale traces.
 Stage2 annotation now computes this template risk class automatically, so the
-gate no longer depends on a manually pre-attached diagnostic field.
+gate no longer depends on a manually pre-attached diagnostic field. Stage2
+reports now expose `template_risk_diagnostics` so we can see which
+`equation_template` risk classes were accepted, silvered, or blocked by the
+strict trace gate.
 
 Numeric equations are a smaller but cleaner target. Query-aware operator priors
 and lookup fallbacks lifted `hard_triad_full` `equation_numeric` from `0.4500`

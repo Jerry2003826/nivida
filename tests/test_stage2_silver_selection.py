@@ -381,6 +381,56 @@ def test_rejection_diagnostics_reports_per_family_reason(monkeypatch: pytest.Mon
     assert diagnostics["bit"]["partial_support_coverage"] == 1
 
 
+def test_template_risk_diagnostics_reports_gate_effect(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_annotate_identity(monkeypatch)
+    low_risk = _example(
+        "template_low_risk",
+        family="equation",
+        signature="sig-low-risk",
+        query="a*b",
+        target="ab",
+    )
+    low_risk.metadata.subtype = "equation_template"
+    low_risk.metadata.extras["template_risk_class"] = "low_risk_support_stable"
+
+    high_risk = _example(
+        "template_high_risk",
+        family="equation",
+        signature="sig-high-risk",
+        query="a*b",
+        target="X",
+    )
+    high_risk.metadata.subtype = "equation_template"
+    high_risk.metadata.extras["template_risk_class"] = "unseen_literal_high_risk"
+
+    bundle = build_selected_sft_with_report(
+        [low_risk, high_risk],
+        prompt_mode=builder.PROMPT_MODE_GENERIC,
+        balance_by_family=False,
+        hard_triad_repeat_factor=1,
+        max_per_signature_bucket=0,
+    )
+
+    diagnostics = bundle["template_risk_diagnostics"]
+    assert diagnostics["num_official_equation_template"] == 2
+    assert diagnostics["by_risk_class"] == {
+        "low_risk_support_stable": 1,
+        "unseen_literal_high_risk": 1,
+    }
+    assert diagnostics["accepted_strict_by_risk_class"] == {
+        "low_risk_support_stable": 1
+    }
+    assert diagnostics["rejected_by_risk_class"] == {
+        "unseen_literal_high_risk": 1
+    }
+    assert diagnostics["high_risk_trace_rejections_by_risk_class"] == {
+        "unseen_literal_high_risk": 1
+    }
+    assert diagnostics["rejection_reason_by_risk_class"] == {
+        "high_risk_template_trace": {"unseen_literal_high_risk": 1}
+    }
+
+
 def test_selection_counts_structure(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_annotate_identity(monkeypatch)
     bundle = build_selected_sft_with_report(
