@@ -12,6 +12,7 @@ from src.competition.harness_prompt import (
     build_chat_thinking_prompt,
     wrap_as_thinking,
 )
+from src.competition.metrics import competition_correct
 from src.competition.prompt_templates import (
     PROMPT_MODE_CHAT_THINKING,
     PROMPT_MODE_GENERIC,
@@ -106,13 +107,100 @@ def _annotate_examples(
     apply_family_tags(examples)
     engine = ChainSearchEngine(beam_width=beam_width, max_depth=max_depth)
     for example in examples:
-        if example.metadata.program_signature and example.metadata.teacher_confidence is not None:
+        has_existing_annotation = (
+            example.metadata.program_signature
+            and example.metadata.teacher_confidence is not None
+        )
+        needs_labeled_oracle_rescore = (
+            has_existing_annotation
+            and _should_promote_labeled_oracle(example)
+            and (example.metadata.extras or {}).get("query_solver_correct") is False
+        )
+        if has_existing_annotation and not needs_labeled_oracle_rescore:
             _annotate_equation_template_risk(example)
             continue
         candidates = engine.solve_example(example, top_k=top_k)
+        candidates, promotion_metadata = _promote_labeled_oracle_candidate(
+            example, candidates
+        )
         annotate_example_from_candidates(example, candidates)
+        if promotion_metadata:
+            example.metadata.extras = {
+                **dict(example.metadata.extras or {}),
+                **promotion_metadata,
+            }
         _annotate_equation_template_risk(example)
     return examples
+
+
+def _candidate_support_full(candidate: Any, example: PuzzleExample) -> bool:
+    predictions = list(getattr(candidate, "predictions", []) or [])
+    if len(predictions) != len(example.parsed_examples):
+        return False
+    return all(
+        competition_correct(str(prediction), str(pair.output))
+        for prediction, pair in zip(predictions, example.parsed_examples)
+    )
+
+
+def _candidate_query_correct(candidate: Any, example: PuzzleExample) -> bool:
+    if example.target_answer in (None, ""):
+        return False
+    query_prediction = getattr(candidate, "query_prediction", None)
+    if query_prediction is None:
+        return False
+    return competition_correct(str(query_prediction), str(example.target_answer))
+
+
+def _candidate_step_names(candidate: Any) -> list[str]:
+    return [str(getattr(step, "op_name", "")) for step in getattr(candidate, "steps", [])]
+
+
+def _should_promote_labeled_oracle(example: PuzzleExample) -> bool:
+    if _source_kind(example) != "official":
+        return False
+    if example.target_answer in (None, "") or not example.query:
+        return False
+    family = _metadata_value(example, "official_family")
+    if family not in HARD_TRIAD_FAMILIES:
+        return False
+    # Symbolic template oracle hits are not safe trace supervision: the target
+    # often picks among underdetermined templates rather than proving a rule.
+    if (
+        family == "equation"
+        and _metadata_value(example, "subtype") == "equation_template"
+    ):
+        return False
+    return True
+
+
+def _promote_labeled_oracle_candidate(
+    example: PuzzleExample,
+    candidates: list[Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    if not candidates or not _should_promote_labeled_oracle(example):
+        return candidates, {}
+    top = candidates[0]
+    if _candidate_support_full(top, example) and _candidate_query_correct(top, example):
+        return candidates, {}
+
+    for rank, candidate in enumerate(candidates[1:], start=2):
+        if not _candidate_support_full(candidate, example):
+            continue
+        if not _candidate_query_correct(candidate, example):
+            continue
+        promoted = [candidate, *candidates[: rank - 1], *candidates[rank:]]
+        return promoted, {
+            "labeled_oracle_candidate_promoted": True,
+            "labeled_oracle_candidate_rank": rank,
+            "labeled_oracle_original_top_prediction": (
+                None
+                if getattr(top, "query_prediction", None) is None
+                else str(getattr(top, "query_prediction"))
+            ),
+            "labeled_oracle_original_top_steps": _candidate_step_names(top),
+        }
+    return candidates, {}
 
 
 def _template_target_expressibility(example: PuzzleExample) -> dict[str, bool]:
@@ -517,7 +605,15 @@ def _rescue_official_hard_triad_examples(
                     hint = None
 
         candidates = engine.solve_example(example, top_k=top_k)
+        candidates, promotion_metadata = _promote_labeled_oracle_candidate(
+            example, candidates
+        )
         annotate_example_from_candidates(example, candidates)
+        if promotion_metadata:
+            example.metadata.extras = {
+                **dict(example.metadata.extras or {}),
+                **promotion_metadata,
+            }
         new_quality = _annotation_quality_tuple(example)
 
         if new_quality > old_quality:
@@ -1127,6 +1223,41 @@ def _summarise_template_risk_diagnostics(
     }
 
 
+def _summarise_labeled_oracle_diagnostics(
+    annotated: list[PuzzleExample],
+) -> dict[str, Any]:
+    promoted = [
+        example
+        for example in annotated
+        if bool((example.metadata.extras or {}).get("labeled_oracle_candidate_promoted"))
+    ]
+    by_family = Counter(
+        str(_metadata_value(example, "official_family") or "unknown")
+        for example in promoted
+    )
+    by_subtype = Counter(
+        (
+            f"{_metadata_value(example, 'official_family') or 'unknown'}:"
+            f"{_metadata_value(example, 'subtype') or 'unknown'}"
+        )
+        for example in promoted
+    )
+    by_rank = Counter(
+        str(
+            (example.metadata.extras or {}).get(
+                "labeled_oracle_candidate_rank", "unknown"
+            )
+        )
+        for example in promoted
+    )
+    return {
+        "promoted": len(promoted),
+        "by_family": _sorted_counter(by_family),
+        "by_subtype": _sorted_counter(by_subtype),
+        "by_original_rank": _sorted_counter(by_rank),
+    }
+
+
 def _mark_stage3_record(
     record: dict[str, Any],
     *,
@@ -1377,6 +1508,7 @@ def build_selected_sft_with_report(
         silver_selected=silver_selected,
         rejection_reasons_by_object=rejection_reasons_by_object,
     )
+    labeled_oracle_diagnostics = _summarise_labeled_oracle_diagnostics(annotated)
 
     return {
         "records": ordered,
@@ -1392,6 +1524,7 @@ def build_selected_sft_with_report(
         "rescue_diagnostics": rescue_diagnostics,
         "subtype_hint_diagnostics": merged_subtype_hint_diagnostics,
         "template_risk_diagnostics": template_risk_diagnostics,
+        "labeled_oracle_diagnostics": labeled_oracle_diagnostics,
     }
 
 
@@ -1850,6 +1983,7 @@ def main() -> None:
         report["rescue_diagnostics"] = stage2_bundle["rescue_diagnostics"]
         report["subtype_hint_diagnostics"] = stage2_bundle["subtype_hint_diagnostics"]
         report["template_risk_diagnostics"] = stage2_bundle["template_risk_diagnostics"]
+        report["labeled_oracle_diagnostics"] = stage2_bundle["labeled_oracle_diagnostics"]
         default_output = "data/processed/stage2_distill.jsonl"
     else:
         if not args.repair_artifact:

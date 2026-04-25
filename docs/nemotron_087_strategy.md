@@ -107,6 +107,15 @@ Numeric equations are a smaller but cleaner target. Query-aware operator priors
 and lookup fallbacks lifted `hard_triad_full` `equation_numeric` from `0.4500`
 to `0.5750` without hurting the other families.
 
+For labeled official hard-triad rows, stage2 annotation now promotes a
+support-full top-k candidate when its query prediction matches the known target.
+This turns ranker-miss/oracle-hit rows, especially `bit_permutation`, into
+usable strict traces instead of throwing them away because top1 overfit support.
+The exception is symbolic `equation_template`, where oracle hits remain too
+underdetermined for strict trace training.
+A local `combined_balanced_48pf` bit-permutation smoke recovered 9 / 48 rows,
+raising query-correct annotation coverage from 15 / 48 to 24 / 48.
+
 ### Tier 2
 
 `cipher_char_sub`

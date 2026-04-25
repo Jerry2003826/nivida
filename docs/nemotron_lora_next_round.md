@@ -69,6 +69,16 @@ Stage2 trace selection is now query-aware on labeled data. If a solver fits all
 support examples but its query prediction disagrees with the known target, the
 sample is rejected from the strict trace bucket and can only enter as
 answer-only silver supervision when that pool is enabled.
+For labeled official hard-triad rows, stage2 annotation now first promotes a
+support-full top-k candidate whose query prediction matches the known target
+before writing the trace. This recovers ranker-miss/oracle-hit bit and cipher
+rows without changing hidden-test behavior. Symbolic `equation_template` rows
+are excluded from this promotion because those oracle hits are usually
+underdetermined template choices, not safe trace supervision. The stage2 report
+records these changes under `labeled_oracle_diagnostics`.
+On the local `combined_balanced_48pf` bit-permutation smoke, this promotes
+9 / 48 rows and raises query-correct annotation coverage from 15 / 48 to
+24 / 48.
 
 Stage2 strict selection also rejects high-risk `equation_template` traces when
 the diagnostic labels them as `ranker_miss_oracle_hit`,

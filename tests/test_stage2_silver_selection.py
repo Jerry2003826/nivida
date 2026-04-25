@@ -7,6 +7,7 @@ from src.competition.schema import PuzzleExample, PuzzleMetadata, PuzzlePair
 from src.student import sft_dataset_builder as builder
 from src.student.sft_dataset_builder import (
     _annotate_equation_template_risk,
+    _promote_labeled_oracle_candidate,
     _select_official_stage2_silver,
     _select_official_stage2_strict,
     build_selected_sft_with_report,
@@ -51,6 +52,28 @@ def _example(
             extras=extras,
         ),
     )
+
+
+def _candidate(
+    *,
+    prediction: str,
+    support_predictions: list[str] | None = None,
+    op_name: str = "fake_op",
+) -> object:
+    step = type("Step", (), {"op_name": op_name, "params": {}})()
+    return type(
+        "Candidate",
+        (),
+        {
+            "steps": [step],
+            "predictions": support_predictions
+            or ["one", "two", "three"],
+            "query_prediction": prediction,
+            "score": 1.0,
+            "confidence": 0.9,
+            "debug": {},
+        },
+    )()
 
 
 # --- gate-level tests ---------------------------------------------------------
@@ -133,6 +156,87 @@ def test_template_risk_annotation_marks_unseen_key_template_miss() -> None:
 
     assert example.metadata.extras["template_risk_class"] == "unseen_key_template_miss"
     assert example.metadata.extras["template_target_expressible"] is True
+
+
+def test_labeled_oracle_candidate_promotes_hard_triad_support_full_hit() -> None:
+    example = _example(
+        "bit_oracle_promote",
+        family="bit",
+        target="101",
+        query="010",
+    )
+    example.metadata.subtype = "bit_permutation"
+    wrong_top = _candidate(prediction="000", op_name="binary_boolean_expr")
+    correct_second = _candidate(prediction="101", op_name="binary_affine_transform")
+
+    promoted, metadata = _promote_labeled_oracle_candidate(
+        example, [wrong_top, correct_second]
+    )
+
+    assert promoted[0] is correct_second
+    assert promoted[1] is wrong_top
+    assert metadata["labeled_oracle_candidate_promoted"] is True
+    assert metadata["labeled_oracle_candidate_rank"] == 2
+    assert metadata["labeled_oracle_original_top_prediction"] == "000"
+    assert metadata["labeled_oracle_original_top_steps"] == ["binary_boolean_expr"]
+
+
+def test_labeled_oracle_candidate_does_not_promote_equation_template() -> None:
+    example = _example(
+        "template_oracle_not_promote",
+        family="equation",
+        target="gold",
+        query="q",
+    )
+    example.metadata.subtype = "equation_template"
+    wrong_top = _candidate(prediction="wrong")
+    correct_second = _candidate(prediction="gold")
+
+    promoted, metadata = _promote_labeled_oracle_candidate(
+        example, [wrong_top, correct_second]
+    )
+
+    assert promoted == [wrong_top, correct_second]
+    assert metadata == {}
+
+
+def test_annotation_rescores_existing_query_mismatch_for_labeled_oracle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    example = _example(
+        "bit_existing_mismatch",
+        family="bit",
+        signature="old-sig",
+        target="101",
+        query="010",
+    )
+    example.metadata.subtype = "bit_permutation"
+    example.metadata.extras["query_solver_correct"] = False
+
+    class _FakeEngine:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def solve_example(self, _example, *, top_k: int):
+            assert top_k == 2
+            return [
+                _candidate(prediction="000", op_name="binary_boolean_expr"),
+                _candidate(prediction="101", op_name="binary_affine_transform"),
+            ]
+
+    monkeypatch.setattr(builder, "ChainSearchEngine", _FakeEngine)
+
+    annotated = builder._annotate_examples(
+        [example],
+        beam_width=1,
+        max_depth=1,
+        top_k=2,
+    )[0]
+
+    assert annotated.metadata.extras["query_prediction"] == "101"
+    assert annotated.metadata.extras["query_solver_correct"] is True
+    assert annotated.metadata.extras["labeled_oracle_candidate_promoted"] is True
+    assert annotated.metadata.extras["labeled_oracle_candidate_rank"] == 2
 
 
 def test_silver_gate_only_accepts_hard_triad() -> None:
@@ -429,6 +533,38 @@ def test_template_risk_diagnostics_reports_gate_effect(monkeypatch: pytest.Monke
     assert diagnostics["rejection_reason_by_risk_class"] == {
         "high_risk_template_trace": {"unseen_literal_high_risk": 1}
     }
+
+
+def test_labeled_oracle_diagnostics_reports_promotions(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_annotate_identity(monkeypatch)
+    promoted = _example(
+        "bit_promoted",
+        family="bit",
+        signature="sig-promoted",
+        query="010",
+        target="101",
+    )
+    promoted.metadata.subtype = "bit_permutation"
+    promoted.metadata.extras.update(
+        {
+            "labeled_oracle_candidate_promoted": True,
+            "labeled_oracle_candidate_rank": 3,
+        }
+    )
+
+    bundle = build_selected_sft_with_report(
+        [promoted, _example("cipher_plain", family="cipher")],
+        prompt_mode=builder.PROMPT_MODE_GENERIC,
+        balance_by_family=False,
+        hard_triad_repeat_factor=1,
+        max_per_signature_bucket=0,
+    )
+
+    diagnostics = bundle["labeled_oracle_diagnostics"]
+    assert diagnostics["promoted"] == 1
+    assert diagnostics["by_family"] == {"bit": 1}
+    assert diagnostics["by_subtype"] == {"bit:bit_permutation": 1}
+    assert diagnostics["by_original_rank"] == {"3": 1}
 
 
 def test_selection_counts_structure(monkeypatch: pytest.MonkeyPatch) -> None:
