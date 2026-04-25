@@ -9,6 +9,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST_DIR = Path("data/processed/local_eval_manifests")
+AUTO_BASELINE_PRIORITY = (
+    "adapter_stage2_thin_official_balanced_20260424_161110Z",
+    "official_balanced_20260424_161110Z",
+    "official_balanced",
+    "b_thin",
+)
 
 
 def _parse_name_path(value: str) -> tuple[str, Path]:
@@ -44,6 +50,36 @@ def _discover_raw_predictions(root: Path, eval_filter: set[str] | None) -> dict[
 
 def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+
+
+def _select_baseline(reports: dict[str, Path], requested: str) -> tuple[str, str]:
+    if requested != "auto":
+        if requested not in reports:
+            raise ValueError(
+                f"Requested baseline {requested!r} not found. Available models: {', '.join(sorted(reports))}"
+            )
+        return requested, "explicit"
+
+    for preferred in AUTO_BASELINE_PRIORITY:
+        if preferred in reports:
+            return preferred, f"auto exact match: {preferred}"
+
+    official_final = sorted(
+        model
+        for model in reports
+        if "official_balanced" in model and "_ckpt_" not in model
+    )
+    if official_final:
+        return official_final[-1], "auto official-balanced final adapter"
+
+    official_any = sorted(model for model in reports if "official_balanced" in model)
+    if official_any:
+        return official_any[-1], "auto official-balanced checkpoint fallback"
+
+    if "b_thin" in reports:
+        return "b_thin", "auto b_thin fallback"
+
+    return next(iter(reports)), "auto first available fallback"
 
 
 def _score_one(
@@ -84,10 +120,10 @@ def _rank_eval(
     reports: dict[str, Path],
     baseline: str,
     output_root: Path,
-) -> Path | None:
+) -> dict[str, str] | None:
     if not reports:
         return None
-    baseline_name = baseline if baseline in reports else next(iter(reports))
+    baseline_name, baseline_reason = _select_baseline(reports, baseline)
     output_dir = output_root / eval_name
     cmd = [
         sys.executable,
@@ -104,7 +140,11 @@ def _rank_eval(
     for model, report_path in sorted(reports.items()):
         cmd.extend(["--report", f"{model}={report_path}"])
     _run(cmd)
-    return output_dir / "ranking.json"
+    return {
+        "baseline": baseline_name,
+        "baseline_reason": baseline_reason,
+        "ranking": str(output_dir / "ranking.json"),
+    }
 
 
 def main() -> None:
@@ -115,7 +155,11 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, default=Path("data/processed/eval/vllm_exact_eval_v3"))
     parser.add_argument("--label", action="append", type=_parse_name_path, default=[])
     parser.add_argument("--eval-name", action="append", help="Optional eval set filter. Repeatable.")
-    parser.add_argument("--baseline", default="b_thin")
+    parser.add_argument(
+        "--baseline",
+        default="auto",
+        help="Baseline model name, or 'auto' to prefer official-balanced final then b_thin.",
+    )
     parser.add_argument("--prediction-key", default="generation")
     args = parser.parse_args()
 
@@ -141,12 +185,13 @@ def main() -> None:
                 output_dir=args.output_root / eval_name / model,
                 prediction_key=args.prediction_key,
             )
-        ranking_path = _rank_eval(
+        ranking_info = _rank_eval(
             eval_name=eval_name,
             reports=reports,
             baseline=args.baseline,
             output_root=args.output_root,
         )
+        ranking_path = None if ranking_info is None else Path(ranking_info["ranking"])
         ranking = None if ranking_path is None else _load_json(ranking_path)
         submit_candidate = None
         if ranking:
@@ -158,6 +203,8 @@ def main() -> None:
             "labels": str(label_path),
             "reports": {model: str(path) for model, path in sorted(reports.items())},
             "ranking": None if ranking_path is None else str(ranking_path),
+            "baseline": None if ranking_info is None else ranking_info["baseline"],
+            "baseline_reason": None if ranking_info is None else ranking_info["baseline_reason"],
             "submit_candidate": submit_candidate,
         }
 

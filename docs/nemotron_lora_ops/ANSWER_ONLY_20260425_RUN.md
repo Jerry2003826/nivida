@@ -127,6 +127,5 @@ Local scoring after pulling `data/processed/vllm_exact_eval_v3`:
 ```bash
 python scripts/score_vllm_exact_eval_outputs.py \
   --predictions-root data/processed/vllm_exact_eval_v3 \
-  --output-root data/processed/eval/vllm_exact_eval_v3 \
-  --baseline b_thin
+  --output-root data/processed/eval/vllm_exact_eval_v3
 ```

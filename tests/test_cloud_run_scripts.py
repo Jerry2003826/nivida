@@ -96,6 +96,59 @@ def test_score_vllm_exact_eval_outputs_smoke(tmp_path: Path) -> None:
     assert ranking["rows"][0]["model"] == "answer_final"
 
 
+def test_score_vllm_exact_eval_outputs_auto_prefers_official_balanced(tmp_path: Path) -> None:
+    predictions_root = tmp_path / "vllm"
+    label_path = tmp_path / "labels.jsonl"
+    output_root = tmp_path / "scored"
+
+    label_rows = [
+        {"id": "a", "target_answer": "1", "official_family": "logic", "subtype": "toy"},
+        {"id": "b", "target_answer": "2", "official_family": "logic", "subtype": "toy"},
+        {"id": "c", "target_answer": "3", "official_family": "logic", "subtype": "toy"},
+    ]
+    label_path.write_text(
+        "\n".join(json.dumps(row) for row in label_rows) + "\n",
+        encoding="utf-8",
+    )
+
+    for model, generations in {
+        "b_thin": [r"\boxed{1}", r"\boxed{0}", r"\boxed{0}"],
+        "official_balanced": [r"\boxed{1}", r"\boxed{2}", r"\boxed{0}"],
+        "answer_final": [r"\boxed{1}", r"\boxed{2}", r"\boxed{3}"],
+    }.items():
+        raw_dir = predictions_root / "smoke" / model / "raw"
+        raw_dir.mkdir(parents=True)
+        raw_dir.joinpath("repeat_0.jsonl").write_text(
+            "\n".join(
+                json.dumps({"id": row["id"], "generation": generation})
+                for row, generation in zip(label_rows, generations)
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/score_vllm_exact_eval_outputs.py",
+            "--predictions-root",
+            str(predictions_root),
+            "--output-root",
+            str(output_root),
+            "--label",
+            f"smoke={label_path}",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+
+    manifest = json.loads((output_root / "score_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["evals"]["smoke"]["baseline"] == "official_balanced"
+    assert manifest["evals"]["smoke"]["submit_candidate"] == "answer_final"
+    ranking = json.loads((output_root / "smoke" / "ranking.json").read_text(encoding="utf-8"))
+    assert ranking["baseline"] == "official_balanced"
+
+
 def test_vllm_preflight_checks_torch_abi_requirement() -> None:
     text = _script("check_cloud_vllm_env.sh")
     assert 'md.metadata(name).get_all("Requires-Dist")' in text

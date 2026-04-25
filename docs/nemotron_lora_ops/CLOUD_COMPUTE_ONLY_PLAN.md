@@ -104,8 +104,7 @@ python tools/evaluate_predictions_exact.py \
 
 python scripts/score_vllm_exact_eval_outputs.py \
   --predictions-root data/processed/vllm_exact_eval_v3 \
-  --output-root data/processed/eval/vllm_exact_eval_v3 \
-  --baseline b_thin
+  --output-root data/processed/eval/vllm_exact_eval_v3
 ```
 
 ## Stop Criteria
