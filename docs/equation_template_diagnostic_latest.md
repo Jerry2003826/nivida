@@ -2,15 +2,18 @@
 
 | manifest | risk_class | n | top1_acc | oracle_at_k | target_expressible | unseen_literal_rows |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl` | expressible_oracle_miss | 4 | 0.5000 | 0.5000 | 1.0000 | 0 |
-| `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl` | operator_gap_oracle_miss | 6 | 0.0000 | 0.0000 | 0.0000 | 0 |
-| `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl` | unseen_key_template_miss | 22 | 0.0000 | 0.0000 | 1.0000 | 0 |
-| `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl` | unseen_literal_high_risk | 7 | 0.0000 | 0.0000 | 0.8571 | 7 |
-| `data\processed\local_eval_manifests\hard_triad_full.jsonl` | expressible_oracle_miss | 20 | 0.6000 | 0.6000 | 1.0000 | 0 |
-| `data\processed\local_eval_manifests\hard_triad_full.jsonl` | low_risk_support_stable | 5 | 1.0000 | 1.0000 | 1.0000 | 0 |
-| `data\processed\local_eval_manifests\hard_triad_full.jsonl` | operator_gap_oracle_miss | 43 | 0.0000 | 0.0000 | 0.0000 | 0 |
-| `data\processed\local_eval_manifests\hard_triad_full.jsonl` | unseen_key_template_miss | 94 | 0.0000 | 0.0000 | 1.0000 | 0 |
-| `data\processed\local_eval_manifests\hard_triad_full.jsonl` | unseen_literal_high_risk | 28 | 0.0000 | 0.0000 | 0.7500 | 28 |
+| `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl` | expressible_oracle_miss | 6 | 0.5000 | 0.5000 | 1.0000 | 0 |
+| `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl` | low_risk_support_stable | 1 | 1.0000 | 1.0000 | 1.0000 | 0 |
+| `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl` | operator_gap_oracle_miss | 8 | 0.0000 | 0.0000 | 0.0000 | 0 |
+| `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl` | ranker_miss_oracle_hit | 1 | 0.0000 | 1.0000 | 1.0000 | 0 |
+| `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl` | unseen_key_template_miss | 14 | 0.0000 | 0.0000 | 1.0000 | 0 |
+| `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl` | unseen_literal_high_risk | 3 | 0.0000 | 0.0000 | 0.6667 | 3 |
+| `data\processed\local_eval_manifests\hard_triad_full.jsonl` | expressible_oracle_miss | 10 | 0.8000 | 0.8000 | 1.0000 | 0 |
+| `data\processed\local_eval_manifests\hard_triad_full.jsonl` | low_risk_support_stable | 4 | 1.0000 | 1.0000 | 1.0000 | 0 |
+| `data\processed\local_eval_manifests\hard_triad_full.jsonl` | operator_gap_oracle_miss | 28 | 0.0000 | 0.0000 | 0.0000 | 0 |
+| `data\processed\local_eval_manifests\hard_triad_full.jsonl` | ranker_miss_oracle_hit | 2 | 0.0000 | 1.0000 | 1.0000 | 0 |
+| `data\processed\local_eval_manifests\hard_triad_full.jsonl` | unseen_key_template_miss | 92 | 0.0000 | 0.0000 | 1.0000 | 0 |
+| `data\processed\local_eval_manifests\hard_triad_full.jsonl` | unseen_literal_high_risk | 20 | 0.0000 | 0.0000 | 0.7500 | 20 |
 | `data\processed\local_eval_manifests\proxy_all_balanced_64pf.jsonl` | expressible_oracle_miss | 8 | 0.3750 | 0.3750 | 1.0000 | 0 |
 | `data\processed\local_eval_manifests\proxy_all_balanced_64pf.jsonl` | low_risk_support_stable | 1 | 1.0000 | 1.0000 | 1.0000 | 0 |
 | `data\processed\local_eval_manifests\proxy_all_balanced_64pf.jsonl` | operator_gap_oracle_miss | 9 | 0.0000 | 0.0000 | 0.0000 | 0 |
@@ -19,31 +22,31 @@
 
 ## Target Expressibility
 
-- current ops can fit support+query target: `207 / 275`
-- via `operator_template`: `192`
-- via `operator_template` with query key seen in support: `22`
-- via `operator_template` with query key unseen in support: `170`
-- via `position_transducer`: `79`
+- current ops can fit support+query target: `182 / 235`
+- via `operator_template`: `172`
+- via `operator_template` with query key seen in support: `21`
+- via `operator_template` with query key unseen in support: `151`
+- via `position_transducer`: `69`
 
 ## Top Misses
 
-- `0b0a3643` risk=`unseen_key_template_miss` oracle_rank=`None` query=`'/-%)` target=`""` top=`-)'` target_expressible=`True`
-- `1cce5949` risk=`unseen_key_template_miss` oracle_rank=`None` query=``\}`]` target=`[?}` top=``??` target_expressible=`True`
+- `0dce4039` risk=`unseen_key_template_miss` oracle_rank=`None` query=`)!-#>` target=`-@/` top=`)!#>` target_expressible=`True`
+- `196ff375` risk=`unseen_key_template_miss` oracle_rank=`None` query=`%^\#@` target=`@@@` top=`@^@` target_expressible=`True`
+- `1a28140b` risk=`expressible_oracle_miss` oracle_rank=`None` query=`"[*#/` target=`%`&` top=```` target_expressible=`True`
+- `20e6b2d1` risk=`operator_gap_oracle_miss` oracle_rank=`None` query=`@`-](` target=`''` top=`]%``` target_expressible=`False`
+- `24e1f1d5` risk=`unseen_key_template_miss` oracle_rank=`None` query=`^#+(!` target=`^#(!` top=`^"#` target_expressible=`True`
+- `25ee72c3` risk=`expressible_oracle_miss` oracle_rank=`None` query=`#"*<<` target=`#"<<` top=`#]` target_expressible=`True`
 - `2ba4b99f` risk=`unseen_key_template_miss` oracle_rank=`None` query=`@|(\|` target=`@:%>` top=`{` target_expressible=`True`
-- `30e4b199` risk=`unseen_key_template_miss` oracle_rank=`None` query=`@@\&&` target=`|:|` top=`)` target_expressible=`True`
-- `36557a2e` risk=`unseen_key_template_miss` oracle_rank=`None` query=`]%*)?` target=`!{}?` top=`)}!}` target_expressible=`True`
-- `38c7aca1` risk=`unseen_key_template_miss` oracle_rank=`None` query=`#{*&>` target=`!!]{` top=`!||{` target_expressible=`True`
-- `398478f6` risk=`unseen_key_template_miss` oracle_rank=`None` query=`|)+@)` target=`:[` top=`@|))` target_expressible=`True`
-- `3cb3fd89` risk=`operator_gap_oracle_miss` oracle_rank=`None` query=`]$*$)` target=`[[&]` top=`]|{\` target_expressible=`False`
-- `4d8df95b` risk=`unseen_key_template_miss` oracle_rank=`None` query=`??-??` target=`)` top=`-?"` target_expressible=`True`
-- `51174a9d` risk=`unseen_literal_high_risk` oracle_rank=`None` query=`$|}||` target=`[/<` top=`$|||` target_expressible=`False`
-- `563bf8f9` risk=`unseen_literal_high_risk` oracle_rank=`None` query=`"!-//` target=`-'/` top=`/"!$` target_expressible=`True`
-- `6beb3a1f` risk=`operator_gap_oracle_miss` oracle_rank=`None` query=``)-/[` target=`??` top=`[)` target_expressible=`False`
-- `6c7231ac` risk=`unseen_key_template_miss` oracle_rank=`None` query=`&}+#}` target=`:/#` top=`#` target_expressible=`True`
-- `6f8261d9` risk=`expressible_oracle_miss` oracle_rank=`None` query=`|(-|(` target=`\` top=`(` target_expressible=`True`
-- `8753cdcc` risk=`unseen_key_template_miss` oracle_rank=`None` query=`%%+)"` target=`'""` top=`)%%` target_expressible=`True`
-- `898bc85a` risk=`unseen_literal_high_risk` oracle_rank=`None` query=`}?+?)` target=`^[[` top=`]>[` target_expressible=`True`
-- `90feb0c5` risk=`unseen_literal_high_risk` oracle_rank=`None` query=`?>'>>` target=`:<]` top=`?``` target_expressible=`True`
-- `948e5474` risk=`unseen_key_template_miss` oracle_rank=`None` query=`?%-^%` target=`-&` top=`^%?%` target_expressible=`True`
-- `9a4f2f47` risk=`operator_gap_oracle_miss` oracle_rank=`None` query=`!?+)'` target=`('^` top=`!(}:` target_expressible=`False`
-- `a3183159` risk=`unseen_key_template_miss` oracle_rank=`None` query=``|-}"` target=``{` top=`-]`` target_expressible=`True`
+- `2d89386e` risk=`expressible_oracle_miss` oracle_rank=`None` query=`%]-$]` target=`:` top=`%<` target_expressible=`True`
+- `3d2cb38a` risk=`operator_gap_oracle_miss` oracle_rank=`None` query=`<}+#)` target=`}{` top=`//#}` target_expressible=`False`
+- `5690981d` risk=`unseen_key_template_miss` oracle_rank=`None` query=`(`-&%` target=`-](` top=`||` target_expressible=`True`
+- `685be3a7` risk=`operator_gap_oracle_miss` oracle_rank=`None` query=`!?+`:` target=`>$$` top=`$:&!` target_expressible=`False`
+- `6c7f24b7` risk=`ranker_miss_oracle_hit` oracle_rank=`2` query=`$'-^$` target=`^` top=`$` target_expressible=`True`
+- `802c3591` risk=`operator_gap_oracle_miss` oracle_rank=`None` query=`)?<#`` target=``"""` top=`)?'@` target_expressible=`False`
+- `8326116b` risk=`unseen_literal_high_risk` oracle_rank=`None` query=`#:*#\` target=`{{@?` top=`{#` target_expressible=`False`
+- `852a6f48` risk=`unseen_literal_high_risk` oracle_rank=`None` query=`]){&$` target=`\\` top=`&&')` target_expressible=`True`
+- `94367b1d` risk=`unseen_key_template_miss` oracle_rank=`None` query=`[[+|<` target=`|'` top=`[{[` target_expressible=`True`
+- `9925be81` risk=`unseen_literal_high_risk` oracle_rank=`None` query=`]#[^)` target=`@}])` top=`>` target_expressible=`True`
+- `9bfca34c` risk=`unseen_key_template_miss` oracle_rank=`None` query=`<{$>^` target=`|>`` top=`||` target_expressible=`True`
+- `9dae880f` risk=`operator_gap_oracle_miss` oracle_rank=`None` query=`:<}`\` target=`))[` top=`<}` target_expressible=`False`
+- `a2b66927` risk=`unseen_key_template_miss` oracle_rank=`None` query=`)@-$|` target=`{]` top=`{@` target_expressible=`True`
