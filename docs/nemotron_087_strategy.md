@@ -24,9 +24,9 @@ Solver coverage audit on local manifests:
 
 | manifest | rows | query accuracy | oracle@k | support-full rate | read |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `combined_balanced_48pf` | 288 | 0.7222 | 0.7257 | 0.9965 | cipher mostly solved; bit/equation weak |
+| `combined_balanced_48pf` | 288 | 0.7257 | 0.7361 | 0.9965 | cipher mostly solved; bit/equation weak |
 | `proxy_all_balanced_64pf` | 352 | 0.7472 | 0.7528 | 0.9744 | same pattern |
-| `hard_triad_full` | 709 | 0.4993 | 0.5205 | 0.9788 | hard triad is still the gap |
+| `hard_triad_full` | 709 | 0.5021 | 0.5289 | 0.9803 | hard triad is still the gap |
 
 The important signal is the high support-full rate with low query accuracy.
 The rule search often fits all demonstrations but extrapolates the held-out
@@ -105,12 +105,12 @@ to `0.5750` without hurting the other families.
 
 `bit_permutation`
 
-- query accuracy is now 0.2917-0.4477 after adding a per-output-bit
-  `binary_boolean_expr` operator for constants, copy, NOT, AND/OR/XOR,
-  NAND/NOR, majority, and choice.
-- `hard_triad_full` bit accuracy rose from 0.4000 to 0.4500, and
-  `bit_permutation` rose from 0.3975 to 0.4477. The oracle@k gap is now
-  positive (`hard_triad_full`: 0.5063 oracle@k vs 0.4477 top1), so there is
+- query accuracy is now 0.3125-0.4561 after adding a per-output-bit
+  `binary_boolean_expr` operator for constants, copy, NOT, AND/OR/XOR/XNOR,
+  NAND/NOR, three-input AND/OR/XOR/XNOR, majority, and choice.
+- `hard_triad_full` bit accuracy rose from 0.4000 to 0.4583, and
+  `bit_permutation` rose from 0.3975 to 0.4561. The oracle@k gap is now
+  positive (`hard_triad_full`: 0.5314 oracle@k vs 0.4561 top1), so there is
   some remaining ranker upside after candidate generation.
 - support failures are mostly gone, but many failures are still wrong
   extrapolation from support-perfect boolean expressions.
@@ -121,9 +121,9 @@ to `0.5750` without hurting the other families.
   bit work should either narrow this operator by subtype or add verifier
   features before more training.
 - `scripts/diagnose_bit_permutation.py` now breaks this down directly: across
-  the three local manifests, `bit_permutation` has 149 low-risk top1 hits, 32
-  ranker-miss/oracle-hit rows, 161 operator-gap rows, and 2 support-incomplete
-  rows. This makes the next bit target concrete: ranker/verifier features can
+  the three local manifests, `bit_permutation` has 152 low-risk top1 hits, 40
+  ranker-miss/oracle-hit rows, 151 operator-gap rows, and 1 support-incomplete
+  row. This makes the next bit target concrete: ranker/verifier features can
   recover a bounded set, but more operator coverage is still the larger gap.
 
 ## New Work Loop

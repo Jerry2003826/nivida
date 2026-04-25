@@ -193,10 +193,20 @@ def _eval_binary_boolean_expr(bits: list[int], expr: dict[str, Any]) -> int:
         return bits[args[0]] | bits[args[1]]
     if op == "xor":
         return bits[args[0]] ^ bits[args[1]]
+    if op == "xnor":
+        return 1 - (bits[args[0]] ^ bits[args[1]])
     if op == "nand":
         return 1 - (bits[args[0]] & bits[args[1]])
     if op == "nor":
         return 1 - (bits[args[0]] | bits[args[1]])
+    if op == "and3":
+        return bits[args[0]] & bits[args[1]] & bits[args[2]]
+    if op == "or3":
+        return bits[args[0]] | bits[args[1]] | bits[args[2]]
+    if op == "xor3":
+        return bits[args[0]] ^ bits[args[1]] ^ bits[args[2]]
+    if op == "xnor3":
+        return 1 - (bits[args[0]] ^ bits[args[1]] ^ bits[args[2]])
     if op == "maj":
         return 1 if sum(bits[arg] for arg in args) >= 2 else 0
     if op == "choice":
@@ -224,11 +234,16 @@ def _binary_boolean_expr_candidates(width: int) -> list[dict[str, Any]]:
                 ("and", 3),
                 ("or", 3),
                 ("xor", 3),
+                ("xnor", 4),
                 ("nand", 4),
                 ("nor", 4),
             ):
                 candidates.append({"op": op, "args": [left, right], "complexity": complexity})
     for left, middle, right in itertools.combinations(range(width), 3):
+        candidates.append({"op": "and3", "args": [left, middle, right], "complexity": 5})
+        candidates.append({"op": "or3", "args": [left, middle, right], "complexity": 5})
+        candidates.append({"op": "xor3", "args": [left, middle, right], "complexity": 5})
+        candidates.append({"op": "xnor3", "args": [left, middle, right], "complexity": 6})
         candidates.append({"op": "maj", "args": [left, middle, right], "complexity": 5})
     for selector, when_one, when_zero in itertools.permutations(range(width), 3):
         candidates.append(

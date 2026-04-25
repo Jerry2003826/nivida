@@ -34,9 +34,9 @@ Current audit summary:
 
 | manifest | query accuracy | oracle@k | support-full rate | main gap |
 | --- | ---: | ---: | ---: | --- |
-| `combined_balanced_48pf` | 0.7222 | 0.7257 | 0.9965 | bit/equation extrapolation |
+| `combined_balanced_48pf` | 0.7257 | 0.7361 | 0.9965 | bit/equation extrapolation |
 | `proxy_all_balanced_64pf` | 0.7472 | 0.7528 | 0.9744 | bit/equation extrapolation |
-| `hard_triad_full` | 0.4993 | 0.5205 | 0.9788 | equation/bit |
+| `hard_triad_full` | 0.5021 | 0.5289 | 0.9803 | equation/bit |
 
 Note: these numbers use the official binary guard. Pure `0/1` answers are
 strict strings, so older audits overstated bit accuracy.
@@ -75,13 +75,13 @@ passing unknown ciphertext through unchanged.
 
 For bit affine fits, GF(2) free variables are now selected by a sparse-solution
 prior. A new `binary_boolean_expr` operator also fits per-output-bit constants,
-copy, NOT, AND/OR/XOR, NAND/NOR, majority, and choice expressions. Together
-these changes raise `hard_triad_full` bit accuracy from `0.2750` to `0.4500`
-under the official binary-strict metric, and `bit_permutation` from `0.3975` to
-`0.4477` in the latest audit.
+copy, NOT, AND/OR/XOR/XNOR, NAND/NOR, three-input AND/OR/XOR/XNOR, majority,
+and choice expressions. Together these changes raise `hard_triad_full` bit
+accuracy from `0.2750` to `0.4583` under the official binary-strict metric, and
+`bit_permutation` from `0.3975` to `0.4561` in the latest audit.
 
 The audit now reports support-full oracle@k. For `bit_permutation`, oracle@k is
-now above top1 (`hard_triad_full`: 0.5063 oracle@k vs 0.4477 query accuracy),
+now above top1 (`hard_triad_full`: 0.5314 oracle@k vs 0.4561 query accuracy),
 so the next bit work can combine verifier/ranker features with candidate-space
 cleanup. The boolean-expression operator is intentionally wider and slows full
 audits, so do not treat it as free complexity.
@@ -92,8 +92,8 @@ Use the bit diagnostic to split the next work:
 python scripts/diagnose_bit_permutation.py
 ```
 
-Latest default diagnostic: 149 low-risk top1 hits, 32 ranker-miss/oracle-hit
-rows, 161 operator-gap rows, and 2 support-incomplete rows across the three
+Latest default diagnostic: 152 low-risk top1 hits, 40 ranker-miss/oracle-hit
+rows, 151 operator-gap rows, and 1 support-incomplete row across the three
 local manifests.
 
 For equation tags, position transduction now only covers outputs explainable

@@ -231,6 +231,25 @@ def test_binary_boolean_expression_op_fits_nonlinear_bit_rules() -> None:
     assert op.apply("1111", fit.params) == "1111"
 
 
+def test_binary_boolean_expression_op_fits_xnor_and_three_input_rules() -> None:
+    op = BinaryBooleanExpressionOp()
+    fit = op.fit(
+        [
+            ("000", "100"),
+            ("001", "110"),
+            ("010", "010"),
+            ("011", "000"),
+            ("100", "010"),
+            ("101", "000"),
+            ("110", "100"),
+            ("111", "111"),
+        ]
+    )
+
+    assert fit.success
+    assert op.apply("101", fit.params) == "000"
+
+
 def test_binary_ops_fit_and_apply() -> None:
     affine = BinaryAffineTransformOp()
     examples = []
