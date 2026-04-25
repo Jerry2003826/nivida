@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import zipfile
 
 import scripts.validate_submission as validate_submission_module
 from src.common.io import write_yaml
@@ -24,7 +25,10 @@ def _write_config(path: Path) -> Path:
 def _write_adapter_dir(path: Path, *, rank: int = 32) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     (path / "adapter_model.safetensors").write_text("weights", encoding="utf-8")
-    (path / "adapter_config.json").write_text(f'{{"r": {rank}}}', encoding="utf-8")
+    (path / "adapter_config.json").write_text(
+        '{"r": %d, "target_modules": ".*\\\\.mixer\\\\.q_proj$"}' % rank,
+        encoding="utf-8",
+    )
     return path
 
 
@@ -139,7 +143,14 @@ def test_validate_submission_packages_after_local_eval(
 
     monkeypatch.setattr(validate_submission_module, "run_inference", _fake_run_inference)
     monkeypatch.setattr(validate_submission_module, "evaluate_replica", _fake_evaluate_replica)
-    monkeypatch.setattr(validate_submission_module, "build_submission_zip", lambda adapter_dir, output: Path(output))
+    def _fake_build_submission_zip(adapter_dir, output):
+        output = Path(output)
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.write(Path(adapter_dir) / "adapter_config.json", "adapter_config.json")
+            archive.write(Path(adapter_dir) / "adapter_model.safetensors", "adapter_model.safetensors")
+        return output
+
+    monkeypatch.setattr(validate_submission_module, "build_submission_zip", _fake_build_submission_zip)
 
     payload = validate_submission_module.validate_submission(
         config_path=config_path,

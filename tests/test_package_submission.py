@@ -30,7 +30,8 @@ def test_build_submission_zip_writes_root_level_adapter_files(tmp_path) -> None:
         names = set(archive.namelist())
     assert "adapter_config.json" in names
     assert "adapter_model.safetensors" in names
-    assert "training_metadata.json" in names
+    assert "training_metadata.json" not in names
+    assert names == {"adapter_config.json", "adapter_model.safetensors"}
 
 
 def test_read_adapter_rank_extracts_rank_from_config(tmp_path) -> None:

@@ -455,7 +455,12 @@ def configure_model_for_training(model: Any, config: dict[str, Any]) -> Any:
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
         if hasattr(model, "gradient_checkpointing_enable"):
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            try:
+                model.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False}
+                )
+            except TypeError:
+                model.gradient_checkpointing_enable()
     return model
 
 

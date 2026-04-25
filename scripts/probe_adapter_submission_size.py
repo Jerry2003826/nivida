@@ -5,6 +5,7 @@ import json
 import math
 import shutil
 import sys
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -193,6 +194,14 @@ def _write_entropy_pad(path: Path, size: int) -> None:
 
 def _build_zip(adapter_dir: Path, zip_path: Path) -> int:
     build_submission_zip(adapter_dir, zip_path)
+    pad_path = adapter_dir / "probe_entropy_pad.bin"
+    if pad_path.is_file():
+        # This is a probe-only calibration file. Production submission zips
+        # stay allowlist-only via build_submission_zip(); the size probe needs
+        # this pad included so tiny-mode can emulate a trained adapter's zip
+        # footprint without relaxing the real Kaggle package rules.
+        with zipfile.ZipFile(zip_path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(pad_path, arcname=pad_path.name)
     return int(zip_path.stat().st_size)
 
 

@@ -1,0 +1,7 @@
+{
+  "model_handle": "metric/nemotron-3-nano-30b-a3b-bf16/transformers/default",
+  "chat_template_sha16": "ab7813c3abdd9cb6",
+  "conclusions": {
+    "first_public_sample_fits_budget": true
+  }
+}

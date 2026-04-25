@@ -6,7 +6,8 @@ __pycache__/
 *.pyd
 *.egg-info/
 .ipynb_checkpoints/
-artifacts/
+artifacts/*
+!artifacts/chat_template_probe.json
 outputs/
 submission.zip
 .commit_msg_tmp*
