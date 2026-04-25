@@ -11,6 +11,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SHELL_SCRIPTS = (
+    "scripts/build_stage2_answer_focused_data.sh",
     "scripts/check_prompt_suffix_alignment.sh",
     "scripts/train_stage1_format_align.sh",
     "scripts/train_stage2_distill.sh",

@@ -16,6 +16,7 @@ present.
 | Tokenizer-only probe | done | chat template SHA16 `ab7813c3abdd9cb6`, first public sample length 275 |
 | Chat-template SHA recheck | done | `python scripts/recheck_chat_template_sha16.py --output data/processed/recheck_chat_template_sha16.json` |
 | Answer-focused datasets | done | answer-only train/valid rows `4689/658`; short-trace train/valid rows `4689/658` |
+| Cross-platform answer-focused builder | done | `python scripts/build_stage2_answer_focused_data.py --dry-run` resolves parent data on Windows |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10694 rows, bad `0` |
 | Fast local tests | done | `23 passed, 1 skipped` for diagnostic/cloud/shell/tokenizer tests |
 | Full local tests | done | `python -m pytest -q` -> `449 passed, 9 skipped` |
@@ -33,6 +34,9 @@ present.
   prompts that contain the official guard inside the rendered user turn.
 - `scripts/probe_chat_template.py` can be run directly as
   `python scripts/probe_chat_template.py`; it no longer requires `python -m`.
+- `scripts/build_stage2_answer_focused_data.py` is now the canonical
+  cross-platform entrypoint for answer-only and short-trace data preparation.
+  The `.sh` file remains a thin Linux wrapper.
 
 ## Current Solver Read
 

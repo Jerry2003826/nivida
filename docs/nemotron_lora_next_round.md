@@ -205,7 +205,7 @@ against baseline.
 Build answer-focused continuation data:
 
 ```bash
-bash scripts/build_stage2_answer_focused_data.sh
+python scripts/build_stage2_answer_focused_data.py
 ```
 
 Then train only after inference ranking fails to find a clear winner. The

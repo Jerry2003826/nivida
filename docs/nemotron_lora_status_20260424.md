@@ -46,7 +46,7 @@ If no existing checkpoint beats the official-balanced exact-eval baseline,
 build answer-focused data and train one of these low-LR continuations:
 
 ```bash
-bash scripts/build_stage2_answer_focused_data.sh
+python scripts/build_stage2_answer_focused_data.py
 python -m src.student.lora_train --config configs/train_stage2_official_balanced_answer_only.yaml
 python -m src.student.lora_train --config configs/train_stage2_official_balanced_short_trace.yaml
 ```
