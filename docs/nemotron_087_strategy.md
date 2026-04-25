@@ -24,14 +24,19 @@ Solver coverage audit on local manifests:
 
 | manifest | rows | query accuracy | support-full rate | read |
 | --- | ---: | ---: | ---: | --- |
-| `combined_balanced_48pf` | 288 | 0.6528 | 0.9722 | easy families solved; hard triad weak |
-| `proxy_all_balanced_64pf` | 352 | 0.6960 | 0.9545 | same pattern |
-| `hard_triad_full` | 709 | 0.3399 | 0.9408 | hard triad is the gap |
+| `combined_balanced_48pf` | 288 | 0.6910 | 0.9722 | cipher mostly solved; bit/equation weak |
+| `proxy_all_balanced_64pf` | 352 | 0.7045 | 0.9545 | same pattern |
+| `hard_triad_full` | 709 | 0.4302 | 0.9394 | hard triad is still the gap |
 
 The important signal is the high support-full rate with low query accuracy.
 The rule search often fits all demonstrations but extrapolates the held-out
 query incorrectly. That means the missing capability is not "parse examples"
 but "identify the true generator among many demonstration-consistent programs."
+
+The local metric now mirrors the official binary guard: pure `0/1` answers are
+strict strings, not numeric values with 1% tolerance. This intentionally lowers
+reported bit accuracy compared with older audits; those older bit scores were
+partly false positives.
 
 ## Family Priorities
 
@@ -66,17 +71,21 @@ most support-consistent ambiguity remains.
 
 `cipher_char_sub`
 
-- support-full is 1.0, but query accuracy is only 0.25-0.44.
-- Existing `char_sub` hypothesis is too underdetermined for the query.
-- Need better map completion and ambiguity handling.
+- support-full is 1.0, and query accuracy is now 0.82-0.87 after prioritizing
+  `vocabulary_cipher` over raw `fixed_substitution` for char-substitution
+  prompts.
+- Remaining misses are true vocabulary/map-completion ambiguity cases.
 
 ### Tier 3
 
 `bit_permutation`
 
-- query accuracy is 0.33-0.60 depending on manifest.
+- query accuracy is 0.125-0.272 after switching the audit to official binary
+  strictness.
 - support failures still exist, but many failures are also wrong extrapolation.
-- Need a stronger permutation/affine disambiguation strategy.
+- Need a stronger permutation/affine disambiguation strategy. The current
+  `binary_affine_transform` is too expressive and often support-fits a simpler
+  hidden generator.
 
 ## New Work Loop
 

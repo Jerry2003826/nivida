@@ -75,6 +75,9 @@ def competition_numeric_match(
     rel_tol: float = 1e-2,
     abs_tol: float = 1e-5,
 ) -> bool:
+    target_candidate = canonicalize_answer(target).replace(",", "").replace(" ", "")
+    if re.fullmatch(r"[01]+", target_candidate or ""):
+        return False
     pred_value = parse_numeric_value(prediction)
     target_value = parse_numeric_value(target)
     if pred_value is None or target_value is None:

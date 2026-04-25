@@ -137,7 +137,7 @@ class ChainSearchEngine:
             if subtype in {"token_substitution", "cipher_token_sub"}:
                 return ["vocabulary_cipher"]
             if subtype in {"char_substitution", "caesar_affine", "cipher_char_sub"}:
-                return ["caesar_shift", "fixed_substitution"]
+                return ["caesar_shift", "vocabulary_cipher", "fixed_substitution"]
             if subtype in {"substitution_permutation", "cipher_perm"}:
                 return ["fixed_substitution", "reverse_tokens", "sort_tokens"]
             if subtype in {"partial_map_completion", "cipher_vocab"}:

@@ -30,20 +30,28 @@ Current audit summary:
 
 | manifest | query accuracy | support-full rate | main gap |
 | --- | ---: | ---: | --- |
-| `combined_balanced_48pf` | 0.6528 | 0.9722 | hard triad extrapolation |
-| `proxy_all_balanced_64pf` | 0.6960 | 0.9545 | hard triad extrapolation |
-| `hard_triad_full` | 0.3399 | 0.9408 | equation/cipher/bit |
+| `combined_balanced_48pf` | 0.6910 | 0.9722 | bit/equation extrapolation |
+| `proxy_all_balanced_64pf` | 0.7045 | 0.9545 | bit/equation extrapolation |
+| `hard_triad_full` | 0.4302 | 0.9394 | equation/bit |
+
+Note: these numbers use the official binary guard. Pure `0/1` answers are
+strict strings, so older audits overstated bit accuracy.
 
 Prioritize solver work in this order:
 
 1. `equation_position`
-2. `cipher_char_sub`
-3. `bit_permutation`
+2. `bit_permutation`
+3. residual `cipher_char_sub`
 
 Stage2 trace selection is now query-aware on labeled data. If a solver fits all
 support examples but its query prediction disagrees with the known target, the
 sample is rejected from the strict trace bucket and can only enter as
 answer-only silver supervision when that pool is enabled.
+
+For cipher char-substitution prompts, chain search now prefers
+`vocabulary_cipher` before raw `fixed_substitution`. This lets the solver
+complete unseen query letters against the Wonderland vocabulary instead of
+passing unknown ciphertext through unchanged.
 
 ## Local First
 

@@ -145,6 +145,27 @@ def test_chain_search_solves_operator_template_equation() -> None:
     assert candidates[0].steps[0].op_name == "operator_template"
 
 
+def test_chain_search_prefers_vocab_completion_for_char_substitution() -> None:
+    engine = ChainSearchEngine(max_depth=1, beam_width=8)
+    example = PuzzleExample(
+        id="cipher_vocab_completion",
+        raw_prompt="",
+        official_instruction="",
+        parsed_examples=[
+            PuzzlePair(input="lzddf adda edm", output="queen sees key"),
+            PuzzlePair(input="uqd iztshza udwiqdt sgwvsfda", output="the curious teacher imagines"),
+            PuzzlePair(input="pstc dokbhtda xhtdau", output="bird explores forest"),
+            PuzzlePair(input="udwiqdt dokbhtda fdwt nwbbdm", output="teacher explores near valley"),
+        ],
+        query="uqd rsad ctwvhf rwuiqda",
+        metadata=PuzzleMetadata(official_family="cipher", subtype="cipher_char_sub"),
+    )
+    candidates = engine.solve_example(example, top_k=3)
+    assert candidates
+    assert candidates[0].query_prediction == "the wise dragon watches"
+    assert candidates[0].steps[0].op_name == "vocabulary_cipher"
+
+
 def test_chain_search_solves_binary_equation_rule_example() -> None:
     engine = ChainSearchEngine(max_depth=1, beam_width=8)
     example = PuzzleExample(
