@@ -126,6 +126,26 @@ def _render_template_tokens(text: str, tokens: list[tuple[str, int | str]]) -> s
     return "".join(rendered)
 
 
+def _template_generalisation_key(tokens: list[tuple[str, int | str]]) -> tuple[int, int, int, int, tuple[int, ...]]:
+    source_positions = [int(value) for kind, value in tokens if kind == "pos"]
+    literal_count = sum(1 for kind, _ in tokens if kind == "lit")
+    repeated_positions = len(source_positions) - len(set(source_positions))
+    backward_edges = sum(
+        1 for left, right in zip(source_positions, source_positions[1:]) if right < left
+    )
+    skipped_unique_positions = 0
+    if source_positions:
+        span = max(source_positions) - min(source_positions) + 1
+        skipped_unique_positions = span - len(set(source_positions))
+    return (
+        literal_count,
+        repeated_positions,
+        backward_edges,
+        skipped_unique_positions,
+        tuple(source_positions),
+    )
+
+
 def _binary_vector(text: str) -> list[int]:
     stripped = text.strip()
     if not _is_binary_string(stripped):
@@ -728,12 +748,7 @@ class OperatorTemplateOp(AtomicOp):
                 current.pop()
 
             _search(0, [])
-            results.sort(
-                key=lambda tokens: (
-                    sum(1 for kind, _ in tokens if kind == "lit"),
-                    len(tokens),
-                )
-            )
+            results.sort(key=_template_generalisation_key)
             return results
 
         key_positions = [
@@ -776,7 +791,28 @@ class OperatorTemplateOp(AtomicOp):
     def complexity_penalty(self, params: dict[str, Any]) -> float:
         templates = params.get("templates", {})
         literal_count = sum(1 for template in templates.values() for kind, _ in template if kind == "lit")
-        return 0.01 * len(templates) + 0.005 * literal_count
+        repeated_positions = sum(
+            len([value for kind, value in template if kind == "pos"])
+            - len({int(value) for kind, value in template if kind == "pos"})
+            for template in templates.values()
+        )
+        backward_edges = sum(
+            sum(
+                1
+                for left, right in zip(
+                    [int(value) for kind, value in template if kind == "pos"],
+                    [int(value) for kind, value in template if kind == "pos"][1:],
+                )
+                if right < left
+            )
+            for template in templates.values()
+        )
+        return (
+            0.01 * len(templates)
+            + 0.005 * literal_count
+            + 0.004 * repeated_positions
+            + 0.002 * backward_edges
+        )
 
     def generate_random_instance(self, rng: random.Random) -> tuple[str, str, dict[str, Any]]:
         params = {

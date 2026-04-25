@@ -76,6 +76,11 @@ def test_strict_gate_returns_reason_for_each_rejection() -> None:
     ok, reason = _select_official_stage2_strict(no_signature)
     assert ok is False and reason == "missing_program_signature"
 
+    query_mismatch = _example("mismatch")
+    query_mismatch.metadata.extras["query_solver_correct"] = False
+    ok, reason = _select_official_stage2_strict(query_mismatch)
+    assert ok is False and reason == "query_prediction_mismatch"
+
     happy = _example("f")
     ok, reason = _select_official_stage2_strict(happy)
     assert ok is True and reason is None

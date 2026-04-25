@@ -710,6 +710,7 @@ STAGE2_REJECTION_REASONS: tuple[str, ...] = (
     "low_teacher_confidence",
     "not_solver_verifiable",
     "partial_support_coverage",
+    "query_prediction_mismatch",
     "missing_program_signature",
 )
 
@@ -735,6 +736,8 @@ def _select_official_stage2_strict(
         return False, "not_solver_verifiable"
     if float(example.metadata.extras.get("support_coverage", 0.0) or 0.0) < 1.0:
         return False, "partial_support_coverage"
+    if example.metadata.extras.get("query_solver_correct") is False:
+        return False, "query_prediction_mismatch"
     if not _metadata_value(example, "program_signature"):
         return False, "missing_program_signature"
     return True, None

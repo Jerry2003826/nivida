@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 
-from src.competition.metrics import competition_numeric_match
+from src.competition.metrics import competition_correct, competition_numeric_match
 from src.competition.schema import PuzzleExample
 
 
@@ -162,6 +162,11 @@ def annotate_example_from_candidates(example: PuzzleExample, candidates: list[An
                 support_matches += 1
         solver_verifiable = support_matches == len(example.parsed_examples) and top.query_prediction is not None
 
+    query_prediction = None if top is None else top.query_prediction
+    query_solver_correct: bool | None = None
+    if query_prediction is not None and example.target_answer not in (None, ""):
+        query_solver_correct = competition_correct(str(query_prediction), str(example.target_answer))
+
     top_margin = 0.0
     if top is not None and second is not None:
         top_margin = float(top.score) - float(second.score)
@@ -180,6 +185,8 @@ def annotate_example_from_candidates(example: PuzzleExample, candidates: list[An
         "support_coverage": 0.0 if not example.parsed_examples else support_matches / len(example.parsed_examples),
         "top1_top2_margin": top_margin,
         "solver_verifiable": solver_verifiable,
+        "query_prediction": None if query_prediction is None else str(query_prediction),
+        "query_solver_correct": query_solver_correct,
         "program_signature_bucket": None if program is None else program.signature_bucket,
         "top_candidate_score": None if top is None else float(top.score),
         "top_candidate_steps": [] if top is None else [step.op_name for step in top.steps],

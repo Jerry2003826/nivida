@@ -24,9 +24,9 @@ Solver coverage audit on local manifests:
 
 | manifest | rows | query accuracy | support-full rate | read |
 | --- | ---: | ---: | ---: | --- |
-| `combined_balanced_48pf` | 288 | 0.6493 | 0.9722 | easy families solved; hard triad weak |
-| `proxy_all_balanced_64pf` | 352 | 0.6932 | 0.9545 | same pattern |
-| `hard_triad_full` | 709 | 0.3329 | 0.9408 | hard triad is the gap |
+| `combined_balanced_48pf` | 288 | 0.6528 | 0.9722 | easy families solved; hard triad weak |
+| `proxy_all_balanced_64pf` | 352 | 0.6960 | 0.9545 | same pattern |
+| `hard_triad_full` | 709 | 0.3399 | 0.9408 | hard triad is the gap |
 
 The important signal is the high support-full rate with low query accuracy.
 The rule search often fits all demonstrations but extrapolates the held-out
@@ -50,12 +50,17 @@ future gains.
 
 `equation_position`
 
-- `combined_balanced_48pf`: 0.0000 query accuracy
-- `proxy_all_balanced_64pf`: 0.0625
-- `hard_triad_full`: 0.0518
+- `combined_balanced_48pf`: 0.0256 query accuracy
+- `proxy_all_balanced_64pf`: 0.0833
+- `hard_triad_full`: 0.0777
 - support-full is near 1.0, so the search is overfitting demonstrations.
 
 This is the clearest system-cracking target.
+
+The first fix now prefers lower-risk operator templates: fewer literals,
+fewer repeated source positions, and more monotonic source-position reuse. It
+raised equation-position coverage without changing bit/cipher outcomes, but
+most support-consistent ambiguity remains.
 
 ### Tier 2
 
@@ -103,9 +108,11 @@ failure_class = query_wrong_after_support_fit
 subtype = equation_position
 ```
 
-The first engineering target should be a stricter `equation_position`
-verifier/ranker that prefers programs with better query-generalization priors,
-not just perfect support fit.
+The next engineering target is a stricter `equation_position` verifier/ranker
+that detects underconstrained query paths, not just perfect support fit. Labeled
+examples now record whether the solver's query prediction matches the known
+target; strict stage2 trace selection rejects query-mismatch traces so wrong
+support-fitting programs do not become training rationales.
 
 ## Training Policy
 

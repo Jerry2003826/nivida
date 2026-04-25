@@ -30,15 +30,20 @@ Current audit summary:
 
 | manifest | query accuracy | support-full rate | main gap |
 | --- | ---: | ---: | --- |
-| `combined_balanced_48pf` | 0.6493 | 0.9722 | hard triad extrapolation |
-| `proxy_all_balanced_64pf` | 0.6932 | 0.9545 | hard triad extrapolation |
-| `hard_triad_full` | 0.3329 | 0.9408 | equation/cipher/bit |
+| `combined_balanced_48pf` | 0.6528 | 0.9722 | hard triad extrapolation |
+| `proxy_all_balanced_64pf` | 0.6960 | 0.9545 | hard triad extrapolation |
+| `hard_triad_full` | 0.3399 | 0.9408 | equation/cipher/bit |
 
 Prioritize solver work in this order:
 
 1. `equation_position`
 2. `cipher_char_sub`
 3. `bit_permutation`
+
+Stage2 trace selection is now query-aware on labeled data. If a solver fits all
+support examples but its query prediction disagrees with the known target, the
+sample is rejected from the strict trace bucket and can only enter as
+answer-only silver supervision when that pool is enabled.
 
 ## Local First
 
