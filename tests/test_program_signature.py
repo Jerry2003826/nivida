@@ -25,6 +25,7 @@ def _solving_candidate(query_prediction: str):
             "query_prediction": query_prediction,
             "score": 1.0,
             "confidence": 0.9,
+            "debug": {},
         },
     )()
 
@@ -96,3 +97,23 @@ def test_annotation_records_query_solver_correctness() -> None:
     assert example.metadata.extras["solver_verifiable"] is True
     assert example.metadata.extras["query_prediction"] == "wrong"
     assert example.metadata.extras["query_solver_correct"] is False
+
+
+def test_annotation_records_template_ranker_features() -> None:
+    example = PuzzleExample(
+        id="template-features",
+        raw_prompt="",
+        official_instruction="",
+        parsed_examples=[PuzzlePair(input="ab", output="ba")],
+        query="cd",
+        target_answer="dc",
+        metadata=PuzzleMetadata(official_family="equation", subtype="equation_template"),
+    )
+    candidate = _solving_candidate("dc")
+    candidate.debug = {"template_rank_features": [{"literal_count": 0, "template_count": 1}]}
+
+    annotate_example_from_candidates(example, [candidate])
+
+    assert example.metadata.extras["template_ranker_features"] == [
+        {"literal_count": 0, "template_count": 1}
+    ]
