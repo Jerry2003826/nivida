@@ -97,6 +97,8 @@ Strict stage2 trace selection now rejects `equation_template` traces labeled as
 `unseen_key_template_miss`, or `unseen_literal_high_risk`. Those samples can
 still be used as answer-only silver supervision, but not as
 chain-of-thought/rationale traces.
+Stage2 annotation now computes this template risk class automatically, so the
+gate no longer depends on a manually pre-attached diagnostic field.
 
 Numeric equations are a smaller but cleaner target. Query-aware operator priors
 and lookup fallbacks lifted `hard_triad_full` `equation_numeric` from `0.4500`

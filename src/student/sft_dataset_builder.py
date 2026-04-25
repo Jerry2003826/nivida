@@ -19,6 +19,7 @@ from src.competition.prompt_templates import (
     build_competition_prompt,
 )
 from src.competition.schema import PuzzleExample
+from src.teacher.atomic_ops import OperatorTemplateOp, PositionTransducerOp
 from src.teacher.chain_search import ChainSearchEngine
 from src.teacher.error_taxonomy import classify_error
 from src.teacher.family_tagger import apply_family_tags
@@ -34,6 +35,14 @@ PROMPT_MODES = {
 }
 HARD_TRIAD_FAMILIES = ("cipher", "bit", "equation")
 BALANCED_FAMILY_ORDER = ("cipher", "bit", "equation", "numeral", "unit", "gravity")
+HIGH_RISK_TEMPLATE_TRACE_CLASSES = frozenset(
+    {
+        "ranker_miss_oracle_hit",
+        "operator_gap_oracle_miss",
+        "unseen_key_template_miss",
+        "unseen_literal_high_risk",
+    }
+)
 
 REPAIR_ARTIFACT_REMEDIATION = (
     "Regenerate the artifact with a competition-correct evaluator "
@@ -98,10 +107,103 @@ def _annotate_examples(
     engine = ChainSearchEngine(beam_width=beam_width, max_depth=max_depth)
     for example in examples:
         if example.metadata.program_signature and example.metadata.teacher_confidence is not None:
+            _annotate_equation_template_risk(example)
             continue
         candidates = engine.solve_example(example, top_k=top_k)
         annotate_example_from_candidates(example, candidates)
+        _annotate_equation_template_risk(example)
     return examples
+
+
+def _template_target_expressibility(example: PuzzleExample) -> dict[str, bool]:
+    if example.target_answer is None or not example.query:
+        return {
+            "operator_template": False,
+            "operator_template_seen_query_key": False,
+            "operator_template_unseen_query_key": False,
+            "position_transducer": False,
+            "any": False,
+        }
+    examples = [(pair.input, pair.output) for pair in example.parsed_examples]
+    target = str(example.target_answer)
+    augmented_examples = [*examples, (example.query, target)]
+    template_params = OperatorTemplateOp().candidate_params(augmented_examples)
+    seen_query_key = False
+    for params in template_params:
+        key_position = int(params["key_position"])
+        if key_position >= len(example.query):
+            continue
+        support_key_chars = {
+            input_text[key_position]
+            for input_text, _ in examples
+            if key_position < len(input_text)
+        }
+        if example.query[key_position] in support_key_chars:
+            seen_query_key = True
+            break
+    operator_template = bool(template_params)
+    position_transducer = bool(PositionTransducerOp().candidate_params(augmented_examples))
+    return {
+        "operator_template": operator_template,
+        "operator_template_seen_query_key": seen_query_key,
+        "operator_template_unseen_query_key": operator_template and not seen_query_key,
+        "position_transducer": position_transducer,
+        "any": operator_template or position_transducer,
+    }
+
+
+def _target_has_unseen_literal(example: PuzzleExample) -> bool:
+    if example.target_answer is None:
+        return False
+    query = str(example.query or "")
+    support_inputs = "".join(pair.input for pair in example.parsed_examples)
+    support_outputs = "".join(pair.output for pair in example.parsed_examples)
+    for char in str(example.target_answer):
+        if char in query or char in support_inputs or char in support_outputs:
+            continue
+        return True
+    return False
+
+
+def _annotate_equation_template_risk(example: PuzzleExample) -> PuzzleExample:
+    if _metadata_value(example, "official_family") != "equation":
+        return example
+    if _metadata_value(example, "subtype") != "equation_template":
+        return example
+    if example.target_answer is None or not example.query:
+        return example
+
+    expressibility = _template_target_expressibility(example)
+    has_unseen_literal = _target_has_unseen_literal(example)
+    query_correct = example.metadata.extras.get("query_solver_correct")
+    support_full = float(example.metadata.extras.get("support_coverage", 0.0) or 0.0) >= 1.0
+
+    if query_correct is True and support_full and not has_unseen_literal:
+        risk_class = "low_risk_support_stable"
+    elif has_unseen_literal:
+        risk_class = "unseen_literal_high_risk"
+    elif expressibility["operator_template_unseen_query_key"]:
+        risk_class = "unseen_key_template_miss"
+    elif not expressibility["any"]:
+        risk_class = "operator_gap_oracle_miss"
+    else:
+        risk_class = "expressible_oracle_miss"
+
+    example.metadata.extras = {
+        **dict(example.metadata.extras or {}),
+        "template_risk_class": risk_class,
+        "template_target_expressible": expressibility["any"],
+        "template_target_expressible_operator_template": expressibility["operator_template"],
+        "template_target_expressible_operator_template_seen_query_key": expressibility[
+            "operator_template_seen_query_key"
+        ],
+        "template_target_expressible_operator_template_unseen_query_key": expressibility[
+            "operator_template_unseen_query_key"
+        ],
+        "template_target_expressible_position_transducer": expressibility["position_transducer"],
+        "template_target_has_unseen_literal": has_unseen_literal,
+    }
+    return example
 
 
 def _step_names_from_example(example: PuzzleExample) -> set[str]:
@@ -742,12 +844,7 @@ def _select_official_stage2_strict(
     if (
         example.metadata.subtype == "equation_template"
         and example.metadata.extras.get("template_risk_class")
-        in {
-            "ranker_miss_oracle_hit",
-            "operator_gap_oracle_miss",
-            "unseen_key_template_miss",
-            "unseen_literal_high_risk",
-        }
+        in HIGH_RISK_TEMPLATE_TRACE_CLASSES
     ):
         return False, "high_risk_template_trace"
     if not _metadata_value(example, "program_signature"):

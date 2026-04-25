@@ -6,6 +6,7 @@ import pytest
 from src.competition.schema import PuzzleExample, PuzzleMetadata, PuzzlePair
 from src.student import sft_dataset_builder as builder
 from src.student.sft_dataset_builder import (
+    _annotate_equation_template_risk,
     _select_official_stage2_silver,
     _select_official_stage2_strict,
     build_selected_sft_with_report,
@@ -106,6 +107,32 @@ def test_strict_gate_rejects_unseen_key_template_trace() -> None:
 
     assert ok is False
     assert reason == "high_risk_template_trace"
+
+
+def test_template_risk_annotation_marks_unseen_key_template_miss() -> None:
+    example = _example(
+        "template_unseen_key_annotation",
+        family="equation",
+        target="c",
+        query="%c",
+    )
+    example.metadata.subtype = "equation_template"
+    example.parsed_examples = [
+        PuzzlePair(input="#a", output="a"),
+        PuzzlePair(input="$b", output="b"),
+    ]
+    example.metadata.extras.update(
+        {
+            "query_solver_correct": False,
+            "solver_verifiable": True,
+            "support_coverage": 1.0,
+        }
+    )
+
+    _annotate_equation_template_risk(example)
+
+    assert example.metadata.extras["template_risk_class"] == "unseen_key_template_miss"
+    assert example.metadata.extras["template_target_expressible"] is True
 
 
 def test_silver_gate_only_accepts_hard_triad() -> None:

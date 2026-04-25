@@ -76,6 +76,8 @@ the diagnostic labels them as `ranker_miss_oracle_hit`,
 `unseen_literal_high_risk`. This keeps bad template rationales out of trace
 training while still allowing the final answer to be used in answer-only
 variants.
+The stage2 annotator now computes this risk field automatically during SFT data
+construction; it is no longer only a standalone report artifact.
 
 For cipher char-substitution prompts, chain search now prefers
 `vocabulary_cipher` before raw `fixed_substitution`. This lets the solver
