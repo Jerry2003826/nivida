@@ -355,7 +355,10 @@ def _rerun_settings_from_provenance(
         return None, payload
 
     provenance = read_json(provenance_path)
-    ok, required, found = stage2_provenance_matches_local(provenance)
+    ok, required, found = stage2_provenance_matches_local(
+        provenance,
+        output_path=train_jsonl,
+    )
     if not ok:
         payload = {
             "status": "insufficient_evidence",

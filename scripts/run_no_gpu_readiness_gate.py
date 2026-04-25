@@ -15,6 +15,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = Path("data/processed/no_gpu_readiness_gate.json")
 TEACHER_PARITY_OUTPUT = Path("data/processed/audit_teacher_gate_extractor_parity.json")
 TEACHER_PARITY_TRAIN_JSONL = Path("../data/processed/stage2_official_train_no_hard_valid.jsonl")
+REBUILD_STAGE2_TEACHER_INPUTS_SUMMARY = Path(
+    "data/processed/rebuild_stage2_teacher_inputs_summary.json"
+)
 ANSWER_FOCUSED_OUTPUTS = (
     Path("data/processed/stage2_answer_only_train.jsonl"),
     Path("data/processed/stage2_answer_only_valid.jsonl"),
@@ -27,6 +30,14 @@ TRACKED_REPORT_PATHS = (
     Path("docs/bit_permutation_diagnostic_latest.md"),
 )
 GENERATED_FILES = (
+    REBUILD_STAGE2_TEACHER_INPUTS_SUMMARY,
+    Path("../data/processed/official_train_tagged.jsonl"),
+    Path("../data/processed/official_train_tagged.jsonl.provenance.json"),
+    Path("../data/splits/official/splits.json"),
+    TEACHER_PARITY_TRAIN_JSONL,
+    Path("../data/processed/stage2_official_train_no_hard_valid.jsonl.provenance.json"),
+    Path("../data/processed/stage2_official_valid_hard_triad.jsonl"),
+    Path("../data/processed/stage2_official_valid_hard_triad.jsonl.provenance.json"),
     Path("data/processed/local_eval_manifests/manifest_summary.json"),
     Path("data/processed/solver_coverage_records.csv"),
     Path("data/processed/equation_template_diagnostic.json"),
@@ -147,6 +158,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
                 "tests/test_bit_permutation_diagnostic.py",
                 "tests/test_cloud_run_scripts.py",
                 "tests/test_shell_syntax.py",
+                "tests/test_stage2_annotation_provenance.py",
                 "tests/test_stage2_answer_focused_builder.py",
                 "-q",
             ),
@@ -171,6 +183,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
         GateStep("audit_solver_coverage", _python("scripts/audit_solver_coverage.py")),
         GateStep("diagnose_equation_template", _python("scripts/diagnose_equation_template.py")),
         GateStep("diagnose_bit_permutation", _python("scripts/diagnose_bit_permutation.py")),
+        GateStep("rebuild_stage2_teacher_inputs", _python("scripts/rebuild_stage2_teacher_inputs.py")),
         GateStep("build_stage2_answer_focused_data", _python("scripts/build_stage2_answer_focused_data.py")),
         GateStep(
             "recheck_chat_template_sha16",
@@ -206,6 +219,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
                 "tests/test_bit_permutation_diagnostic.py",
                 "tests/test_cloud_run_scripts.py",
                 "tests/test_shell_syntax.py",
+                "tests/test_stage2_annotation_provenance.py",
                 "tests/test_stage2_answer_focused_builder.py",
                 "-q",
             ),
@@ -253,7 +267,7 @@ def _step_payload(
     return payload
 
 
-def _teacher_parity_known_blocker(repo_root: Path) -> dict[str, str] | None:
+def _teacher_parity_failure(repo_root: Path) -> dict[str, str] | None:
     payload = _read_json_if_exists(repo_root / TEACHER_PARITY_OUTPUT)
     if not isinstance(payload, dict):
         return None
@@ -263,13 +277,11 @@ def _teacher_parity_known_blocker(repo_root: Path) -> dict[str, str] | None:
     ):
         return {
             "step": "teacher_gate_extractor_parity",
-            "status": "insufficient_evidence",
             "reason": "stage2 provenance missing or mismatched",
         }
     if payload.get("status") in {"pending_stage2_teacher_annotation", "insufficient_evidence"}:
         return {
             "step": "teacher_gate_extractor_parity",
-            "status": str(payload.get("status")),
             "reason": str(payload.get("reason", payload.get("status"))),
         }
     return None
@@ -392,11 +404,21 @@ def run_gate(
         status = "pass"
         message = None
         if step.name == "teacher_gate_extractor_parity":
-            blocker = _teacher_parity_known_blocker(root)
-            if blocker is not None:
-                known_blockers.append(blocker)
-                status = "known_blocker"
-                message = blocker["reason"]
+            failure = _teacher_parity_failure(root)
+            if failure is not None:
+                status = "fail"
+                message = failure["reason"]
+                step_results.append(
+                    _step_payload(
+                        step,
+                        status=status,
+                        duration_seconds=duration,
+                        outcome=outcome,
+                        message=message,
+                    )
+                )
+                failures.append(failure)
+                break
         step_results.append(
             _step_payload(
                 step,

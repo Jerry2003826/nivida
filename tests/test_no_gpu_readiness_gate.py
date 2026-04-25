@@ -27,18 +27,19 @@ def test_full_mode_plans_required_command_order() -> None:
         "python scripts/audit_solver_coverage.py",
         "python scripts/diagnose_equation_template.py",
         "python scripts/diagnose_bit_permutation.py",
+        "python scripts/rebuild_stage2_teacher_inputs.py",
         "python scripts/build_stage2_answer_focused_data.py",
         "python scripts/recheck_chat_template_sha16.py --output data/processed/recheck_chat_template_sha16.json",
         "sh scripts/check_prompt_suffix_alignment.sh data/processed/stage2_answer_only_train.jsonl data/processed/stage2_answer_only_valid.jsonl data/processed/stage2_short_trace_train.jsonl data/processed/stage2_short_trace_valid.jsonl",
         "python scripts/audit_teacher_gate_extractor_parity.py --train-jsonl ../data/processed/stage2_official_train_no_hard_valid.jsonl --allow-rerun-chain-search",
-        "python -m pytest tests/test_equation_template_diagnostic.py tests/test_bit_permutation_diagnostic.py tests/test_cloud_run_scripts.py tests/test_shell_syntax.py tests/test_stage2_answer_focused_builder.py -q",
+        "python -m pytest tests/test_equation_template_diagnostic.py tests/test_bit_permutation_diagnostic.py tests/test_cloud_run_scripts.py tests/test_shell_syntax.py tests/test_stage2_annotation_provenance.py tests/test_stage2_answer_focused_builder.py -q",
         "python -m pytest -q",
         "git diff --check",
         "git diff --name-only -- docs/solver_coverage_audit_latest.md docs/equation_template_diagnostic_latest.md docs/bit_permutation_diagnostic_latest.md",
     ]
 
 
-def test_teacher_parity_insufficient_evidence_is_known_blocker(tmp_path: Path) -> None:
+def test_teacher_parity_insufficient_evidence_fails_gate(tmp_path: Path) -> None:
     calls: list[list[str]] = []
 
     def runner(command: list[str], *, cwd: Path) -> CommandOutcome:
@@ -66,12 +67,12 @@ def test_teacher_parity_insufficient_evidence_is_known_blocker(tmp_path: Path) -
     )
 
     assert calls
-    assert report["status"] == "pass_with_known_blockers"
-    assert report["ready_for_gpu"] is True
-    assert report["known_blockers"] == [
+    assert report["status"] == "fail"
+    assert report["ready_for_gpu"] is False
+    assert report["known_blockers"] == []
+    assert report["failures"] == [
         {
             "step": "teacher_gate_extractor_parity",
-            "status": "insufficient_evidence",
             "reason": "stage2 provenance missing or mismatched",
         }
     ]

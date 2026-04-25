@@ -124,9 +124,58 @@ def build_stage2_annotation_provenance(
     }
 
 
+def _sha256_file_if_present(path: str | Path) -> str | None:
+    target = Path(path)
+    if not target.is_file():
+        return None
+    return sha256_file(target)
+
+
+def build_stage2_subset_provenance(
+    *,
+    input_path: str | Path,
+    output_path: str | Path,
+    split_file: str | Path,
+    selection: Mapping[str, Any],
+    raw_input_path: str | Path | None = None,
+) -> dict[str, Any]:
+    input_file = Path(input_path)
+    output_file = Path(output_path)
+    split_path = Path(split_file)
+    payload: dict[str, Any] = {
+        **expected_stage2_annotation_settings(),
+        "provenance_type": "stage2_teacher_subset",
+        "code_commit": current_git_commit(),
+        "input_jsonl_path": str(input_file),
+        "input_jsonl_sha256": sha256_file(input_file),
+        "split_file_path": str(split_path),
+        "split_file_sha256": _sha256_file_if_present(split_path),
+        "selection": dict(selection),
+        "output_jsonl_path": str(output_file),
+        "output_jsonl_sha256": sha256_file(output_file),
+        "created_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    if raw_input_path is not None:
+        raw_path = Path(raw_input_path)
+        payload["raw_input_path"] = str(raw_path)
+        payload["raw_input_sha256"] = _sha256_file_if_present(raw_path)
+    return payload
+
+
 def stage2_provenance_matches_local(
     provenance: Mapping[str, Any],
+    *,
+    output_path: str | Path | None = None,
 ) -> tuple[bool, dict[str, Any], dict[str, Any]]:
     required = expected_stage2_annotation_settings()
     found = {key: provenance.get(key) for key in required}
+    if output_path is not None:
+        required = {
+            **required,
+            "output_jsonl_sha256": sha256_file(output_path),
+        }
+        found = {
+            **found,
+            "output_jsonl_sha256": provenance.get("output_jsonl_sha256"),
+        }
     return found == required, required, found

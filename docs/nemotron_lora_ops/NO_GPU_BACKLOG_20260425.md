@@ -17,6 +17,7 @@ present.
 | Chat-template SHA recheck | done | `python scripts/recheck_chat_template_sha16.py --output data/processed/recheck_chat_template_sha16.json` |
 | Answer-focused datasets | done | answer-only train/valid rows `4689/658`; short-trace train/valid rows `4689/658` |
 | Cross-platform answer-focused builder | done | `python scripts/build_stage2_answer_focused_data.py --dry-run` resolves parent data on Windows |
+| Stage2 teacher provenance rebuild | done | `python scripts/rebuild_stage2_teacher_inputs.py` rebuilds parent official tagged data, splits, stage2 subsets, and subset provenance |
 | No-GPU readiness gate | done | `make no-gpu-readiness` runs the full local pre-GPU gate and writes `data/processed/no_gpu_readiness_gate.json` |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10694 rows, bad `0` |
 | Fast local tests | done | `23 passed, 1 skipped` for diagnostic/cloud/shell/tokenizer tests |
@@ -39,9 +40,12 @@ present.
   cross-platform entrypoint for answer-only and short-trace data preparation.
   The `.sh` file remains a thin Linux wrapper.
 - `scripts/run_no_gpu_readiness_gate.py` is now the canonical pre-GPU local
-  gate. It regenerates canonical reports, runs local checks and tests, records
-  known non-blocking teacher-provenance evidence gaps, and fails if tracked
-  reports drift.
+  gate. It regenerates canonical reports and stage2 teacher provenance, runs
+  local checks and tests, and fails if teacher parity lacks provenance or if
+  tracked reports drift.
+- `scripts/rebuild_stage2_teacher_inputs.py` is the canonical CPU-only way to
+  rebuild current-code stage2 teacher inputs before answer-focused data or
+  teacher-gate parity audits.
 
 ## Current Solver Read
 
@@ -58,26 +62,14 @@ present.
   - The ranker misses are usually 1-bit top/oracle differences, so future
     changes should prefer verifier/ranker features over widening boolean search.
 
-## Blocked Or Incomplete Without Better Local Artifacts
+## Resolved Local Blocker
 
-- `scripts/audit_teacher_gate_extractor_parity.py` cannot fully audit the
-  current parent `stage2_official_train_no_hard_valid.jsonl` because cached
-  `support_pairs/query_prediction` are absent and the expected provenance file
-  is missing:
-
-```json
-{
-  "status": "insufficient_evidence",
-  "reason": "stage2 provenance missing or mismatched",
-  "required": {
-    "provenance_path": "..\\data\\processed\\stage2_official_train_no_hard_valid.jsonl.provenance.json"
-  },
-  "found": null
-}
-```
-
-Do not treat this audit as passed until the stage2 annotation provenance is
-available or the dataset is rebuilt with provenance.
+- Teacher-gate parity is no longer allowed to pass with missing provenance.
+  `scripts/rebuild_stage2_teacher_inputs.py` rebuilds
+  `../data/processed/stage2_official_train_no_hard_valid.jsonl` and its
+  `.provenance.json`; `scripts/audit_teacher_gate_extractor_parity.py` now
+  checks the provenance output hash against the actual JSONL before rerunning
+  chain search.
 
 ## Next GPU Boot
 
@@ -90,10 +82,9 @@ JSON report:
 make no-gpu-readiness
 ```
 
-Proceed only when `ready_for_gpu` is `true`. A known
-`teacher_gate_extractor_parity` `insufficient_evidence` blocker is acceptable
-for the next inference-only boot; tracked report drift is not acceptable and
-must be reviewed and committed first.
+Proceed only when `status` is `pass`, `ready_for_gpu` is `true`, and
+`known_blockers` is empty. Teacher parity `insufficient_evidence` and tracked
+report drift are both hard failures.
 
 ```bash
 cd /workspace/nivida_h200_run

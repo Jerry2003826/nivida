@@ -4,6 +4,11 @@ import json
 import subprocess
 from pathlib import Path
 
+from src.common.io import write_json
+from src.teacher.stage2_annotation_provenance import (
+    build_stage2_subset_provenance,
+)
+
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -252,3 +257,121 @@ def test_missing_provenance_returns_insufficient_evidence(tmp_path: Path) -> Non
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["status"] == "insufficient_evidence"
     assert data["reason"] == "stage2 provenance missing or mismatched"
+
+
+def test_provenance_hash_mismatch_returns_insufficient_evidence(tmp_path: Path) -> None:
+    train = tmp_path / "train.jsonl"
+    _write_jsonl(
+        train,
+        [
+            _make_annotated_row(
+                id="r6",
+                family="equation",
+                answer_type="answer_integer",
+                teacher_conf=0.9,
+                support_pairs=[("1+1", "2", "2")],
+                query_pred="2",
+                target="2",
+                program_sig="sig-r6",
+                include_cached_support_pairs=False,
+            ),
+        ],
+    )
+    synth = tmp_path / "synth.jsonl"
+    synth.write_text("", encoding="utf-8")
+    provenance = build_stage2_subset_provenance(
+        input_path=train,
+        output_path=train,
+        split_file=tmp_path / "splits.json",
+        selection={
+            "split_name": "rule_novelty_all",
+            "split_role": "train",
+        },
+    )
+    provenance["output_jsonl_sha256"] = "0" * 64
+    provenance_path = tmp_path / "train.jsonl.provenance.json"
+    write_json(provenance_path, provenance)
+    out = tmp_path / "audit.json"
+
+    subprocess.check_call(
+        [
+            "python",
+            str(REPO / "scripts/audit_teacher_gate_extractor_parity.py"),
+            "--train-jsonl",
+            str(train),
+            "--synth-jsonl",
+            str(synth),
+            "--stage2-provenance-json",
+            str(provenance_path),
+            "--output",
+            str(out),
+            "--allow-rerun-chain-search",
+        ]
+    )
+
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["status"] == "insufficient_evidence"
+    assert data["reason"] == "stage2 provenance missing or mismatched"
+    assert data["required"]["output_jsonl_sha256"] != data["found"]["output_jsonl_sha256"]
+
+
+def test_valid_provenance_allows_rerun_audit_summary(tmp_path: Path) -> None:
+    train = tmp_path / "train.jsonl"
+    _write_jsonl(
+        train,
+        [
+            _make_annotated_row(
+                id="r7",
+                family="equation",
+                answer_type="answer_integer",
+                teacher_conf=0.9,
+                support_pairs=[("1+1", "2", "2")],
+                query_pred="2",
+                target="2",
+                program_sig="sig-r7",
+                include_cached_support_pairs=False,
+                repo_support_coverage=1.0,
+                repo_solver_verifiable=True,
+            ),
+        ],
+    )
+    synth = tmp_path / "synth.jsonl"
+    synth.write_text("", encoding="utf-8")
+    provenance_path = tmp_path / "train.jsonl.provenance.json"
+    write_json(
+        provenance_path,
+        build_stage2_subset_provenance(
+            input_path=train,
+            output_path=train,
+            split_file=tmp_path / "splits.json",
+            selection={
+                "split_name": "rule_novelty_all",
+                "split_role": "train",
+                "exclude_split_name": "hard_triad_rule_novelty",
+                "exclude_split_role": "valid",
+            },
+        ),
+    )
+    out = tmp_path / "audit.json"
+
+    subprocess.check_call(
+        [
+            "python",
+            str(REPO / "scripts/audit_teacher_gate_extractor_parity.py"),
+            "--train-jsonl",
+            str(train),
+            "--synth-jsonl",
+            str(synth),
+            "--stage2-provenance-json",
+            str(provenance_path),
+            "--output",
+            str(out),
+            "--allow-rerun-chain-search",
+        ]
+    )
+
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert "summary" in data
+    assert data["summary"]["num_train_examples"] == 1
+    assert data["by_annotation_source"]["rerun"]["count"] == 1
+    assert data["inputs"]["stage2_provenance_json"] == str(provenance_path)
