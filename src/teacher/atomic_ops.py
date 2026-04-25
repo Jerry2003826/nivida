@@ -147,6 +147,30 @@ def _template_generalisation_key(tokens: list[tuple[str, int | str]]) -> tuple[i
     )
 
 
+def _template_rank_features(templates: dict[str, list[tuple[str, int | str]]]) -> dict[str, int]:
+    literal_count = 0
+    repeated_positions = 0
+    backward_edges = 0
+    skipped_unique_positions = 0
+    for template in templates.values():
+        source_positions = [int(value) for kind, value in template if kind == "pos"]
+        literal_count += sum(1 for kind, _ in template if kind == "lit")
+        repeated_positions += len(source_positions) - len(set(source_positions))
+        backward_edges += sum(
+            1 for left, right in zip(source_positions, source_positions[1:]) if right < left
+        )
+        if source_positions:
+            span = max(source_positions) - min(source_positions) + 1
+            skipped_unique_positions += span - len(set(source_positions))
+    return {
+        "literal_count": literal_count,
+        "repeated_positions": repeated_positions,
+        "backward_edges": backward_edges,
+        "skipped_unique_positions": skipped_unique_positions,
+        "template_count": len(templates),
+    }
+
+
 def _binary_vector(text: str) -> list[int]:
     stripped = text.strip()
     if not _is_binary_string(stripped):
@@ -789,7 +813,14 @@ class OperatorTemplateOp(AtomicOp):
                     break
                 templates[key_char] = chosen
             if valid and templates:
-                candidates.append({"key_position": key_position, "templates": templates, "input_length": input_length})
+                candidates.append(
+                    {
+                        "key_position": key_position,
+                        "templates": templates,
+                        "input_length": input_length,
+                        "template_rank_features": _template_rank_features(templates),
+                    }
+                )
         return candidates
 
     def apply(self, text: str, params: dict[str, Any]) -> str:

@@ -40,6 +40,10 @@ _OP_ALIASES = {
     "affine_transform": "affine",
 }
 
+_SIGNATURE_IGNORED_PARAM_KEYS = {
+    "template_rank_features",
+}
+
 
 @dataclass(slots=True)
 class ProgramSignature:
@@ -97,7 +101,16 @@ def parameter_to_token(value: Any) -> str:
 
 def canonicalize_step(op_name: str, params: dict[str, Any]) -> str:
     alias = _OP_ALIASES.get(op_name, op_name)
-    stable_params = dict(sorted((_stable_param_value(params) or {}).items(), key=lambda item: str(item[0])))
+    stable_params = dict(
+        sorted(
+            (
+                (key, _stable_param_value(value))
+                for key, value in (params or {}).items()
+                if key not in _SIGNATURE_IGNORED_PARAM_KEYS
+            ),
+            key=lambda item: str(item[0]),
+        )
+    )
     if not stable_params:
         return alias
     if alias == "xor" and "mask" in stable_params:

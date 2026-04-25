@@ -43,6 +43,35 @@ def test_different_params_change_signature_but_can_share_bucket() -> None:
     assert first.signature_bucket == second.signature_bucket == build_signature_bucket(first.signature)
 
 
+def test_template_rank_features_do_not_change_signature() -> None:
+    base_step = type(
+        "Step",
+        (),
+        {
+            "op_name": "operator_template",
+            "params": {"key_position": 0, "templates": {"a": [("pos", 0)]}, "input_length": 1},
+        },
+    )()
+    metadata_step = type(
+        "Step",
+        (),
+        {
+            "op_name": "operator_template",
+            "params": {
+                "key_position": 0,
+                "templates": {"a": [("pos", 0)]},
+                "input_length": 1,
+                "template_rank_features": {"literal_count": 0},
+            },
+        },
+    )()
+
+    base = canonicalize_candidate(type("Candidate", (), {"steps": [base_step]})(), "equation", "equation_template")
+    metadata = canonicalize_candidate(type("Candidate", (), {"steps": [metadata_step]})(), "equation", "equation_template")
+
+    assert metadata.signature == base.signature
+
+
 def test_trace_renderers_include_boxed_answer() -> None:
     signature = canonicalize_candidate(_candidate(), "bit", "bit_xor_mask")
     short_trace = render_short_trace(signature, "01101001")

@@ -391,6 +391,12 @@ class ChainSearchEngine:
                         "graph_prior_score": state.graph_prior_score,
                         "complexity_penalty": state.complexity_penalty,
                         "equation_mode": equation_mode,
+                        "template_rank_features": [
+                            step.params.get("template_rank_features")
+                            for step in state.steps
+                            if isinstance(step.params, dict)
+                            and step.params.get("template_rank_features") is not None
+                        ],
                     },
                 )
             )

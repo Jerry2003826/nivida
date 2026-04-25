@@ -163,6 +163,28 @@ def test_binary_equation_rule_prefers_abs_difference_when_direction_ambiguous() 
     assert op.apply("80:32", fit.params) == "48"
 
 
+def test_operator_template_params_include_rank_features() -> None:
+    op = OperatorTemplateOp()
+    params = op.candidate_params(
+        [
+            ("#/-\\@", "-@#"),
+            ("\"\"+#)", ")/"),
+            ("'#+/#", "%\""),
+            ("\\)-)@", "-'\""),
+        ]
+    )
+
+    assert params
+    features = params[0]["template_rank_features"]
+    assert set(features) >= {
+        "literal_count",
+        "repeated_positions",
+        "backward_edges",
+        "skipped_unique_positions",
+        "template_count",
+    }
+
+
 def test_binary_affine_transform_prefers_sparse_underdetermined_solution() -> None:
     op = BinaryAffineTransformOp()
     fit = op.fit(
