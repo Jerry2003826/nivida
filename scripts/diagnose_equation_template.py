@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.competition.metrics import competition_correct  # noqa: E402
 from src.competition.schema import PuzzleExample  # noqa: E402
+from src.teacher.atomic_ops import OperatorTemplateOp, PositionTransducerOp  # noqa: E402
 from src.teacher.chain_search import ChainSearchEngine  # noqa: E402
 from src.teacher.family_tagger import apply_family_tags  # noqa: E402
 
@@ -64,6 +65,8 @@ def classify_template_risk(
     ambiguity_count: int,
     has_unseen_literal: bool,
     support_full: bool,
+    target_expressible: bool = False,
+    target_uses_unseen_query_key: bool = False,
 ) -> str:
     if not support_full:
         return "operator_gap_oracle_miss"
@@ -73,6 +76,10 @@ def classify_template_risk(
         return "ranker_miss_oracle_hit"
     if has_unseen_literal:
         return "unseen_literal_high_risk"
+    if target_uses_unseen_query_key:
+        return "unseen_key_template_miss"
+    if target_expressible:
+        return "expressible_oracle_miss"
     return "operator_gap_oracle_miss"
 
 
@@ -83,6 +90,39 @@ def _support_full(candidate: Any, example: PuzzleExample) -> bool:
         competition_correct(prediction, pair.output)
         for prediction, pair in zip(candidate.predictions, example.parsed_examples)
     )
+
+
+def target_expressibility(
+    *,
+    examples: list[tuple[str, str]],
+    query: str,
+    target: str,
+) -> dict[str, bool]:
+    augmented_examples = [*examples, (query, target)]
+    template_params = OperatorTemplateOp().candidate_params(augmented_examples)
+    seen_query_key = False
+    if template_params:
+        for params in template_params:
+            key_position = int(params["key_position"])
+            if key_position >= len(query):
+                continue
+            support_key_chars = {
+                input_text[key_position]
+                for input_text, _ in examples
+                if key_position < len(input_text)
+            }
+            if query[key_position] in support_key_chars:
+                seen_query_key = True
+                break
+    operator_template = bool(template_params)
+    position_transducer = bool(PositionTransducerOp().candidate_params(augmented_examples))
+    return {
+        "operator_template": operator_template,
+        "operator_template_seen_query_key": seen_query_key,
+        "operator_template_unseen_query_key": operator_template and not seen_query_key,
+        "position_transducer": position_transducer,
+        "any": operator_template or position_transducer,
+    }
 
 
 def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: int) -> dict[str, Any] | None:
@@ -126,12 +166,19 @@ def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: i
             "target": target,
         }
     )
+    expressibility = target_expressibility(
+        examples=[(pair.input, pair.output) for pair in example.parsed_examples],
+        query=example.query,
+        target=target,
+    )
     top_support_full = bool(candidates) and _support_full(candidates[0], example)
     risk = classify_template_risk(
         oracle_rank=oracle_rank,
         ambiguity_count=support_full_count,
         has_unseen_literal=provenance["unseen"] > 0,
         support_full=top_support_full,
+        target_expressible=expressibility["any"],
+        target_uses_unseen_query_key=expressibility["operator_template_unseen_query_key"],
     )
     return {
         "id": example.id,
@@ -145,6 +192,13 @@ def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: i
         "oracle_rank": oracle_rank,
         "ambiguity_count": support_full_count,
         "risk_class": risk,
+        "target_expressible": expressibility["any"],
+        "target_expressible_operator_template": expressibility["operator_template"],
+        "target_expressible_operator_template_seen_query_key": expressibility["operator_template_seen_query_key"],
+        "target_expressible_operator_template_unseen_query_key": expressibility[
+            "operator_template_unseen_query_key"
+        ],
+        "target_expressible_position_transducer": expressibility["position_transducer"],
         **{f"provenance_{key}": value for key, value in provenance.items()},
         "candidates": candidate_rows,
     }
@@ -176,8 +230,8 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
     lines = [
         "# Equation Template Diagnostic",
         "",
-        "| manifest | risk_class | n | top1_acc | oracle_at_k | unseen_literal_rows |",
-        "| --- | --- | ---: | ---: | ---: | ---: |",
+        "| manifest | risk_class | n | top1_acc | oracle_at_k | target_expressible | unseen_literal_rows |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     manifests = sorted({str(row.get("path", "")) for row in rows})
     for manifest in manifests:
@@ -187,8 +241,24 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
             group = [row for row in manifest_rows if row["risk_class"] == risk_class]
             top1 = _rate([bool(row["top_query_correct"]) for row in group])
             oracle = _rate([row["oracle_rank"] is not None for row in group])
+            expressible = _rate([bool(row["target_expressible"]) for row in group])
             unseen = sum(int(row["provenance_unseen"]) > 0 for row in group)
-            lines.append(f"| `{manifest}` | {risk_class} | {len(group)} | {top1:.4f} | {oracle:.4f} | {unseen} |")
+            lines.append(
+                f"| `{manifest}` | {risk_class} | {len(group)} | {top1:.4f} | "
+                f"{oracle:.4f} | {expressible:.4f} | {unseen} |"
+            )
+
+    lines.extend(["", "## Target Expressibility", ""])
+    expressible_count = sum(bool(row["target_expressible"]) for row in rows)
+    template_count = sum(bool(row["target_expressible_operator_template"]) for row in rows)
+    position_count = sum(bool(row["target_expressible_position_transducer"]) for row in rows)
+    lines.append(f"- current ops can fit support+query target: `{expressible_count} / {len(rows)}`")
+    lines.append(f"- via `operator_template`: `{template_count}`")
+    seen_key_count = sum(bool(row["target_expressible_operator_template_seen_query_key"]) for row in rows)
+    unseen_key_count = sum(bool(row["target_expressible_operator_template_unseen_query_key"]) for row in rows)
+    lines.append(f"- via `operator_template` with query key seen in support: `{seen_key_count}`")
+    lines.append(f"- via `operator_template` with query key unseen in support: `{unseen_key_count}`")
+    lines.append(f"- via `position_transducer`: `{position_count}`")
 
     lines.extend(["", "## Top Misses", ""])
     misses = [row for row in rows if not row["top_query_correct"]][:20]

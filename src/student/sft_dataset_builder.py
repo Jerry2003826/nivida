@@ -742,7 +742,12 @@ def _select_official_stage2_strict(
     if (
         example.metadata.subtype == "equation_template"
         and example.metadata.extras.get("template_risk_class")
-        in {"ranker_miss_oracle_hit", "operator_gap_oracle_miss", "unseen_literal_high_risk"}
+        in {
+            "ranker_miss_oracle_hit",
+            "operator_gap_oracle_miss",
+            "unseen_key_template_miss",
+            "unseen_literal_high_risk",
+        }
     ):
         return False, "high_risk_template_trace"
     if not _metadata_value(example, "program_signature"):

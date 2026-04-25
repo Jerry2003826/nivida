@@ -57,6 +57,14 @@ the signal is real but small. The next useful local change is broader
 template/operator generation plus a verifier that can reject underconstrained
 support-perfect programs.
 
+The diagnostic now separates target-expressible misses from true operator
+gaps. Current ops can fit the labeled support+query target for 207 / 275 rows,
+but only 22 rows have an `operator_template` fit where the query key is already
+demonstrated in support. The largest bucket is `unseen_key_template_miss`
+(135 / 275), meaning the trace is not reliable even when a target-compatible
+template exists. Treat these as answer-only/silver material, not strict
+token-trace supervision. The remaining pure operator gap is 58 / 275.
+
 Stage2 trace selection is now query-aware on labeled data. If a solver fits all
 support examples but its query prediction disagrees with the known target, the
 sample is rejected from the strict trace bucket and can only enter as
@@ -64,9 +72,10 @@ answer-only silver supervision when that pool is enabled.
 
 Stage2 strict selection also rejects high-risk `equation_template` traces when
 the diagnostic labels them as `ranker_miss_oracle_hit`,
-`operator_gap_oracle_miss`, or `unseen_literal_high_risk`. This keeps bad
-template rationales out of trace training while still allowing the final answer
-to be used in answer-only variants.
+`operator_gap_oracle_miss`, `unseen_key_template_miss`, or
+`unseen_literal_high_risk`. This keeps bad template rationales out of trace
+training while still allowing the final answer to be used in answer-only
+variants.
 
 For cipher char-substitution prompts, chain search now prefers
 `vocabulary_cipher` before raw `fixed_substitution`. This lets the solver

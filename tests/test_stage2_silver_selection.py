@@ -97,6 +97,17 @@ def test_strict_gate_rejects_high_risk_template_trace() -> None:
     assert reason == "high_risk_template_trace"
 
 
+def test_strict_gate_rejects_unseen_key_template_trace() -> None:
+    example = _example("template_unseen_key", family="equation", target="X", query="a*b")
+    example.metadata.subtype = "equation_template"
+    example.metadata.extras["template_risk_class"] = "unseen_key_template_miss"
+
+    ok, reason = _select_official_stage2_strict(example)
+
+    assert ok is False
+    assert reason == "high_risk_template_trace"
+
+
 def test_silver_gate_only_accepts_hard_triad() -> None:
     easy_silver_candidate = _example(
         "easy", family="numeral", confidence=0.70, support_coverage=0.80, solver_verifiable=False

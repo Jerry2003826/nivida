@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from scripts.diagnose_equation_template import (
     classify_template_risk,
+    target_expressibility,
     target_char_provenance,
 )
 
@@ -55,3 +56,44 @@ def test_classify_template_risk_unseen_literal() -> None:
     )
 
     assert risk == "unseen_literal_high_risk"
+
+
+def test_classify_template_risk_expressible_oracle_miss() -> None:
+    risk = classify_template_risk(
+        oracle_rank=None,
+        ambiguity_count=6,
+        has_unseen_literal=False,
+        support_full=True,
+        target_expressible=True,
+    )
+
+    assert risk == "expressible_oracle_miss"
+
+
+def test_classify_template_risk_unseen_key_template_miss() -> None:
+    risk = classify_template_risk(
+        oracle_rank=None,
+        ambiguity_count=6,
+        has_unseen_literal=False,
+        support_full=True,
+        target_expressible=True,
+        target_uses_unseen_query_key=True,
+    )
+
+    assert risk == "unseen_key_template_miss"
+
+
+def test_target_expressibility_detects_template_fit_with_query_target() -> None:
+    expressibility = target_expressibility(
+        examples=[
+            (":'*?}", ":'?}"),
+            ("})+::", "){:"),
+            ("##-\\{", "-'#"),
+        ],
+        query="?'-\\\\",
+        target="-'?",
+    )
+
+    assert expressibility["any"]
+    assert expressibility["operator_template"]
+    assert expressibility["operator_template_seen_query_key"]

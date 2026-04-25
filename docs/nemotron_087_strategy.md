@@ -83,10 +83,20 @@ few ambiguous cases, but most misses remain `operator_gap_oracle_miss`, so pure
 reranking cannot solve the bulk of this subtype; the operator/template search
 space itself needs expansion.
 
+The target-expressibility split tightens that diagnosis. If the labeled
+query-target pair is added as one more support example, current operators can
+fit 207 / 275 rows, but only 22 rows have an `operator_template` fit where the
+query key was already seen in the support set. The dominant failure is now
+`unseen_key_template_miss` (135 / 275): the answer is compatible with a
+template, but it requires a key character whose template was not demonstrated.
+That is unsafe trace supervision, not a normal ranker miss. The remaining
+operator-space gap is 58 / 275.
+
 Strict stage2 trace selection now rejects `equation_template` traces labeled as
 `ranker_miss_oracle_hit`, `operator_gap_oracle_miss`, or
-`unseen_literal_high_risk`. Those samples can still be used as answer-only
-silver supervision, but not as chain-of-thought/rationale traces.
+`unseen_key_template_miss`, or `unseen_literal_high_risk`. Those samples can
+still be used as answer-only silver supervision, but not as
+chain-of-thought/rationale traces.
 
 Numeric equations are a smaller but cleaner target. Query-aware operator priors
 and lookup fallbacks lifted `hard_triad_full` `equation_numeric` from `0.4500`
