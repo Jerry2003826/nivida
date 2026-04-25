@@ -185,6 +185,16 @@ def test_operator_template_params_include_rank_features() -> None:
     }
 
 
+def test_operator_template_keeps_support_equivalent_literal_alternatives() -> None:
+    op = OperatorTemplateOp()
+    params = op.candidate_params([("a*b", "a"), ("a+b", "a")])
+
+    assert len(params) > 1
+    predictions = {op.apply("x*y", param) for param in params}
+    assert "a" in predictions
+    assert "x" in predictions
+
+
 def test_binary_affine_transform_prefers_sparse_underdetermined_solution() -> None:
     op = BinaryAffineTransformOp()
     fit = op.fit(

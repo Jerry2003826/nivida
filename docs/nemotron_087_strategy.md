@@ -56,8 +56,8 @@ future gains.
 Symbolic equation templates previously mislabeled as `equation_position`
 
 - `combined_balanced_48pf`: 0.0256 query accuracy
-- `proxy_all_balanced_64pf`: 0.0652
-- `hard_triad_full`: 0.0737
+- `proxy_all_balanced_64pf`: 0.0870
+- `hard_triad_full`: 0.0842
 - support-full is near 1.0, so the search is overfitting demonstrations.
 
 This is the clearest system-cracking target.
@@ -75,11 +75,13 @@ the current hard-triad manifest, audit retagging moves 190 / 193 old position
 rows to template-like.
 
 The latest equation-template diagnostic makes the next bottleneck clearer:
-across the three local manifests, only 18 / 275 rows are top-1 correct and only
-21 / 275 are oracle-at-10. The hard-triad slice is similar: 14 / 190 top-1 and
-16 / 190 oracle-at-10. Most misses are `operator_gap_oracle_miss`, so pure
-reranking cannot solve the bulk of this subtype; the operator/template search
-space itself needs expansion.
+across the three local manifests, only 21 / 275 rows are top-1 correct and only
+23 / 275 are oracle-at-10. The hard-triad slice is similar: 16 / 190 top-1 and
+17 / 190 oracle-at-10. Keeping support-equivalent literal alternatives and
+adding a small query-copy tie-break helped a few ambiguous cases, but most
+misses remain `operator_gap_oracle_miss`, so pure reranking cannot solve the
+bulk of this subtype; the operator/template search space itself needs
+expansion.
 
 Strict stage2 trace selection now rejects `equation_template` traces labeled as
 `ranker_miss_oracle_hit`, `operator_gap_oracle_miss`, or

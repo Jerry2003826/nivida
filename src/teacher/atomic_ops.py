@@ -796,32 +796,52 @@ class OperatorTemplateOp(AtomicOp):
             for index in range(input_length)
             if any(not example_input[index].isalnum() for example_input, _ in examples)
         ]
-        candidates: list[dict[str, Any]] = []
+        primary_candidates: list[dict[str, Any]] = []
+        alternate_candidates: list[dict[str, Any]] = []
         for key_position in key_positions:
-            templates: dict[str, list[tuple[str, int | str]]] = {}
+            template_options_by_key: dict[str, list[list[tuple[str, int | str]]]] = {}
             valid = True
             for key_char in sorted({input_text[key_position] for input_text, _ in examples}):
                 grouped_examples = [(input_text, output_text) for input_text, output_text in examples if input_text[key_position] == key_char]
                 template_options = _enumerate_templates(grouped_examples[0][0], grouped_examples[0][1])
-                chosen: list[tuple[str, int | str]] | None = None
-                for template in template_options:
-                    if all(_render_template_tokens(input_text, template) == output_text for input_text, output_text in grouped_examples):
-                        chosen = template
-                        break
-                if chosen is None:
+                valid_templates = [
+                    template
+                    for template in template_options
+                    if all(_render_template_tokens(input_text, template) == output_text for input_text, output_text in grouped_examples)
+                ]
+                if not valid_templates:
                     valid = False
                     break
-                templates[key_char] = chosen
-            if valid and templates:
-                candidates.append(
-                    {
-                        "key_position": key_position,
-                        "templates": templates,
-                        "input_length": input_length,
-                        "template_rank_features": _template_rank_features(templates),
-                    }
-                )
-        return candidates
+                template_options_by_key[key_char] = valid_templates[:4]
+            if valid and template_options_by_key:
+                key_chars = sorted(template_options_by_key)
+                combinations = itertools.product(*(template_options_by_key[key_char] for key_char in key_chars))
+                key_position_candidates: list[dict[str, Any]] = []
+                for choice_index, choice in enumerate(combinations):
+                    if choice_index >= 24:
+                        break
+                    templates = dict(zip(key_chars, choice))
+                    key_position_candidates.append(
+                        {
+                            "key_position": key_position,
+                            "templates": templates,
+                            "input_length": input_length,
+                            "template_rank_features": _template_rank_features(templates),
+                        }
+                    )
+                if key_position_candidates:
+                    primary_candidates.append(key_position_candidates[0])
+                    alternate_candidates.extend(key_position_candidates[1:])
+        alternate_candidates.sort(
+            key=lambda params: (
+                params["template_rank_features"]["literal_count"],
+                params["template_rank_features"]["repeated_positions"],
+                params["template_rank_features"]["backward_edges"],
+                params["template_rank_features"]["skipped_unique_positions"],
+                params["key_position"],
+            )
+        )
+        return primary_candidates + alternate_candidates
 
     def apply(self, text: str, params: dict[str, Any]) -> str:
         if len(text) != int(params["input_length"]):

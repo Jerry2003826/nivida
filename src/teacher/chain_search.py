@@ -25,6 +25,19 @@ def _is_binary_string(text: str) -> bool:
     return bool(stripped) and set(stripped) <= {"0", "1"}
 
 
+def _query_char_coverage(prediction: str | None, query: str | None) -> float:
+    if not prediction or not query:
+        return 0.0
+    remaining = list(query)
+    covered = 0
+    for char in prediction:
+        if char not in remaining:
+            continue
+        covered += 1
+        remaining.remove(char)
+    return covered / max(1, len(prediction))
+
+
 _EQUATION_PATTERN = re.compile(r"^\s*\d+\D\d+\s*$")
 
 
@@ -334,6 +347,8 @@ class ChainSearchEngine:
                             equation_mode=equation_mode,
                             complexity_penalty=total_complexity_penalty,
                         )
+                        if equation_mode == "symbolic":
+                            score += 0.01 * _query_char_coverage(query_value, query)
                         step.step_score = score
                         expanded.append(
                             _SearchState(
@@ -391,6 +406,7 @@ class ChainSearchEngine:
                         "graph_prior_score": state.graph_prior_score,
                         "complexity_penalty": state.complexity_penalty,
                         "equation_mode": equation_mode,
+                        "query_char_coverage": _query_char_coverage(state.query_value, query),
                         "template_rank_features": [
                             step.params.get("template_rank_features")
                             for step in state.steps

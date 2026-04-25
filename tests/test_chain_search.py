@@ -145,6 +145,30 @@ def test_chain_search_solves_operator_template_equation() -> None:
     assert candidates[0].steps[0].op_name == "operator_template"
 
 
+def test_chain_search_prefers_query_derived_symbolic_template_tie() -> None:
+    engine = ChainSearchEngine(max_depth=1, beam_width=24)
+    example = PuzzleExample(
+        id="equation_template_query_prior",
+        raw_prompt="",
+        official_instruction="",
+        parsed_examples=[
+            PuzzlePair(input="\"#+@[", output="\"#@["),
+            PuzzlePair(input="[>*|(", output="@:<"),
+            PuzzlePair(input="<(-[:", output="|:"),
+            PuzzlePair(input="|#-<\"", output="(<"),
+            PuzzlePair(input="@@*(>", output="(\"|:"),
+        ],
+        query="(%+|[",
+        metadata=PuzzleMetadata(official_family="equation", subtype="equation_template"),
+    )
+
+    candidates = engine.solve_example(example, top_k=3)
+
+    assert candidates
+    assert candidates[0].query_prediction == "(%|["
+    assert candidates[0].steps[0].op_name == "operator_template"
+
+
 def test_chain_search_prefers_vocab_completion_for_char_substitution() -> None:
     engine = ChainSearchEngine(max_depth=1, beam_width=8)
     example = PuzzleExample(
