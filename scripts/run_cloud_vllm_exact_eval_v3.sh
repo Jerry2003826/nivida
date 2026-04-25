@@ -2,19 +2,16 @@
 set -euo pipefail
 
 # Run on the GPU server from /workspace/nivida_h200_run.
-# This script only generates prediction JSONL files. Scoring is local.
-#
-# Defaults evaluate the LB-selection candidate set against the main local
-# exact proxy plus two auxiliary proxies:
-#
-#   EVAL_INPUTS="combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full"
+# This uses the vLLM official-runtime proxy to produce exact-eval JSON reports
+# plus raw generations. Scoring and submission decisions remain local.
 #
 # Candidate adapters may be supplied as:
 #
 #   ADAPTERS="name=path,name2=path2"
 #
-# If ADAPTERS is empty, this script discovers B thin, continuation checkpoints,
-# the prior final adapters, and the known shared/route variants.
+# EVAL_INPUTS accepts manifest names or explicit JSONL paths:
+#
+#   EVAL_INPUTS="smoke_head6,combined_balanced_48pf"
 
 cd "${REPO_DIR:-/workspace/nivida_h200_run}"
 
@@ -36,16 +33,17 @@ resolve_activate_path() {
 ACTIVATE_PATH="$(resolve_activate_path "${VENV:-/workspace/venvs/nemotron_t241/bin/activate}")"
 VENV_ROOT="$(cd "$(dirname "$ACTIVATE_PATH")/.." && pwd)"
 source "$ACTIVATE_PATH"
+
 export LD_LIBRARY_PATH="${VENV_ROOT}/lib/python3.12/site-packages/nvidia/cusparselt/lib:/usr/local/lib/python3.12/dist-packages/nvidia/cusparselt/lib:${LD_LIBRARY_PATH:-}"
 export KAGGLEHUB_CACHE="${KAGGLEHUB_CACHE:-/workspace/.cache/kagglehub}"
 export HF_HOME="${HF_HOME:-/workspace/.cache/huggingface}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export TOKENIZERS_PARALLELISM=false
 
-OUT_DIR="${OUT_DIR:-data/processed/local_eval_predictions_v3}"
-CONFIG="${CONFIG:-configs/train_stage2_thin.yaml}"
-EVAL_INPUTS="${EVAL_INPUTS:-combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full}"
-MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-}"
+OUT_DIR="${OUT_DIR:-data/processed/vllm_exact_eval_v3}"
+CONFIG="${CONFIG:-configs/train_stage2_official_balanced_answer_only.yaml}"
+EVAL_INPUTS="${EVAL_INPUTS:-smoke_head6}"
+CONTRACT="${CONTRACT:-runtime}"
 mkdir -p "$OUT_DIR"
 
 log() {
@@ -88,12 +86,13 @@ discover_checkpoints() {
   done < <(find "$stage_dir" -maxdepth 1 -type d -name 'checkpoint-*' | sort -V)
 }
 
-ensure_adapter_config() {
-  local adapter="$1"
-  local reference="$2"
-  if [[ ! -f "$adapter/adapter_config.json" && -f "$reference/adapter_config.json" ]]; then
-    cp "$reference/adapter_config.json" "$adapter/adapter_config.json"
+run_preflight() {
+  if [[ "${SKIP_VLLM_PREFLIGHT:-0}" == "1" ]]; then
+    return 0
   fi
+  log "vLLM environment preflight"
+  VENV="$ACTIVATE_PATH" \
+    bash scripts/check_cloud_vllm_env.sh
 }
 
 run_adapter() {
@@ -101,76 +100,39 @@ run_adapter() {
   local adapter="$2"
   local eval_name="$3"
   local eval_input="$4"
-  local eval_out_dir="${OUT_DIR}/${eval_name}"
-  mkdir -p "$eval_out_dir"
-  log "inference ${name}: adapter=${adapter} input=${eval_input}"
-  local cmd=(
-    python -m src.student.inference
-    --config "$CONFIG"
-    --input "$eval_input"
-    --adapter-dir "$adapter"
-    --output "${eval_out_dir}/${name}_predictions.jsonl"
-    --runtime-eval
-  )
-  if [[ -n "$MAX_NEW_TOKENS" ]]; then
-    cmd+=(--max-new-tokens "$MAX_NEW_TOKENS")
-  fi
-  "${cmd[@]}"
+  local eval_out_dir="${OUT_DIR}/${eval_name}/${name}"
+  mkdir -p "$eval_out_dir/raw"
+  log "vLLM exact eval ${name}: adapter=${adapter} input=${eval_input}"
+  python scripts/eval_official_vllm_proxy.py \
+    --adapter-dir "$adapter" \
+    --input "$eval_input" \
+    --output "${eval_out_dir}/report.json" \
+    --config "$CONFIG" \
+    --write-raw-predictions \
+    --raw-predictions-dir "${eval_out_dir}/raw" \
+    --contract "$CONTRACT"
 }
 
-log "inference-only start"
+log "vLLM exact-eval v3 start"
+run_preflight
 
 CANDIDATES=()
 if [[ -n "${ADAPTERS:-}" ]]; then
   IFS=',' read -ra ITEMS <<< "$ADAPTERS"
   for item in "${ITEMS[@]}"; do
     [[ -n "$item" ]] || continue
-    name="${item%%=*}"
-    path="${item#*=}"
-    add_candidate "$name" "$path"
+    add_candidate "${item%%=*}" "${item#*=}"
   done
 else
   add_candidate b_thin artifacts/adapter_stage2_thin
-  discover_checkpoints b_thin artifacts/adapter_stage2_thin
-
-  for pattern in \
-    'adapter_stage2_thin_official_balanced*' \
-    'adapter_stage2_thin_answer_only*' \
-    'adapter_stage2_thin_short_trace*' \
-    'adapter_stage2_official_balanced_answer_only*' \
-    'adapter_stage2_official_balanced_short_trace*'
-  do
-    while IFS= read -r continuation_dir; do
-      continuation_name="$(basename "$continuation_dir")"
-      add_candidate "$continuation_name" "$continuation_dir"
-      discover_checkpoints "$continuation_name" "$continuation_dir"
-    done < <(find artifacts -maxdepth 1 -type d -name "$pattern" 2>/dev/null | sort -V)
-  done
-
-  add_candidate stage2_selected_trace artifacts/adapter_stage2_selected_trace
-  add_candidate norm_shared_s1 artifacts/adapter_stage2_thin_expertmean_shared_top8_s1
-  add_candidate raw_routeweighted_mixed artifacts/adapter_stage2_thin_routeweighted_mixed
-fi
-
-if [[ -n "${EXTRA_ADAPTERS:-}" ]]; then
-  IFS=',' read -ra ITEMS <<< "$EXTRA_ADAPTERS"
-  for item in "${ITEMS[@]}"; do
-    [[ -n "$item" ]] || continue
-    name="${item%%=*}"
-    path="${item#*=}"
-    add_candidate "$name" "$path"
-  done
+  add_candidate official_balanced artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z
+  add_candidate answer_final artifacts/adapter_stage2_official_balanced_answer_only
+  discover_checkpoints answer artifacts/adapter_stage2_official_balanced_answer_only
 fi
 
 if [[ "${#CANDIDATES[@]}" -eq 0 ]]; then
   echo "No adapter candidates found." >&2
   exit 1
-fi
-
-if [[ -d artifacts/adapter_stage2_thin ]]; then
-  for item in "${CANDIDATES[@]}"; do
-    ensure_adapter_config "${item#*=}" artifacts/adapter_stage2_thin
-  done
 fi
 
 IFS=',' read -ra EVAL_ITEMS <<< "$EVAL_INPUTS"
@@ -187,4 +149,4 @@ for eval_item in "${EVAL_ITEMS[@]}"; do
   done
 done
 
-log "inference-only done"
+log "vLLM exact-eval v3 done"

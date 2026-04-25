@@ -8,13 +8,14 @@ This plan keeps cloud time limited to model forward/generation work. All analysi
 - Safe expert intersection analysis.
 - Data family distribution analysis.
 - Exact-eval scoring from prediction JSONL.
+- Candidate ranking after converting vLLM raw generations into exact-eval reports.
 - Submission decision.
 
 ## What Runs on the GPU Server
 
 - Per-example prompt-only route probes.
 - Optional visible-public generation diagnostic.
-- Optional inference prediction generation for labeled holdout.
+- Optional vLLM exact-eval generation for labeled holdout.
 
 No training. No Kaggle submission. No report writing beyond raw JSON outputs.
 
@@ -50,13 +51,32 @@ Optional inference prediction generation:
 bash scripts/run_cloud_inference_only_v3.sh
 ```
 
-For a faster first pass, sync `data/processed/local_eval_manifests/proxy_all_balanced_32pf.jsonl` and use it as `EVAL_INPUT`. Keep scoring local.
+The HF/PEFT inference script is useful only for tiny smoke checks. For
+candidate selection, prefer the vLLM proxy path:
+
+```bash
+bash scripts/check_cloud_vllm_env.sh
+
+EVAL_INPUTS=smoke_head6 \
+ADAPTERS="answer_final=artifacts/adapter_stage2_official_balanced_answer_only" \
+bash scripts/run_cloud_vllm_exact_eval_v3.sh
+```
+
+For the full candidate pass, use:
+
+```bash
+EVAL_INPUTS=combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full \
+bash scripts/run_cloud_vllm_exact_eval_v3.sh
+```
+
+`VENV` may point either at a venv directory or at its `bin/activate` file. Keep scoring local.
 
 ## Pull Results Back
 
 ```bash
 scp -P <PORT> -i ~/.ssh/id_ed25519 -r root@<HOST>:/workspace/nivida_h200_run/data/processed/route_probe_v3 data/processed/
 scp -P <PORT> -i ~/.ssh/id_ed25519 -r root@<HOST>:/workspace/nivida_h200_run/data/processed/local_eval_predictions_v3 data/processed/
+scp -P <PORT> -i ~/.ssh/id_ed25519 -r root@<HOST>:/workspace/nivida_h200_run/data/processed/vllm_exact_eval_v3 data/processed/
 ```
 
 After this, the server can be shut down.
@@ -81,6 +101,11 @@ python tools/evaluate_predictions_exact.py \
   --output-json data/processed/eval/b_thin_proxy_all_exact_eval.json \
   --output-csv data/processed/eval/b_thin_proxy_all_exact_eval_records.csv \
   --output-md LOCAL_EXACT_EVAL_b_thin_proxy_all.md
+
+python scripts/score_vllm_exact_eval_outputs.py \
+  --predictions-root data/processed/vllm_exact_eval_v3 \
+  --output-root data/processed/eval/vllm_exact_eval_v3 \
+  --baseline b_thin
 ```
 
 ## Stop Criteria

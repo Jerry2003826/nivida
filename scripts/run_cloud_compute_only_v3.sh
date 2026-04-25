@@ -7,8 +7,25 @@ set -euo pipefail
 
 cd "${REPO_DIR:-/workspace/nivida_h200_run}"
 
-source "${VENV:-/workspace/venvs/nemotron_t241/bin/activate}"
-export LD_LIBRARY_PATH="/usr/local/lib/python3.12/dist-packages/nvidia/cusparselt/lib:${LD_LIBRARY_PATH:-}"
+resolve_activate_path() {
+  local candidate="$1"
+  if [[ -d "$candidate" && -f "$candidate/bin/activate" ]]; then
+    printf '%s\n' "$candidate/bin/activate"
+    return 0
+  fi
+  if [[ -f "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  echo "Missing virtualenv activate script: $candidate" >&2
+  echo "Set VENV to either a venv directory or its bin/activate file." >&2
+  return 1
+}
+
+ACTIVATE_PATH="$(resolve_activate_path "${VENV:-/workspace/venvs/nemotron_t241/bin/activate}")"
+VENV_ROOT="$(cd "$(dirname "$ACTIVATE_PATH")/.." && pwd)"
+source "$ACTIVATE_PATH"
+export LD_LIBRARY_PATH="${VENV_ROOT}/lib/python3.12/site-packages/nvidia/cusparselt/lib:/usr/local/lib/python3.12/dist-packages/nvidia/cusparselt/lib:${LD_LIBRARY_PATH:-}"
 export KAGGLEHUB_CACHE="${KAGGLEHUB_CACHE:-/workspace/.cache/kagglehub}"
 export HF_HOME="${HF_HOME:-/workspace/.cache/huggingface}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"

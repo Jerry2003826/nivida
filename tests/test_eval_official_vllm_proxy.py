@@ -58,7 +58,7 @@ def _run_eval(
         lambda *args, **kwargs: FakeLLM(responses=responses),
     )
     monkeypatch.setattr(mod, "_build_lora_request", lambda *args, **kwargs: None)
-    monkeypatch.setattr(mod, "_build_sampling_params", lambda: object())
+    monkeypatch.setattr(mod, "_build_sampling_params", lambda *args, **kwargs: object())
 
     inp = _write_input_rows(tmp_path, rows)
     out = tmp_path / "eval.json"
@@ -123,14 +123,14 @@ def test_hit_max_tokens_boundary_counts_as_truncation(tmp_path, monkeypatch) -> 
     data, raw_rows = _run_eval(
         tmp_path,
         monkeypatch,
-        responses=[(r"Reasoning... \boxed{42}", list(range(3584)))],
+        responses=[(r"Reasoning... \boxed{42}", list(range(7680)))],
         rows=[{"id": "a", "family": "bit", "prompt": "q1", "target_answer": "42"}],
         write_raw_predictions=True,
     )
     repeat = data["repeats"][0]
     assert repeat["num_hit_max_tokens"] == 1
     assert repeat["truncate_rate"] == 1.0
-    assert repeat["generation_length_p50"] == 3584
+    assert repeat["generation_length_p50"] == 7680
     assert raw_rows[0]["hit_max_tokens"] is True
     assert data["repeats"][0]["num_correct"] == 1
 
