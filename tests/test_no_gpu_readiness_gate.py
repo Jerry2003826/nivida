@@ -30,7 +30,7 @@ def test_full_mode_plans_required_command_order() -> None:
         "python scripts/build_stage2_answer_focused_data.py",
         "python scripts/recheck_chat_template_sha16.py --output data/processed/recheck_chat_template_sha16.json",
         "sh scripts/check_prompt_suffix_alignment.sh data/processed/stage2_answer_only_train.jsonl data/processed/stage2_answer_only_valid.jsonl data/processed/stage2_short_trace_train.jsonl data/processed/stage2_short_trace_valid.jsonl",
-        "python scripts/audit_teacher_gate_extractor_parity.py --allow-rerun-chain-search",
+        "python scripts/audit_teacher_gate_extractor_parity.py --train-jsonl ../data/processed/stage2_official_train_no_hard_valid.jsonl --allow-rerun-chain-search",
         "python -m pytest tests/test_equation_template_diagnostic.py tests/test_bit_permutation_diagnostic.py tests/test_cloud_run_scripts.py tests/test_shell_syntax.py tests/test_stage2_answer_focused_builder.py -q",
         "python -m pytest -q",
         "git diff --check",

@@ -14,6 +14,7 @@ from typing import Callable, Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = Path("data/processed/no_gpu_readiness_gate.json")
 TEACHER_PARITY_OUTPUT = Path("data/processed/audit_teacher_gate_extractor_parity.json")
+TEACHER_PARITY_TRAIN_JSONL = Path("../data/processed/stage2_official_train_no_hard_valid.jsonl")
 ANSWER_FOCUSED_OUTPUTS = (
     Path("data/processed/stage2_answer_only_train.jsonl"),
     Path("data/processed/stage2_answer_only_valid.jsonl"),
@@ -191,6 +192,8 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
             "teacher_gate_extractor_parity",
             _python(
                 "scripts/audit_teacher_gate_extractor_parity.py",
+                "--train-jsonl",
+                _posix(TEACHER_PARITY_TRAIN_JSONL),
                 "--allow-rerun-chain-search",
             ),
         ),
