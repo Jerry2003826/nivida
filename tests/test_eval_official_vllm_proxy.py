@@ -155,6 +155,31 @@ def test_low_boxed_rate_marks_fallback_rows(tmp_path, monkeypatch) -> None:
     assert raw_rows[1]["fallback_used"] is True
 
 
+def test_official_family_field_drives_family_stats_and_raw_rows(tmp_path, monkeypatch) -> None:
+    data, raw_rows = _run_eval(
+        tmp_path,
+        monkeypatch,
+        responses=[
+            (r"Reasoning... \boxed{42}", list(range(20))),
+            (r"Reasoning... \boxed{0}", list(range(12))),
+        ],
+        rows=[
+            {"id": "a", "official_family": "cipher", "prompt": "q1", "target_answer": "42"},
+            {
+                "id": "b",
+                "metadata": {"official_family": "bit"},
+                "prompt": "q2",
+                "target_answer": "1",
+            },
+        ],
+        write_raw_predictions=True,
+    )
+
+    assert raw_rows[0]["family"] == "cipher"
+    assert raw_rows[1]["family"] == "bit"
+    assert data["by_family_mean_accuracy"] == {"bit": 0.0, "cipher": 1.0}
+
+
 def test_cli_rejects_sampling_override_flags() -> None:
     from scripts import eval_official_vllm_proxy as mod
 

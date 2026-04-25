@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from pathlib import Path
 import statistics
@@ -97,6 +98,30 @@ def _by_family_accuracy(rows: list[dict[str, Any]]) -> dict[str, float]:
     }
 
 
+def _metadata(row: dict[str, Any]) -> dict[str, Any]:
+    raw = row.get("metadata")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _row_family(row: dict[str, Any]) -> str:
+    meta = _metadata(row)
+    value = (
+        row.get("official_family")
+        or row.get("family")
+        or meta.get("official_family")
+        or meta.get("family")
+    )
+    return "unknown" if value is None else str(value)
+
+
 def evaluate_official_vllm_proxy(
     *,
     adapter_dir: str | Path,
@@ -148,7 +173,7 @@ def evaluate_official_vllm_proxy(
         raw_dir.mkdir(parents=True, exist_ok=True)
 
     repeat_payloads: list[dict[str, Any]] = []
-    family_names = sorted({str(row.get("family", "unknown")) for row in rows})
+    family_names = sorted({_row_family(row) for row in rows})
 
     for repeat_index in range(num_repeats):
         outputs = llm.generate(prompts, sampling_params=sampling, lora_request=lora_request)
@@ -178,7 +203,7 @@ def evaluate_official_vllm_proxy(
             repeat_rows.append(
                 {
                     "id": str(row.get("id", "")),
-                    "family": str(row.get("family", "unknown")),
+                    "family": _row_family(row),
                     "prompt": str(row.get("prompt", row.get("raw_prompt", ""))),
                     "target_answer": str(row.get("target_answer", "")),
                     "generation": generation,
