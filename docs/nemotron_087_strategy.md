@@ -22,11 +22,11 @@ Public leaderboard:
 
 Solver coverage audit on local manifests:
 
-| manifest | rows | query accuracy | support-full rate | read |
-| --- | ---: | ---: | ---: | --- |
-| `combined_balanced_48pf` | 288 | 0.7118 | 0.9757 | cipher mostly solved; bit/equation weak |
-| `proxy_all_balanced_64pf` | 352 | 0.7330 | 0.9574 | same pattern |
-| `hard_triad_full` | 709 | 0.4795 | 0.9478 | hard triad is still the gap |
+| manifest | rows | query accuracy | oracle@k | support-full rate | read |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `combined_balanced_48pf` | 288 | 0.7118 | 0.7083 | 0.9757 | cipher mostly solved; bit/equation weak |
+| `proxy_all_balanced_64pf` | 352 | 0.7358 | 0.7330 | 0.9574 | same pattern |
+| `hard_triad_full` | 709 | 0.4824 | 0.4795 | 0.9478 | hard triad is still the gap |
 
 The important signal is the high support-full rate with low query accuracy.
 The rule search often fits all demonstrations but extrapolates the held-out
@@ -107,6 +107,10 @@ to `0.5750` without hurting the other families.
 
 - query accuracy is 0.229-0.397 after switching the audit to official binary
   strictness and preferring sparse GF(2) affine solutions.
+- support-full oracle@k is not higher than top1 in the default audit
+  (`hard_triad_full`: 0.3849 oracle@k vs 0.3975 query accuracy), so the next
+  bit step should expand/restrict candidate generation rather than tune a
+  top-k ranker.
 - support failures still exist, but many failures are also wrong extrapolation.
 - Need a stronger permutation/affine disambiguation strategy. The current
   `binary_affine_transform` is still too expressive and often support-fits a

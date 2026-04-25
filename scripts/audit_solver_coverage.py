@@ -61,6 +61,21 @@ def _support_accuracy(candidate: Any, example: PuzzleExample) -> float:
     return _rate(checks)
 
 
+def _support_full_oracle_rank(candidates: list[Any], example: PuzzleExample) -> tuple[int | None, int]:
+    if example.target_answer in (None, ""):
+        return None, 0
+    support_full_count = 0
+    oracle_rank: int | None = None
+    for index, candidate in enumerate(candidates, start=1):
+        if _support_accuracy(candidate, example) < 1.0:
+            continue
+        support_full_count += 1
+        prediction = "" if getattr(candidate, "query_prediction", None) is None else str(candidate.query_prediction)
+        if oracle_rank is None and competition_correct(prediction, str(example.target_answer)):
+            oracle_rank = index
+    return oracle_rank, support_full_count
+
+
 def _classify(
     *,
     candidate: Any | None,
@@ -96,6 +111,7 @@ def _audit_example(
     candidates = engine.solve_example(example, top_k=top_k)
     top = candidates[0] if candidates else None
     support_acc = _support_accuracy(top, example)
+    oracle_rank, support_full_candidate_count = _support_full_oracle_rank(candidates, example)
     query_prediction = "" if top is None or top.query_prediction is None else str(top.query_prediction)
     target = example.target_answer
     query_ok = False if target is None else competition_correct(query_prediction, target)
@@ -127,6 +143,9 @@ def _audit_example(
         "query": example.query,
         "query_prediction": query_prediction,
         "query_correct": query_ok,
+        "oracle_at_k": oracle_rank is not None,
+        "oracle_rank": "" if oracle_rank is None else oracle_rank,
+        "support_full_candidate_count": support_full_candidate_count,
         "support_accuracy": support_acc,
         "candidate_exact_ratio": exact_ratio,
         "confidence": confidence,
@@ -148,6 +167,7 @@ def _group_summary(records: list[dict[str, Any]], key: str) -> dict[str, dict[st
         summary[name] = {
             "n": len(rows),
             "query_accuracy": _rate([bool(row["query_correct"]) for row in rows]),
+            "oracle_at_k": _rate([bool(row.get("oracle_at_k")) for row in rows]),
             "support_full_rate": _rate([float(row["support_accuracy"]) >= 1.0 for row in rows]),
             "avg_support_accuracy": sum(float(row["support_accuracy"]) for row in rows) / len(rows),
             "failure_classes": dict(Counter(str(row["failure_class"]) for row in rows).most_common()),
@@ -182,6 +202,7 @@ def _audit_file(
         "overall": {
             "n": len(records),
             "query_accuracy": _rate([bool(row["query_correct"]) for row in records]),
+            "oracle_at_k": _rate([bool(row.get("oracle_at_k")) for row in records]),
             "support_full_rate": _rate([float(row["support_accuracy"]) >= 1.0 for row in records]),
             "avg_support_accuracy": sum(float(row["support_accuracy"]) for row in records) / len(records) if records else 0.0,
             "failure_classes": dict(Counter(str(row["failure_class"]) for row in records).most_common()),
@@ -208,18 +229,19 @@ def _write_markdown(path: Path, payload: dict[str, Any]) -> None:
                 "",
                 f"- rows: `{overall['n']}`",
                 f"- query accuracy: `{overall['query_accuracy']:.4f}`",
+                f"- oracle@k: `{overall['oracle_at_k']:.4f}`",
                 f"- support-full rate: `{overall['support_full_rate']:.4f}`",
                 f"- avg support accuracy: `{overall['avg_support_accuracy']:.4f}`",
                 f"- failure classes: `{json.dumps(overall['failure_classes'], ensure_ascii=False)}`",
                 "",
-                "| family | n | query_acc | support_full | avg_support | failures | top signature buckets |",
-                "| --- | ---: | ---: | ---: | ---: | --- | --- |",
+                "| family | n | query_acc | oracle@k | support_full | avg_support | failures | top signature buckets |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
             ]
         )
         for family, row in report["family"].items():
             lines.append(
                 f"| {family} | {row['n']} | {row['query_accuracy']:.4f} | "
-                f"{row['support_full_rate']:.4f} | {row['avg_support_accuracy']:.4f} | "
+                f"{row['oracle_at_k']:.4f} | {row['support_full_rate']:.4f} | {row['avg_support_accuracy']:.4f} | "
                 f"`{json.dumps(row['failure_classes'], ensure_ascii=False)}` | "
                 f"`{json.dumps(row['top_signature_buckets'], ensure_ascii=False)}` |"
             )
@@ -230,14 +252,14 @@ def _write_markdown(path: Path, payload: dict[str, Any]) -> None:
         )
         lines.extend(
             [
-                "| subtype | n | query_acc | support_full | failures |",
-                "| --- | ---: | ---: | ---: | --- |",
+                "| subtype | n | query_acc | oracle@k | support_full | failures |",
+                "| --- | ---: | ---: | ---: | ---: | --- |",
             ]
         )
         for subtype, row in subtype_rows[:12]:
             lines.append(
                 f"| {subtype} | {row['n']} | {row['query_accuracy']:.4f} | "
-                f"{row['support_full_rate']:.4f} | "
+                f"{row['oracle_at_k']:.4f} | {row['support_full_rate']:.4f} | "
                 f"`{json.dumps(row['failure_classes'], ensure_ascii=False)}` |"
             )
         lines.append("")

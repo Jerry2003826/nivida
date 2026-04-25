@@ -30,11 +30,11 @@ The equation-template diagnostic report is written to
 
 Current audit summary:
 
-| manifest | query accuracy | support-full rate | main gap |
-| --- | ---: | ---: | --- |
-| `combined_balanced_48pf` | 0.7118 | 0.9757 | bit/equation extrapolation |
-| `proxy_all_balanced_64pf` | 0.7358 | 0.9574 | bit/equation extrapolation |
-| `hard_triad_full` | 0.4824 | 0.9478 | equation/bit |
+| manifest | query accuracy | oracle@k | support-full rate | main gap |
+| --- | ---: | ---: | ---: | --- |
+| `combined_balanced_48pf` | 0.7118 | 0.7083 | 0.9757 | bit/equation extrapolation |
+| `proxy_all_balanced_64pf` | 0.7358 | 0.7330 | 0.9574 | bit/equation extrapolation |
+| `hard_triad_full` | 0.4824 | 0.4795 | 0.9478 | equation/bit |
 
 Note: these numbers use the official binary guard. Pure `0/1` answers are
 strict strings, so older audits overstated bit accuracy.
@@ -74,6 +74,11 @@ passing unknown ciphertext through unchanged.
 For bit affine fits, GF(2) free variables are now selected by a sparse-solution
 prior. This improved `hard_triad_full` bit accuracy from `0.2750` to `0.4000`
 under the official binary-strict metric.
+
+The audit now reports support-full oracle@k. For `bit_permutation`, oracle@k is
+not above top1 in the default top-k report (`hard_triad_full`: 0.3849 oracle@k
+vs 0.3975 query accuracy), so the next bit work should change the candidate
+space or verifier, not just rerank existing top candidates.
 
 For equation tags, position transduction now only covers outputs explainable
 from input-position characters. If the output introduces literal symbols or
