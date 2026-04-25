@@ -1834,7 +1834,12 @@ class BinaryBooleanExpressionOp(AtomicOp):
         if not expressions:
             return 0.04
         total_complexity = sum(int(expr.get("complexity", 0)) for expr in expressions)
-        return 0.018 + 0.003 * (total_complexity / max(1, len(expressions)))
+        max_complexity = max(int(expr.get("complexity", 0)) for expr in expressions)
+        return (
+            0.018
+            + 0.003 * (total_complexity / max(1, len(expressions)))
+            + 0.001 * max_complexity
+        )
 
     def generate_random_instance(self, rng: random.Random) -> tuple[str, str, dict[str, Any]]:
         params = {

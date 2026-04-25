@@ -57,6 +57,14 @@ def _query_length_mode_bonus(prediction: str | None, support_targets: list[str])
     return 0.003 if len(prediction) == modal_length else 0.0
 
 
+def _query_char_uniqueness_bonus(prediction: str | None, query: str | None) -> float:
+    if not prediction or not query:
+        return 0.0
+    if any(char not in query for char in prediction):
+        return 0.0
+    return sum(1.0 / query.count(char) for char in prediction) / max(1, len(prediction))
+
+
 _EQUATION_PATTERN = re.compile(r"^\s*\d+\D\d+\s*$")
 
 
@@ -280,8 +288,8 @@ class ChainSearchEngine:
             -item.exact_ratio,
             -item.family_legality,
             len(item.steps),
-            -item.graph_prior_score,
             -item.score,
+            -item.graph_prior_score,
         )
 
     def search(
@@ -368,6 +376,7 @@ class ChainSearchEngine:
                         )
                         if equation_mode == "symbolic":
                             score += 0.01 * _query_char_coverage(query_value, query)
+                            score += 0.001 * _query_char_uniqueness_bonus(query_value, query)
                             score += _query_length_mode_bonus(query_value, targets)
                         step.step_score = score
                         expanded.append(
@@ -427,6 +436,7 @@ class ChainSearchEngine:
                         "complexity_penalty": state.complexity_penalty,
                         "equation_mode": equation_mode,
                         "query_char_coverage": _query_char_coverage(state.query_value, query),
+                        "query_char_uniqueness": _query_char_uniqueness_bonus(state.query_value, query),
                         "template_rank_features": [
                             step.params.get("template_rank_features")
                             for step in state.steps

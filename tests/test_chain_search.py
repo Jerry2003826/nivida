@@ -1,7 +1,56 @@
 from __future__ import annotations
 
 from src.competition.schema import PuzzleExample, PuzzleMetadata, PuzzlePair
+from src.teacher.atomic_ops import AtomicOp
 from src.teacher.chain_search import ChainSearchEngine
+
+
+class _ScoreTieOp(AtomicOp):
+    family = "equation"
+
+    def __init__(self, name: str, query_prediction: str, penalty: float) -> None:
+        self.name = name
+        self._query_prediction = query_prediction
+        self._penalty = penalty
+
+    def candidate_params(self, examples: list[tuple[str, str]]) -> list[dict[str, object]]:
+        return [{}]
+
+    def apply(self, text: str, params: dict[str, object]) -> str:
+        return self._query_prediction if text == "query" else "target"
+
+    def complexity_penalty(self, params: dict[str, object]) -> float:
+        return self._penalty
+
+
+class _GraphPriorStub:
+    def start_prior(self, op_name: str) -> float:
+        return 10.0 if op_name == "high_prior_low_score" else 0.0
+
+    def transition_prior(self, left: str, right: str) -> float:
+        return 0.0
+
+
+def test_chain_search_prefers_total_score_over_graph_prior_tie() -> None:
+    engine = ChainSearchEngine(
+        ops=[
+            _ScoreTieOp("high_prior_low_score", "bad", penalty=1.0),
+            _ScoreTieOp("low_prior_high_score", "good", penalty=0.0),
+        ],
+        max_depth=1,
+        beam_width=2,
+        graph_prior=_GraphPriorStub(),
+    )
+
+    candidates = engine.search(
+        [("left", "target"), ("right", "target")],
+        query="query",
+        family_hints=["equation_template"],
+        top_k=2,
+    )
+
+    assert [candidate.query_prediction for candidate in candidates] == ["good", "bad"]
+    assert candidates[0].score > candidates[1].score
 
 
 def test_chain_search_solves_atomic_reverse() -> None:
@@ -191,6 +240,28 @@ def test_chain_search_prefers_symbolic_template_modal_output_length_tie() -> Non
     assert candidates[0].steps[0].op_name == "operator_template"
 
 
+def test_chain_search_prefers_unique_query_symbol_template_tie() -> None:
+    engine = ChainSearchEngine(max_depth=1, beam_width=24)
+    example = PuzzleExample(
+        id="equation_template_unique_symbol_prior",
+        raw_prompt="",
+        official_instruction="",
+        parsed_examples=[
+            PuzzlePair(input="$^+|)", output="?\'|"),
+            PuzzlePair(input="&'*)/", output="&??|"),
+            PuzzlePair(input="&^-&^", output="&"),
+        ],
+        query="$'-^$",
+        metadata=PuzzleMetadata(official_family="equation", subtype="equation_template"),
+    )
+
+    candidates = engine.solve_example(example, top_k=4)
+
+    assert candidates
+    assert candidates[0].query_prediction == "^"
+    assert candidates[0].steps[0].op_name == "operator_template"
+
+
 def test_chain_search_prefers_vocab_completion_for_char_substitution() -> None:
     engine = ChainSearchEngine(max_depth=1, beam_width=8)
     example = PuzzleExample(
@@ -275,6 +346,32 @@ def test_chain_search_solves_binary_xor_mask_example() -> None:
     assert candidates
     assert candidates[0].query_prediction == "01101001"
     assert candidates[0].steps[0].op_name in {"binary_xor_mask", "binary_affine_transform"}
+
+
+def test_chain_search_penalizes_complex_boolean_bit_overfit() -> None:
+    engine = ChainSearchEngine(max_depth=4, beam_width=12)
+    pairs = [
+        ("11010011", "01011011"),
+        ("00001101", "01001101"),
+        ("11110011", "11001011"),
+        ("01011001", "00110111"),
+        ("10001100", "10001001"),
+        ("00011001", "00010111"),
+        ("11101001", "10101111"),
+        ("11101111", "10110101"),
+    ]
+
+    candidates = engine.search(
+        pairs,
+        query="10100101",
+        family_hints=["bit"],
+        subtype="bit_permutation",
+        top_k=3,
+    )
+
+    assert candidates
+    assert candidates[0].query_prediction == "10111001"
+    assert [step.op_name for step in candidates[0].steps] == ["binary_affine_transform"]
 
 
 def test_chain_search_rejects_non_binary_bit_states() -> None:
