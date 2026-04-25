@@ -119,7 +119,9 @@ else
   for pattern in \
     'adapter_stage2_thin_official_balanced*' \
     'adapter_stage2_thin_answer_only*' \
-    'adapter_stage2_thin_short_trace*'
+    'adapter_stage2_thin_short_trace*' \
+    'adapter_stage2_official_balanced_answer_only*' \
+    'adapter_stage2_official_balanced_short_trace*'
   do
     while IFS= read -r continuation_dir; do
       continuation_name="$(basename "$continuation_dir")"

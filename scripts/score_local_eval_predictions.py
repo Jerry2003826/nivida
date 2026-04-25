@@ -9,6 +9,12 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+AUTO_BASELINE_PRIORITY = (
+    "adapter_stage2_thin_official_balanced_20260424_161110Z",
+    "official_balanced_20260424_161110Z",
+    "official_balanced",
+    "b_thin",
+)
 
 
 def _prediction_model_name(path: Path) -> str:
@@ -40,6 +46,39 @@ def _labels_path(manifest_dir: Path, eval_name: str) -> Path:
 def _run(cmd: list[str]) -> None:
     print(" ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+
+
+def _select_baseline(reports: dict[str, str], requested: str) -> tuple[str, str]:
+    if requested != "auto":
+        if requested not in reports:
+            raise ValueError(
+                f"Requested baseline {requested!r} not found. Available models: {', '.join(sorted(reports))}"
+            )
+        return requested, "explicit"
+
+    for preferred in AUTO_BASELINE_PRIORITY:
+        if preferred in reports:
+            return preferred, f"auto exact match: {preferred}"
+
+    official_final = sorted(
+        model
+        for model in reports
+        if "official_balanced" in model and "_ckpt_" not in model
+    )
+    if official_final:
+        return official_final[-1], "auto official-balanced final adapter"
+
+    official_any = sorted(model for model in reports if "official_balanced" in model)
+    if official_any:
+        return official_any[-1], "auto official-balanced checkpoint fallback"
+
+    if "b_thin" in reports:
+        return "b_thin", "auto b_thin fallback"
+
+    raise ValueError(
+        "Could not auto-select a baseline. Re-run with --baseline MODEL. "
+        f"Available models: {', '.join(sorted(reports))}"
+    )
 
 
 def _score_eval(
@@ -113,7 +152,7 @@ def _rank_eval(
     if len(eval_rows) < 2:
         return None
     reports = {row["model"]: row["report_json"] for row in eval_rows}
-    baseline_name = baseline if baseline in reports else eval_rows[0]["model"]
+    baseline_name, baseline_reason = _select_baseline(reports, baseline)
     ranker = REPO_ROOT / "scripts" / "rank_exact_eval_reports.py"
     output_json = output_dir / eval_name / "ranking.json"
     output_csv = output_dir / eval_name / "ranking.csv"
@@ -142,6 +181,7 @@ def _rank_eval(
     return {
         "eval": eval_name,
         "baseline": baseline_name,
+        "baseline_reason": baseline_reason,
         "ranking_json": str(output_json),
         "ranking_csv": str(output_csv),
         "ranking_md": str(output_md),
@@ -158,7 +198,11 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=Path("data/processed/eval/exact_reports_v3"))
     parser.add_argument("--join", choices=["id", "order"], default="id")
     parser.add_argument("--prediction-key")
-    parser.add_argument("--baseline", default="b_thin")
+    parser.add_argument(
+        "--baseline",
+        default="auto",
+        help="Baseline model name, or 'auto' to prefer official-balanced final then b_thin.",
+    )
     parser.add_argument("--rank-eval", action="append")
     parser.add_argument("--skip-ranking", action="store_true")
     parser.add_argument("--min-overall-delta", type=float, default=0.0)
