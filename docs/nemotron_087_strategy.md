@@ -120,6 +120,11 @@ to `0.5750` without hurting the other families.
   official prompt language, but it is wider and makes audits slower, so future
   bit work should either narrow this operator by subtype or add verifier
   features before more training.
+- `scripts/diagnose_bit_permutation.py` now breaks this down directly: across
+  the three local manifests, `bit_permutation` has 149 low-risk top1 hits, 32
+  ranker-miss/oracle-hit rows, 161 operator-gap rows, and 2 support-incomplete
+  rows. This makes the next bit target concrete: ranker/verifier features can
+  recover a bounded set, but more operator coverage is still the larger gap.
 
 ## New Work Loop
 
@@ -138,12 +143,14 @@ Use the audit output:
 ```bash
 python scripts/audit_solver_coverage.py
 python scripts/diagnose_equation_template.py
+python scripts/diagnose_bit_permutation.py
 ```
 
 Then open:
 
 - `docs/solver_coverage_audit_latest.md`
 - `docs/equation_template_diagnostic_latest.md`
+- `docs/bit_permutation_diagnostic_latest.md`
 - `data/processed/solver_coverage_records.csv`
 
 Start with:

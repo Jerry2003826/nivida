@@ -27,6 +27,8 @@ python scripts/audit_solver_coverage.py
 The markdown report is written to `docs/solver_coverage_audit_latest.md`.
 The equation-template diagnostic report is written to
 `docs/equation_template_diagnostic_latest.md`.
+The bit-permutation diagnostic report is written to
+`docs/bit_permutation_diagnostic_latest.md`.
 
 Current audit summary:
 
@@ -84,6 +86,16 @@ so the next bit work can combine verifier/ranker features with candidate-space
 cleanup. The boolean-expression operator is intentionally wider and slows full
 audits, so do not treat it as free complexity.
 
+Use the bit diagnostic to split the next work:
+
+```bash
+python scripts/diagnose_bit_permutation.py
+```
+
+Latest default diagnostic: 149 low-risk top1 hits, 32 ranker-miss/oracle-hit
+rows, 161 operator-gap rows, and 2 support-incomplete rows across the three
+local manifests.
+
 For equation tags, position transduction now only covers outputs explainable
 from input-position characters. If the output introduces literal symbols or
 uses a symbol more often than the input provides, the sample is tagged as an
@@ -103,6 +115,7 @@ Build fixed labeled manifests:
 ```bash
 python scripts/build_local_eval_manifests.py
 python scripts/diagnose_equation_template.py
+python scripts/diagnose_bit_permutation.py
 ```
 
 Main manifest:
