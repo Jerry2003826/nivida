@@ -1,7 +1,9 @@
 # Nemotron LoRA Next Round
 
-This round optimizes for local parsed-exact ranking before Kaggle submission.
-`eval_loss` is no longer a submission trigger.
+This round optimizes for local parsed-exact ranking before Kaggle submission,
+but the larger objective has changed: build solver/verifier coverage by family,
+then train LoRA on solver-verified data. `eval_loss` is no longer a submission
+trigger.
 
 Current public leaderboard baseline:
 
@@ -10,6 +12,33 @@ Current public leaderboard baseline:
 
 Treat the official-balanced adapter as the new baseline. B thin is now only a
 diagnostic reference.
+
+The 0.87 target is treated as a task-system problem, not a plain continuation
+training problem. See `docs/nemotron_087_strategy.md`.
+
+## Solver Coverage First
+
+Run the local rule/search coverage audit before spending GPU:
+
+```bash
+python scripts/audit_solver_coverage.py
+```
+
+The markdown report is written to `docs/solver_coverage_audit_latest.md`.
+
+Current audit summary:
+
+| manifest | query accuracy | support-full rate | main gap |
+| --- | ---: | ---: | --- |
+| `combined_balanced_48pf` | 0.6493 | 0.9722 | hard triad extrapolation |
+| `proxy_all_balanced_64pf` | 0.6932 | 0.9545 | hard triad extrapolation |
+| `hard_triad_full` | 0.3329 | 0.9408 | equation/cipher/bit |
+
+Prioritize solver work in this order:
+
+1. `equation_position`
+2. `cipher_char_sub`
+3. `bit_permutation`
 
 ## Local First
 
