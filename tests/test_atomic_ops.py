@@ -3,6 +3,7 @@ from __future__ import annotations
 from src.teacher.atomic_ops import (
     AddConstantOp,
     BinaryAffineTransformOp,
+    BinaryBooleanExpressionOp,
     BinaryEquationRuleOp,
     BinaryNibbleMapOp,
     BinaryPermutationOp,
@@ -212,6 +213,22 @@ def test_binary_affine_transform_prefers_sparse_underdetermined_solution() -> No
     )
     assert fit.success
     assert op.apply("00111110", fit.params) == "11000111"
+
+
+def test_binary_boolean_expression_op_fits_nonlinear_bit_rules() -> None:
+    op = BinaryBooleanExpressionOp()
+    fit = op.fit(
+        [
+            ("0000", "0000"),
+            ("0101", "0100"),
+            ("1010", "0001"),
+            ("1110", "0111"),
+            ("1101", "1111"),
+        ]
+    )
+
+    assert fit.success
+    assert op.apply("1111", fit.params) == "1111"
 
 
 def test_binary_ops_fit_and_apply() -> None:

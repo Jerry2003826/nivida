@@ -178,6 +178,70 @@ def _binary_vector(text: str) -> list[int]:
     return [1 if bit == "1" else 0 for bit in stripped]
 
 
+def _eval_binary_boolean_expr(bits: list[int], expr: dict[str, Any]) -> int:
+    op = str(expr["op"])
+    args = [int(arg) for arg in expr.get("args", [])]
+    if op == "const":
+        return int(expr["value"]) & 1
+    if op == "copy":
+        return bits[args[0]]
+    if op == "not":
+        return 1 - bits[args[0]]
+    if op == "and":
+        return bits[args[0]] & bits[args[1]]
+    if op == "or":
+        return bits[args[0]] | bits[args[1]]
+    if op == "xor":
+        return bits[args[0]] ^ bits[args[1]]
+    if op == "nand":
+        return 1 - (bits[args[0]] & bits[args[1]])
+    if op == "nor":
+        return 1 - (bits[args[0]] | bits[args[1]])
+    if op == "maj":
+        return 1 if sum(bits[arg] for arg in args) >= 2 else 0
+    if op == "choice":
+        selector, when_one, when_zero = args
+        return bits[when_one] if bits[selector] else bits[when_zero]
+    raise ValueError(f"unsupported boolean op: {op}")
+
+
+_BOOLEAN_EXPR_CACHE: dict[int, list[dict[str, Any]]] = {}
+
+
+def _binary_boolean_expr_candidates(width: int) -> list[dict[str, Any]]:
+    if width in _BOOLEAN_EXPR_CACHE:
+        return _BOOLEAN_EXPR_CACHE[width]
+    candidates: list[dict[str, Any]] = [
+        {"op": "const", "value": 0, "complexity": 0},
+        {"op": "const", "value": 1, "complexity": 0},
+    ]
+    for index in range(width):
+        candidates.append({"op": "copy", "args": [index], "complexity": 1})
+        candidates.append({"op": "not", "args": [index], "complexity": 2})
+    for left in range(width):
+        for right in range(left + 1, width):
+            for op, complexity in (
+                ("and", 3),
+                ("or", 3),
+                ("xor", 3),
+                ("nand", 4),
+                ("nor", 4),
+            ):
+                candidates.append({"op": op, "args": [left, right], "complexity": complexity})
+    for left, middle, right in itertools.combinations(range(width), 3):
+        candidates.append({"op": "maj", "args": [left, middle, right], "complexity": 5})
+    for selector, when_one, when_zero in itertools.permutations(range(width), 3):
+        candidates.append(
+            {
+                "op": "choice",
+                "args": [selector, when_one, when_zero],
+                "complexity": 5,
+            }
+        )
+    _BOOLEAN_EXPR_CACHE[width] = candidates
+    return candidates
+
+
 def _solve_gf2_system(rows: list[list[int]], targets: list[int]) -> list[int] | None:
     if not rows:
         return []
@@ -1691,6 +1755,84 @@ class GravityDistanceOp(AtomicOp):
         time_value = round(rng.uniform(1.0, 5.0), 2)
         params = {"g": g_value, "decimals": 2}
         return f"{time_value:.2f}", _format_fixed(0.5 * g_value * time_value * time_value, 2), params
+
+
+class BinaryBooleanExpressionOp(AtomicOp):
+    name = "binary_boolean_expr"
+    family = "bit_manipulation"
+
+    def candidate_params(self, examples: list[tuple[str, str]]) -> list[dict[str, Any]]:
+        if not examples:
+            return []
+        valid_count = sum(
+            1
+            for src, dst in examples
+            if _is_binary_string(src) and _is_binary_string(dst) and len(src.strip()) == len(dst.strip())
+        )
+        widths = {
+            len(src.strip())
+            for src, dst in examples
+            if _is_binary_string(src) and _is_binary_string(dst) and len(src.strip()) == len(dst.strip())
+        }
+        if len(widths) != 1 or valid_count != len(examples):
+            return []
+        width = widths.pop()
+        input_bits = [_binary_vector(src) for src, _ in examples]
+        targets = [dst.strip() for _, dst in examples]
+        expressions: list[dict[str, Any]] = []
+        for output_index in range(width):
+            valid_expressions = [
+                expr
+                for expr in _binary_boolean_expr_candidates(width)
+                if all(
+                    _eval_binary_boolean_expr(bits, expr) == int(target[output_index])
+                    for bits, target in zip(input_bits, targets)
+                )
+            ]
+            if not valid_expressions:
+                return []
+            expressions.append(
+                min(
+                    valid_expressions,
+                    key=lambda expr: (
+                        int(expr["complexity"]),
+                        min((abs(output_index - int(arg)) for arg in expr.get("args", [])), default=width),
+                        str(expr["op"]),
+                        tuple(expr.get("args", [])),
+                    ),
+                )
+            )
+        return [{"expressions": expressions, "width": width}]
+
+    def apply(self, text: str, params: dict[str, Any]) -> str:
+        bits = _binary_vector(text)
+        width = int(params["width"])
+        if len(bits) != width:
+            raise ValueError("unexpected binary width")
+        return "".join(
+            "1" if _eval_binary_boolean_expr(bits, expr) else "0"
+            for expr in params["expressions"]
+        )
+
+    def complexity_penalty(self, params: dict[str, Any]) -> float:
+        expressions = params.get("expressions", [])
+        if not expressions:
+            return 0.04
+        total_complexity = sum(int(expr.get("complexity", 0)) for expr in expressions)
+        return 0.018 + 0.003 * (total_complexity / max(1, len(expressions)))
+
+    def generate_random_instance(self, rng: random.Random) -> tuple[str, str, dict[str, Any]]:
+        params = {
+            "expressions": [
+                {"op": "and", "args": [0, 1], "complexity": 3},
+                {"op": "or", "args": [1, 2], "complexity": 3},
+                {"op": "xor", "args": [2, 3], "complexity": 3},
+                {"op": "not", "args": [0], "complexity": 2},
+            ],
+            "width": 4,
+        }
+        source = "".join(rng.choice("01") for _ in range(4))
+        return source, self.apply(source, params), params
 
 
 class BinaryAffineTransformOp(AtomicOp):

@@ -24,9 +24,9 @@ Solver coverage audit on local manifests:
 
 | manifest | rows | query accuracy | oracle@k | support-full rate | read |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `combined_balanced_48pf` | 288 | 0.7118 | 0.7083 | 0.9757 | cipher mostly solved; bit/equation weak |
-| `proxy_all_balanced_64pf` | 352 | 0.7358 | 0.7330 | 0.9574 | same pattern |
-| `hard_triad_full` | 709 | 0.4824 | 0.4795 | 0.9478 | hard triad is still the gap |
+| `combined_balanced_48pf` | 288 | 0.7222 | 0.7257 | 0.9965 | cipher mostly solved; bit/equation weak |
+| `proxy_all_balanced_64pf` | 352 | 0.7472 | 0.7528 | 0.9744 | same pattern |
+| `hard_triad_full` | 709 | 0.4993 | 0.5205 | 0.9788 | hard triad is still the gap |
 
 The important signal is the high support-full rate with low query accuracy.
 The rule search often fits all demonstrations but extrapolates the held-out
@@ -105,17 +105,21 @@ to `0.5750` without hurting the other families.
 
 `bit_permutation`
 
-- query accuracy is 0.229-0.397 after switching the audit to official binary
-  strictness and preferring sparse GF(2) affine solutions.
-- support-full oracle@k is not higher than top1 in the default audit
-  (`hard_triad_full`: 0.3849 oracle@k vs 0.3975 query accuracy), so the next
-  bit step should expand/restrict candidate generation rather than tune a
-  top-k ranker.
-- support failures still exist, but many failures are also wrong extrapolation.
+- query accuracy is now 0.2917-0.4477 after adding a per-output-bit
+  `binary_boolean_expr` operator for constants, copy, NOT, AND/OR/XOR,
+  NAND/NOR, majority, and choice.
+- `hard_triad_full` bit accuracy rose from 0.4000 to 0.4500, and
+  `bit_permutation` rose from 0.3975 to 0.4477. The oracle@k gap is now
+  positive (`hard_triad_full`: 0.5063 oracle@k vs 0.4477 top1), so there is
+  some remaining ranker upside after candidate generation.
+- support failures are mostly gone, but many failures are still wrong
+  extrapolation from support-perfect boolean expressions.
 - Need a stronger permutation/affine disambiguation strategy. The current
   `binary_affine_transform` is still too expressive and often support-fits a
-  simpler hidden generator, but sparse free-variable selection removed many
-  arbitrary affine false positives.
+  simpler hidden generator. The boolean-expression operator captures nonlinear
+  official prompt language, but it is wider and makes audits slower, so future
+  bit work should either narrow this operator by subtype or add verifier
+  features before more training.
 
 ## New Work Loop
 
