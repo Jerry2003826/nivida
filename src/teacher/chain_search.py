@@ -38,6 +38,25 @@ def _query_char_coverage(prediction: str | None, query: str | None) -> float:
     return covered / max(1, len(prediction))
 
 
+def _query_length_mode_bonus(prediction: str | None, support_targets: list[str]) -> float:
+    if prediction is None or not support_targets:
+        return 0.0
+    lengths = sorted(len(target) for target in support_targets)
+    if not lengths:
+        return 0.0
+    median_length = lengths[len(lengths) // 2]
+    counts = {length: lengths.count(length) for length in set(lengths)}
+    modal_length = min(
+        counts,
+        key=lambda length: (
+            -counts[length],
+            abs(length - median_length),
+            length,
+        ),
+    )
+    return 0.003 if len(prediction) == modal_length else 0.0
+
+
 _EQUATION_PATTERN = re.compile(r"^\s*\d+\D\d+\s*$")
 
 
@@ -349,6 +368,7 @@ class ChainSearchEngine:
                         )
                         if equation_mode == "symbolic":
                             score += 0.01 * _query_char_coverage(query_value, query)
+                            score += _query_length_mode_bonus(query_value, targets)
                         step.step_score = score
                         expanded.append(
                             _SearchState(

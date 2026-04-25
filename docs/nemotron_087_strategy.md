@@ -24,9 +24,9 @@ Solver coverage audit on local manifests:
 
 | manifest | rows | query accuracy | oracle@k | support-full rate | read |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `combined_balanced_48pf` | 288 | 0.7257 | 0.7361 | 0.9965 | cipher mostly solved; bit/equation weak |
+| `combined_balanced_48pf` | 288 | 0.7292 | 0.7396 | 0.9965 | cipher mostly solved; bit/equation weak |
 | `proxy_all_balanced_64pf` | 352 | 0.7472 | 0.7528 | 0.9744 | same pattern |
-| `hard_triad_full` | 709 | 0.5021 | 0.5289 | 0.9803 | hard triad is still the gap |
+| `hard_triad_full` | 709 | 0.5035 | 0.5303 | 0.9803 | hard triad is still the gap |
 
 The important signal is the high support-full rate with low query accuracy.
 The rule search often fits all demonstrations but extrapolates the held-out
@@ -75,13 +75,13 @@ the current hard-triad manifest, audit retagging moves 190 / 193 old position
 rows to template-like.
 
 The latest equation-template diagnostic makes the next bottleneck clearer:
-across the three local manifests, only 21 / 275 rows are top-1 correct and only
-23 / 275 are oracle-at-10. The hard-triad slice is similar: 16 / 190 top-1 and
-17 / 190 oracle-at-10. Keeping support-equivalent literal alternatives and
-adding a small query-copy tie-break helped a few ambiguous cases, but most
-misses remain `operator_gap_oracle_miss`, so pure reranking cannot solve the
-bulk of this subtype; the operator/template search space itself needs
-expansion.
+across the three local manifests, only 23 / 275 rows are top-1 correct and
+oracle-at-10. The hard-triad slice is similar: 17 / 190 top-1 and oracle-at-10.
+Keeping support-equivalent literal alternatives, adding a small query-copy
+tie-break, and preferring support-modal output length in symbolic ties helped a
+few ambiguous cases, but most misses remain `operator_gap_oracle_miss`, so pure
+reranking cannot solve the bulk of this subtype; the operator/template search
+space itself needs expansion.
 
 Strict stage2 trace selection now rejects `equation_template` traces labeled as
 `ranker_miss_oracle_hit`, `operator_gap_oracle_miss`, or

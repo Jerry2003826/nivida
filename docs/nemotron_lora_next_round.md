@@ -34,9 +34,9 @@ Current audit summary:
 
 | manifest | query accuracy | oracle@k | support-full rate | main gap |
 | --- | ---: | ---: | ---: | --- |
-| `combined_balanced_48pf` | 0.7257 | 0.7361 | 0.9965 | bit/equation extrapolation |
+| `combined_balanced_48pf` | 0.7292 | 0.7396 | 0.9965 | bit/equation extrapolation |
 | `proxy_all_balanced_64pf` | 0.7472 | 0.7528 | 0.9744 | bit/equation extrapolation |
-| `hard_triad_full` | 0.5021 | 0.5289 | 0.9803 | equation/bit |
+| `hard_triad_full` | 0.5035 | 0.5303 | 0.9803 | equation/bit |
 
 Note: these numbers use the official binary guard. Pure `0/1` answers are
 strict strings, so older audits overstated bit accuracy.
@@ -49,11 +49,11 @@ Prioritize solver work in this order:
 
 For `equation_template`, the current diagnostic is blunt: across
 `combined_balanced_48pf`, `proxy_all_balanced_64pf`, and `hard_triad_full`,
-only 21 / 275 rows are top-1 correct and only 23 / 275 are oracle-at-10. On
-`hard_triad_full`, only 17 / 190 have a correct candidate in the top 10. The
-bounded literal-alternative expansion and query-copy tie-break lifted
-`hard_triad_full` `equation_template` top1 from 14 / 190 to 16 / 190, so the
-signal is real but small. The next useful local change is broader
+only 23 / 275 rows are top-1 correct and oracle-at-10. On `hard_triad_full`,
+only 17 / 190 are correct in the current top 10. The bounded literal-alternative
+expansion, query-copy tie-break, and support-modal output-length tie-break
+lifted `hard_triad_full` `equation_template` top1 from 14 / 190 to 17 / 190, so
+the signal is real but small. The next useful local change is broader
 template/operator generation plus a verifier that can reject underconstrained
 support-perfect programs.
 
