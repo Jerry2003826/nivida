@@ -114,7 +114,7 @@ def _annotate_examples(
         needs_labeled_oracle_rescore = (
             has_existing_annotation
             and _should_promote_labeled_oracle(example)
-            and (example.metadata.extras or {}).get("query_solver_correct") is False
+            and (example.metadata.extras or {}).get("query_solver_correct") is not True
         )
         if has_existing_annotation and not needs_labeled_oracle_rescore:
             _annotate_equation_template_risk(example)

@@ -53,7 +53,12 @@ def _make_example(
             program_signature=signature,
             source=source,
             split="train",
-            extras={"support_coverage": 1.0, "top1_top2_margin": margin, "solver_verifiable": True},
+            extras={
+                "support_coverage": 1.0,
+                "top1_top2_margin": margin,
+                "solver_verifiable": True,
+                "query_solver_correct": True,
+            },
         ),
     )
 
