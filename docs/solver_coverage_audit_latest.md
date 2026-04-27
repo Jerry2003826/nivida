@@ -5,15 +5,15 @@ This measures how much of the labeled local eval set is already explainable by t
 ## `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl`
 
 - rows: `288`
-- query accuracy: `0.7639`
-- oracle@k: `0.7639`
-- support-full rate: `0.9896`
-- avg support accuracy: `0.9915`
-- failure classes: `{"query_correct": 220, "query_wrong_after_support_fit": 65, "support_incomplete": 3}`
+- query accuracy: `0.7778`
+- oracle@k: `0.7882`
+- support-full rate: `0.9931`
+- avg support accuracy: `0.9943`
+- failure classes: `{"query_correct": 224, "query_wrong_after_support_fit": 62, "support_incomplete": 2}`
 
 | family | n | query_acc | oracle@k | support_full | avg_support | failures | top signature buckets |
 | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| bit | 48 | 0.3542 | 0.3542 | 0.9583 | 0.9646 | `{"query_wrong_after_support_fit": 29, "query_correct": 17, "support_incomplete": 2}` | `{"binary_boolean_expr": 39, "affine": 7, "bitwise_or_constant>rotl": 1, "binary_invert>rotl>bitwise_or_constant": 1}` |
+| bit | 48 | 0.4375 | 0.5000 | 0.9792 | 0.9813 | `{"query_wrong_after_support_fit": 26, "query_correct": 21, "support_incomplete": 1}` | `{"binary_boolean_expr": 37, "affine": 7, "rotl>nibble": 1, "rotl>bitwise_or_constant": 1, "binary_invert>binary_boolean_expr": 1, "swap_nibbles>nibble": 1}` |
 | cipher | 48 | 0.9583 | 0.9583 | 1.0000 | 1.0000 | `{"query_correct": 46, "query_wrong_after_support_fit": 2}` | `{"vocab_sub": 48}` |
 | equation | 48 | 0.2708 | 0.2708 | 0.9792 | 0.9844 | `{"query_wrong_after_support_fit": 34, "query_correct": 13, "support_incomplete": 1}` | `{"template": 24, "eq_rule": 13, "template>=[[lit,&],[lit,&],[pos,1]]": 1, "position>=,{=,%=,@=>,[=,\\=+,(={,+=,?=\\,%=>=/,[=/,": 1, "template>=[[pos,2],[lit,^],[pos,4]],\\=[[pos,0],[pos,1],[pos,3],[pos,4]],}=[[lit,@],[lit,": 1, "template>],[lit,[],[lit,?]]": 1, "evaluate_expression>add": 1, "template>],[pos,0],[lit,$]],`=[[lit,$],[pos,4],[lit,&],[lit,!]],|=[[lit,[],[lit,$],[pos,1]]": 1}` |
 | gravity | 48 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | `{"query_correct": 48}` | `{"inverse_square": 48}` |
@@ -25,7 +25,7 @@ This measures how much of the labeled local eval set is already explainable by t
 | subtype | n | query_acc | oracle@k | support_full | failures |
 | --- | ---: | ---: | ---: | ---: | --- |
 | equation_template | 33 | 0.1515 | 0.1515 | 1.0000 | `{"query_wrong_after_support_fit": 28, "query_correct": 5}` |
-| bit_permutation | 48 | 0.3542 | 0.3542 | 0.9583 | `{"query_wrong_after_support_fit": 29, "query_correct": 17, "support_incomplete": 2}` |
+| bit_permutation | 48 | 0.4375 | 0.5000 | 0.9792 | `{"query_wrong_after_support_fit": 26, "query_correct": 21, "support_incomplete": 1}` |
 | equation_numeric | 14 | 0.5000 | 0.5000 | 0.9286 | `{"query_correct": 7, "query_wrong_after_support_fit": 6, "support_incomplete": 1}` |
 | cipher_char_sub | 48 | 0.9583 | 0.9583 | 1.0000 | `{"query_correct": 46, "query_wrong_after_support_fit": 2}` |
 | gravity_inverse_square | 48 | 1.0000 | 1.0000 | 1.0000 | `{"query_correct": 48}` |
@@ -67,15 +67,15 @@ This measures how much of the labeled local eval set is already explainable by t
 ## `data\processed\local_eval_manifests\hard_triad_full.jsonl`
 
 - rows: `709`
-- query accuracy: `0.5120`
-- oracle@k: `0.5261`
-- support-full rate: `0.9803`
-- avg support accuracy: `0.9863`
-- failure classes: `{"query_correct": 363, "query_wrong_after_support_fit": 332, "support_incomplete": 14}`
+- query accuracy: `0.5035`
+- oracle@k: `0.5275`
+- support-full rate: `0.9774`
+- avg support accuracy: `0.9836`
+- failure classes: `{"query_correct": 357, "query_wrong_after_support_fit": 336, "support_incomplete": 16}`
 
 | family | n | query_acc | oracle@k | support_full | avg_support | failures | top signature buckets |
 | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| bit | 240 | 0.4208 | 0.4542 | 0.9875 | 0.9892 | `{"query_wrong_after_support_fit": 136, "query_correct": 101, "support_incomplete": 3}` | `{"binary_boolean_expr": 194, "affine": 39, "binary_invert>binary_boolean_expr": 2, "rotl>nibble": 1, "reverse_bits>rotl>bitwise_or_constant": 1, "bitwise_or_constant>rotl": 1, "binary_invert>rotl>bitwise_or_constant": 1, "rotl": 1}` |
+| bit | 240 | 0.3958 | 0.4583 | 0.9792 | 0.9812 | `{"query_wrong_after_support_fit": 140, "query_correct": 95, "support_incomplete": 5}` | `{"binary_boolean_expr": 198, "affine": 30, "binary_invert>binary_boolean_expr": 5, "bitwise_or_constant>rotl": 2, "rotl>nibble": 1, "reverse_bits>rotl>bitwise_or_constant": 1, "rotl>bitwise_or_constant": 1, "rotl>binary_and_mask": 1}` |
 | cipher | 236 | 0.8729 | 0.8729 | 1.0000 | 1.0000 | `{"query_correct": 206, "query_wrong_after_support_fit": 30}` | `{"vocab_sub": 236}` |
 | equation | 233 | 0.2403 | 0.2489 | 0.9528 | 0.9694 | `{"query_wrong_after_support_fit": 166, "query_correct": 56, "support_incomplete": 11}` | `{"template": 103, "eq_rule": 63, "position": 11, "evaluate_expression>add": 9, "template>]]": 4, "evaluate_expression>affine": 2, "template>],[pos,4]],$=[[lit,}],[pos,3],[pos,4],[lit,}]],%=[[lit,$],[lit,)]]": 1, "template>],[pos,3]]": 1}` |
 
@@ -84,7 +84,6 @@ This measures how much of the labeled local eval set is already explainable by t
 | subtype | n | query_acc | oracle@k | support_full | failures |
 | --- | ---: | ---: | ---: | ---: | --- |
 | equation_template | 156 | 0.0833 | 0.0897 | 1.0000 | `{"query_wrong_after_support_fit": 143, "query_correct": 13}` |
-| bit_permutation | 239 | 0.4184 | 0.4519 | 0.9874 | `{"query_wrong_after_support_fit": 136, "query_correct": 100, "support_incomplete": 3}` |
+| bit_permutation | 240 | 0.3958 | 0.4583 | 0.9792 | `{"query_wrong_after_support_fit": 140, "query_correct": 95, "support_incomplete": 5}` |
 | equation_numeric | 77 | 0.5584 | 0.5714 | 0.8571 | `{"query_correct": 43, "query_wrong_after_support_fit": 23, "support_incomplete": 11}` |
 | cipher_char_sub | 236 | 0.8729 | 0.8729 | 1.0000 | `{"query_correct": 206, "query_wrong_after_support_fit": 30}` |
-| bit_rotate | 1 | 1.0000 | 1.0000 | 1.0000 | `{"query_correct": 1}` |
