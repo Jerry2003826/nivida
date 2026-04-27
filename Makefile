@@ -1,6 +1,6 @@
 PYTHON ?= python
 
-.PHONY: test prepare baseline family-report dry-train probe-submission-size probe-submission-size-trained final-acceptance no-gpu-readiness research-registry research-rescue-data
+.PHONY: test prepare baseline family-report dry-train probe-submission-size probe-submission-size-trained final-acceptance no-gpu-readiness research-registry research-rescue-data lb-correlation-log
 
 test:
 	$(PYTHON) -m pytest -q
@@ -43,3 +43,11 @@ research-registry:
 
 research-rescue-data:
 	$(PYTHON) scripts/build_research_rescue_data.py
+
+lb-correlation-log:
+	@if [ -z "$(CANDIDATE)" ] || [ -z "$(PUBLIC_SCORE)" ]; then \
+		echo "ERROR: CANDIDATE=name PUBLIC_SCORE=0.xx required"; exit 2; \
+	fi
+	$(PYTHON) scripts/update_lb_correlation_log.py \
+	  --candidate $(CANDIDATE) \
+	  --public-score $(PUBLIC_SCORE)

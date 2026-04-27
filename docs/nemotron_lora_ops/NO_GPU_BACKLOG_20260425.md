@@ -12,19 +12,21 @@ present.
 | Local eval manifests | done | `python scripts/build_local_eval_manifests.py` wrote 8 manifests |
 | Solver coverage audit | done | `python scripts/audit_solver_coverage.py` wrote 1349 records |
 | Equation-template diagnostic | done | `python scripts/diagnose_equation_template.py` wrote 275 rows |
-| Bit-permutation diagnostic | done | `python scripts/diagnose_bit_permutation.py` wrote 344 rows |
+| Bit-permutation diagnostic | done | `python scripts/diagnose_bit_permutation.py` wrote 345 rows |
 | Tokenizer-only probe | done | chat template SHA16 `ab7813c3abdd9cb6`, first public sample length 275 |
 | Chat-template SHA recheck | done | `python scripts/recheck_chat_template_sha16.py --output data/processed/recheck_chat_template_sha16.json` |
-| Answer-focused datasets | done | answer-only train/valid rows `4689/658`; short-trace train/valid rows `4689/658` |
+| Answer-focused datasets | done | answer-only train/valid rows `4674/658`; short-trace train/valid rows `4674/658` |
 | Cross-platform answer-focused builder | done | `python scripts/build_stage2_answer_focused_data.py --dry-run` resolves parent data on Windows |
 | Stage2 teacher provenance rebuild | done | `python scripts/rebuild_stage2_teacher_inputs.py` rebuilds parent official tagged data, splits, stage2 subsets, and subset provenance |
 | No-GPU readiness gate | done | `make no-gpu-readiness` runs the full local pre-GPU gate and writes `data/processed/no_gpu_readiness_gate.json` |
 | Cloud artifact preflight plan | done | `python scripts/check_cloud_eval_inputs.py --dry-run ...` is part of the readiness gate |
 | Research breakout registry | done | `python scripts/build_research_candidate_registry.py --check` keeps `official_balanced` as the default arena baseline |
-| Research weak-family data recipes | done | `python scripts/build_research_rescue_data.py` prepares mixed, equation, bit, and eq+bit SFT recipes |
+| Research weak-family data recipes | done | `python scripts/build_research_rescue_data.py` prepares mixed, equation, bit, and eq+bit SFT recipes with provenance |
+| Submit-safe adapter soup tooling | done | `python scripts/merge_lora_adapters.py --method linear ...` merges adapter-only LoRA candidates and writes `merge_manifest.json` |
+| Public/local correlation log | done | `python scripts/update_lb_correlation_log.py ...` records Kaggle public score beside local exact metrics and adapter hashes |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10664 rows, bad `0` |
 | Fast local tests | done | targeted diagnostic/cloud/shell/tokenizer tests are part of `make no-gpu-readiness` |
-| Full local tests | done | latest `python -m pytest -q` -> `465 passed, 9 skipped` |
+| Full local tests | done | latest `python -m pytest -q` -> `482 passed, 9 skipped` |
 
 ## Tooling Changes Completed
 
@@ -59,13 +61,26 @@ present.
   submission-safety.
 - `scripts/rank_research_candidates.py` is the registry-aware exact arena
   ranker. It defaults to `official_balanced` and refuses to auto-select
-  submission-unsafe candidates such as the rank-64 research arm.
+  submission-unsafe candidates such as the rank-64 research arm. It also treats
+  solver-assisted and prompt-ensemble candidates as research-only even if a
+  registry entry is accidentally marked safe.
+- `scripts/merge_lora_adapters.py` is the CPU-only adapter soup tool. It can
+  linearly merge same-schema LoRA adapters or compress LoRA A/B deltas with
+  `svd-rank32`, while checking the current rank budget and adapter-only
+  packaging shape.
 - `scripts/apply_solver_assisted_finalizer.py` creates solver-assisted raw
-  predictions while preserving the original model generation for audit.
+  predictions while preserving the original model generation for audit. These
+  outputs are research-only and should be converted into training data, not
+  treated as Kaggle-submittable predictions.
 - `scripts/materialize_prompt_profile_manifest.py` prepares profiled eval
   manifests for `short_answer_biased` and `format_strict` prompt sweeps.
 - `scripts/build_research_rescue_data.py` builds weak-family train/valid
-  recipes from answer-only plus safe short-trace rows.
+  recipes from answer-only plus safe short-trace rows. Each output JSONL now
+  has a `.provenance.json` sidecar and each row records risk class, source hash,
+  answer hash, and weak-family diagnostic features.
+- `scripts/update_lb_correlation_log.py` appends public leaderboard feedback to
+  `data/processed/eval/lb_correlation_log.json` so local exact metrics can be
+  audited against Kaggle movement over time.
 - `scripts/write_cloud_artifact_manifest.py` writes cloud run manifests with
   git/runtime versions, adapter hashes, preflight hash, and raw prediction
   line counts.
@@ -123,6 +138,10 @@ For the research breakout path, also review:
 python scripts/build_research_candidate_registry.py --check
 python scripts/build_research_rescue_data.py
 ```
+
+Solver-assisted and prompt-ensemble rows are diagnostics only. The submit-safe
+research path is model-only adapters plus merged adapters from
+`scripts/merge_lora_adapters.py`.
 
 ```bash
 cd /workspace/nivida_h200_run

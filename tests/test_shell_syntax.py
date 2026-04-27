@@ -21,7 +21,22 @@ SHELL_SCRIPTS = (
 )
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+def _command_is_usable(name: str) -> bool:
+    executable = shutil.which(name)
+    if executable is None:
+        return False
+    completed = subprocess.run(
+        [executable, "--version"],
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+        capture_output=True,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+@pytest.mark.skipif(not _command_is_usable("bash"), reason="bash is not available")
 def test_shell_scripts_parse_with_bash_n() -> None:
     for rel in SHELL_SCRIPTS:
         subprocess.run(
@@ -31,7 +46,7 @@ def test_shell_scripts_parse_with_bash_n() -> None:
         )
 
 
-@pytest.mark.skipif(shutil.which("sh") is None, reason="sh is not available")
+@pytest.mark.skipif(not _command_is_usable("sh"), reason="sh is not available")
 def test_prompt_suffix_check_python_fallback_accepts_chat_template_prompt(tmp_path: Path) -> None:
     prompt = (
         "<|im_start|>user\nquestion\n"

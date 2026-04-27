@@ -39,6 +39,7 @@ def test_vllm_exact_eval_script_runs_preflight_and_official_proxy() -> None:
     assert "--contract \"$CONTRACT\"" in text
     assert "add_candidate answer_final artifacts/adapter_stage2_official_balanced_answer_only" in text
     assert "add_candidate equation_rescue artifacts/adapter_stage2_equation_rescue" in text
+    assert "add_candidate soup_answer_short artifacts/merged/soup_answer_short" in text
     assert "INCLUDE_SUBMISSION_UNSAFE" in text
     assert "require_candidate" in text
     assert "ensure_adapter_config" in text

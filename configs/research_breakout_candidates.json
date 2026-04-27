@@ -10,7 +10,7 @@
   },
   "stop_rules": [
     "If two GPU batches improve local exact but not Kaggle, pause training and recalibrate eval.",
-    "If most gains come from solver override, prioritize inference-time pipeline over LoRA training.",
+    "If most gains come from solver override, convert them into answer-only or safe short-trace data.",
     "Do not submit route/shared transplant candidates unless exact arena proves stable gain."
   ],
   "prompt_profiles": [
@@ -235,6 +235,161 @@
       "config_path": "configs/train_stage2_final_answer_weighted.yaml"
     },
     {
+      "name": "soup_answer_short",
+      "type": "merged_adapter",
+      "adapter_path": "artifacts/merged/soup_answer_short",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "adapter_soup",
+      "family_focus": [
+        "all"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "merge+eval",
+      "artifacts": [
+        "adapter",
+        "merge_manifest",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "Submit-safe linear soup of answer-only and short-trace specialists.",
+      "merge_method": "linear",
+      "merge_sources": [
+        {
+          "candidate": "answer_only_continuation",
+          "weight": 0.5
+        },
+        {
+          "candidate": "short_trace_continuation",
+          "weight": 0.5
+        }
+      ],
+      "merge_manifest": "artifacts/merged/soup_answer_short/merge_manifest.json"
+    },
+    {
+      "name": "soup_eq_bit",
+      "type": "merged_adapter",
+      "adapter_path": "artifacts/merged/soup_eq_bit",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "adapter_soup",
+      "family_focus": [
+        "equation",
+        "bit"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "merge+eval",
+      "artifacts": [
+        "adapter",
+        "merge_manifest",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "Submit-safe soup of weak-family rescue specialists.",
+      "merge_method": "linear",
+      "merge_sources": [
+        {
+          "candidate": "equation_rescue",
+          "weight": 0.35
+        },
+        {
+          "candidate": "bit_rescue",
+          "weight": 0.35
+        },
+        {
+          "candidate": "eq_bit_rescue",
+          "weight": 0.3
+        }
+      ],
+      "merge_manifest": "artifacts/merged/soup_eq_bit/merge_manifest.json"
+    },
+    {
+      "name": "soup_all_rescue",
+      "type": "merged_adapter",
+      "adapter_path": "artifacts/merged/soup_all_rescue",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "adapter_soup",
+      "family_focus": [
+        "all"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "merge+eval",
+      "artifacts": [
+        "adapter",
+        "merge_manifest",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "Submit-safe broad soup across answer, trace, and weak-family specialists.",
+      "merge_method": "linear",
+      "merge_sources": [
+        {
+          "candidate": "answer_only_continuation",
+          "weight": 0.25
+        },
+        {
+          "candidate": "short_trace_continuation",
+          "weight": 0.25
+        },
+        {
+          "candidate": "equation_rescue",
+          "weight": 0.15
+        },
+        {
+          "candidate": "bit_rescue",
+          "weight": 0.15
+        },
+        {
+          "candidate": "eq_bit_rescue",
+          "weight": 0.2
+        }
+      ],
+      "merge_manifest": "artifacts/merged/soup_all_rescue/merge_manifest.json"
+    },
+    {
+      "name": "soup_official_answer_rescue",
+      "type": "merged_adapter",
+      "adapter_path": "artifacts/merged/soup_official_answer_rescue",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "adapter_soup",
+      "family_focus": [
+        "all",
+        "equation",
+        "bit"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "merge+eval",
+      "artifacts": [
+        "adapter",
+        "merge_manifest",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "Submit-safe soup anchored by the 0.57 official-balanced adapter.",
+      "merge_method": "linear",
+      "merge_sources": [
+        {
+          "candidate": "official_balanced",
+          "weight": 0.4
+        },
+        {
+          "candidate": "answer_only_continuation",
+          "weight": 0.3
+        },
+        {
+          "candidate": "eq_bit_rescue",
+          "weight": 0.3
+        }
+      ],
+      "merge_manifest": "artifacts/merged/soup_official_answer_rescue/merge_manifest.json"
+    },
+    {
       "name": "official_balanced_solver_assisted",
       "type": "solver_assisted",
       "adapter_path": "artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z",
@@ -251,8 +406,9 @@
         "exact_report"
       ],
       "enabled": true,
-      "submission_safe": true,
-      "notes": "CPU postprocess candidate: override only when solver/verifier is high confidence."
+      "submission_safe": false,
+      "notes": "CPU postprocess candidate: override only when solver/verifier is high confidence.",
+      "research_only_reason": "Kaggle submission is adapter-only; solver overrides are not shipped in submission.zip."
     },
     {
       "name": "official_balanced_prompt_ensemble",
@@ -272,8 +428,9 @@
         "ensemble_report"
       ],
       "enabled": true,
-      "submission_safe": true,
-      "notes": "Small weak-family prompt ensemble; use only after deterministic smoke."
+      "submission_safe": false,
+      "notes": "Small weak-family prompt ensemble; use only after deterministic smoke.",
+      "research_only_reason": "Kaggle submission is adapter-only; prompt ensembling is not shipped in submission.zip."
     }
   ]
 }

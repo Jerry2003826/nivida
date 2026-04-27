@@ -3,7 +3,10 @@
 Current public baseline is `official-balanced = 0.57`. The next push is a
 portfolio, not a single LoRA guess: exact-eval calibration, weak-family
 solver/verifier work, answer-focused data recipes, training variants, prompt
-profiles, and solver-assisted inference all enter the same research arena.
+profiles, adapter soup/merge, and solver-assisted diagnostics all enter the
+same research arena. Kaggle submission remains adapter-only, so solver-assisted
+and prompt-ensemble candidates are research-only unless the competition
+submission contract changes.
 
 ## Local Arena
 
@@ -15,16 +18,20 @@ profiles, and solver-assisted inference all enter the same research arena.
 - Submission gate: overall official-verify must beat `official_balanced`, no
   large family may regress by more than one sample, and submission-unsafe
   candidates are never selected automatically.
+- Submit-safe classes: `model_only` and `merged_adapter`.
+- Research-only classes: `solver_assisted` and `prompt_ensemble`.
 
 ## Research Lines
 
 | line | implementation | decision rule |
 | --- | --- | --- |
 | Existing adapters | registry entries for `b_thin`, `official_balanced`, answer/short trace variants | eval-only sweep first |
-| Weak-family data | `scripts/build_research_rescue_data.py` writes mixed, equation, bit, and eq+bit recipes | train only after no-GPU gate passes |
-| Solver-assisted inference | `scripts/apply_solver_assisted_finalizer.py` overrides only high-confidence equation/bit rows | use only if exact arena improves without format regression |
-| Prompt profiles | `scripts/materialize_prompt_profile_manifest.py` builds `short_answer_biased` and `format_strict` manifests | weak-family prompt ensemble only after deterministic smoke |
+| Adapter soup | `scripts/merge_lora_adapters.py` writes submit-safe merged adapters plus `merge_manifest.json` | evaluate merged adapters before submitting any specialist |
+| Weak-family data | `scripts/build_research_rescue_data.py` writes mixed, equation, bit, and eq+bit recipes plus per-output provenance | train only after no-GPU gate passes |
+| Solver-assisted inference | `scripts/apply_solver_assisted_finalizer.py` overrides only high-confidence equation/bit rows | research-only upper bound; use its wins to make training data |
+| Prompt profiles | `scripts/materialize_prompt_profile_manifest.py` builds `short_answer_biased` and `format_strict` manifests | research-only unless prompts become part of a model-only adapter recipe |
 | Cloud manifest | `scripts/write_cloud_artifact_manifest.py` records git/runtime/adapter hashes and prediction counts | every paid GPU sweep must produce it |
+| Public/local correlation | `scripts/update_lb_correlation_log.py` appends Kaggle public score, local exact metrics, adapter hashes, and merge weights | pause training after two local wins without public movement |
 
 ## First GPU Batch
 
@@ -71,12 +78,26 @@ final_answer_weighted_loss
 the current Kaggle runtime contract has `max_lora_rank=32`; keep it research
 only unless that contract changes.
 
+After training, build submit-safe soups before choosing a Kaggle candidate:
+
+```bash
+python scripts/merge_lora_adapters.py \
+  --method linear \
+  --clean \
+  --output artifacts/merged/soup_answer_short \
+  --adapter answer_only_continuation=artifacts/adapter_stage2_official_balanced_answer_only:0.5 \
+  --adapter short_trace_continuation=artifacts/adapter_stage2_official_balanced_short_trace:0.5
+```
+
+Use `svd-rank32` only when rank growth or a rank-64 research adapter needs to
+be compressed into the current submit-safe rank budget.
+
 ## Stop Rules
 
 - If two GPU batches improve local exact but do not move Kaggle, pause training
   and recalibrate local evaluation.
-- If gains mostly come from solver-assisted overrides, invest in inference-time
-  finalization rather than more LoRA epochs.
+- If gains mostly come from solver-assisted overrides, convert those wins into
+  answer-only or safe short-trace data instead of treating the override as a
+  submission candidate.
 - Route/shared transplant remains downgraded until exact-eval proves a stable
-  `norm ∩ no-public-route` gain.
-
+  `norm-and-no-public-route` gain.

@@ -8,6 +8,10 @@ ranking, reporting, and submission decisions happen locally.
 - Batch 1 is eval-only; training starts only after local exact arena shows a
   useful signal.
 - No route/shared transplant submission.
+- Solver-assisted and prompt-ensemble candidates are research-only because the
+  Kaggle package is adapter-only.
+- Submit-safe research candidates are model-only adapters and merged adapters
+  created by `scripts/merge_lora_adapters.py`.
 - No Kaggle submission from the server.
 - Use `official_balanced` as the ranking baseline whenever present.
 - Every cloud run must write `data/processed/vllm_exact_eval_v3/artifact_manifest.json`.
@@ -44,7 +48,7 @@ For an explicit sweep, keep names aligned with
 
 ```bash
 EVAL_INPUTS=combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full \
-ADAPTERS="official_balanced=artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z,answer_only_continuation=artifacts/adapter_stage2_official_balanced_answer_only,short_trace_continuation=artifacts/adapter_stage2_official_balanced_short_trace,mixed_answer_short=artifacts/adapter_stage2_mixed_answer_short,equation_rescue=artifacts/adapter_stage2_equation_rescue,bit_rescue=artifacts/adapter_stage2_bit_rescue,eq_bit_rescue=artifacts/adapter_stage2_eq_bit_rescue,final_answer_weighted_loss=artifacts/adapter_stage2_final_answer_weighted" \
+ADAPTERS="official_balanced=artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z,answer_only_continuation=artifacts/adapter_stage2_official_balanced_answer_only,short_trace_continuation=artifacts/adapter_stage2_official_balanced_short_trace,mixed_answer_short=artifacts/adapter_stage2_mixed_answer_short,equation_rescue=artifacts/adapter_stage2_equation_rescue,bit_rescue=artifacts/adapter_stage2_bit_rescue,eq_bit_rescue=artifacts/adapter_stage2_eq_bit_rescue,final_answer_weighted_loss=artifacts/adapter_stage2_final_answer_weighted,soup_answer_short=artifacts/merged/soup_answer_short,soup_eq_bit=artifacts/merged/soup_eq_bit,soup_all_rescue=artifacts/merged/soup_all_rescue,soup_official_answer_rescue=artifacts/merged/soup_official_answer_rescue" \
 bash scripts/run_cloud_vllm_exact_eval_v3.sh
 ```
 
@@ -76,3 +80,13 @@ The submit gate is:
 - no large family can regress by more than one sample;
 - tie-break by boxed-valid rate, shorter output, then lower family/subtype
   variance.
+
+After Kaggle returns a public score, append the correlation record locally:
+
+```bash
+python scripts/update_lb_correlation_log.py \
+  --candidate <candidate_name> \
+  --public-score <score> \
+  --exact-report data/processed/eval/vllm_exact_eval_v3/combined_balanced_48pf/<candidate_name>/report.json \
+  --adapter-path <adapter_path>
+```

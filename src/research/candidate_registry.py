@@ -21,6 +21,7 @@ REQUIRED_CANDIDATE_FIELDS = (
     "expected_runtime",
     "artifacts",
 )
+NON_ADAPTER_ONLY_CANDIDATE_TYPES = frozenset({"solver_assisted", "prompt_ensemble"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +47,8 @@ def _candidate(
     enabled: bool = True,
     submission_safe: bool = True,
     notes: str = "",
+    research_only_reason: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "name": name,
@@ -63,6 +66,10 @@ def _candidate(
     }
     if config_path is not None:
         payload["config_path"] = config_path
+    if research_only_reason is not None:
+        payload["research_only_reason"] = research_only_reason
+    if extra:
+        payload.update(extra)
     return payload
 
 
@@ -198,6 +205,91 @@ def default_candidates() -> list[dict[str, Any]]:
             config_path="configs/train_stage2_final_answer_weighted.yaml",
         ),
         _candidate(
+            "soup_answer_short",
+            "merged_adapter",
+            adapter_path="artifacts/merged/soup_answer_short",
+            prompt_profile="chat_thinking",
+            data_recipe="adapter_soup",
+            family_focus=["all"],
+            gpu_required=True,
+            expected_runtime="merge+eval",
+            artifacts=["adapter", "merge_manifest", "raw_predictions", "exact_report"],
+            notes="Submit-safe linear soup of answer-only and short-trace specialists.",
+            extra={
+                "merge_method": "linear",
+                "merge_sources": [
+                    {"candidate": "answer_only_continuation", "weight": 0.5},
+                    {"candidate": "short_trace_continuation", "weight": 0.5},
+                ],
+                "merge_manifest": "artifacts/merged/soup_answer_short/merge_manifest.json",
+            },
+        ),
+        _candidate(
+            "soup_eq_bit",
+            "merged_adapter",
+            adapter_path="artifacts/merged/soup_eq_bit",
+            prompt_profile="chat_thinking",
+            data_recipe="adapter_soup",
+            family_focus=["equation", "bit"],
+            gpu_required=True,
+            expected_runtime="merge+eval",
+            artifacts=["adapter", "merge_manifest", "raw_predictions", "exact_report"],
+            notes="Submit-safe soup of weak-family rescue specialists.",
+            extra={
+                "merge_method": "linear",
+                "merge_sources": [
+                    {"candidate": "equation_rescue", "weight": 0.35},
+                    {"candidate": "bit_rescue", "weight": 0.35},
+                    {"candidate": "eq_bit_rescue", "weight": 0.30},
+                ],
+                "merge_manifest": "artifacts/merged/soup_eq_bit/merge_manifest.json",
+            },
+        ),
+        _candidate(
+            "soup_all_rescue",
+            "merged_adapter",
+            adapter_path="artifacts/merged/soup_all_rescue",
+            prompt_profile="chat_thinking",
+            data_recipe="adapter_soup",
+            family_focus=["all"],
+            gpu_required=True,
+            expected_runtime="merge+eval",
+            artifacts=["adapter", "merge_manifest", "raw_predictions", "exact_report"],
+            notes="Submit-safe broad soup across answer, trace, and weak-family specialists.",
+            extra={
+                "merge_method": "linear",
+                "merge_sources": [
+                    {"candidate": "answer_only_continuation", "weight": 0.25},
+                    {"candidate": "short_trace_continuation", "weight": 0.25},
+                    {"candidate": "equation_rescue", "weight": 0.15},
+                    {"candidate": "bit_rescue", "weight": 0.15},
+                    {"candidate": "eq_bit_rescue", "weight": 0.20},
+                ],
+                "merge_manifest": "artifacts/merged/soup_all_rescue/merge_manifest.json",
+            },
+        ),
+        _candidate(
+            "soup_official_answer_rescue",
+            "merged_adapter",
+            adapter_path="artifacts/merged/soup_official_answer_rescue",
+            prompt_profile="chat_thinking",
+            data_recipe="adapter_soup",
+            family_focus=["all", "equation", "bit"],
+            gpu_required=True,
+            expected_runtime="merge+eval",
+            artifacts=["adapter", "merge_manifest", "raw_predictions", "exact_report"],
+            notes="Submit-safe soup anchored by the 0.57 official-balanced adapter.",
+            extra={
+                "merge_method": "linear",
+                "merge_sources": [
+                    {"candidate": DEFAULT_BASELINE_NAME, "weight": 0.40},
+                    {"candidate": "answer_only_continuation", "weight": 0.30},
+                    {"candidate": "eq_bit_rescue", "weight": 0.30},
+                ],
+                "merge_manifest": "artifacts/merged/soup_official_answer_rescue/merge_manifest.json",
+            },
+        ),
+        _candidate(
             "official_balanced_solver_assisted",
             "solver_assisted",
             adapter_path="artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z",
@@ -207,6 +299,8 @@ def default_candidates() -> list[dict[str, Any]]:
             gpu_required=False,
             expected_runtime="postprocess-only",
             artifacts=["solver_finalized_predictions", "exact_report"],
+            submission_safe=False,
+            research_only_reason="Kaggle submission is adapter-only; solver overrides are not shipped in submission.zip.",
             notes="CPU postprocess candidate: override only when solver/verifier is high confidence.",
         ),
         _candidate(
@@ -219,6 +313,8 @@ def default_candidates() -> list[dict[str, Any]]:
             gpu_required=True,
             expected_runtime="eval-only",
             artifacts=["profiled_manifests", "raw_predictions", "ensemble_report"],
+            submission_safe=False,
+            research_only_reason="Kaggle submission is adapter-only; prompt ensembling is not shipped in submission.zip.",
             notes="Small weak-family prompt ensemble; use only after deterministic smoke.",
         ),
     ]
@@ -237,7 +333,7 @@ def build_default_registry() -> dict[str, Any]:
         },
         "stop_rules": [
             "If two GPU batches improve local exact but not Kaggle, pause training and recalibrate eval.",
-            "If most gains come from solver override, prioritize inference-time pipeline over LoRA training.",
+            "If most gains come from solver override, convert them into answer-only or safe short-trace data.",
             "Do not submit route/shared transplant candidates unless exact arena proves stable gain.",
         ],
         "prompt_profiles": [
@@ -278,6 +374,20 @@ def validate_registry(
             errors.append(f"candidate {name or index} family_focus must be a non-empty list")
         if not isinstance(item.get("artifacts"), list):
             errors.append(f"candidate {name or index} artifacts must be a list")
+        candidate_type = str(item.get("type", ""))
+        if candidate_type in NON_ADAPTER_ONLY_CANDIDATE_TYPES:
+            if item.get("submission_safe") is not False:
+                errors.append(
+                    f"candidate {name or index} type {candidate_type} must be submission_safe=false"
+                )
+            if not str(item.get("research_only_reason", "")).strip():
+                errors.append(
+                    f"candidate {name or index} type {candidate_type} must include research_only_reason"
+                )
+        if candidate_type == "merged_adapter":
+            sources = item.get("merge_sources")
+            if not isinstance(sources, list) or not sources:
+                errors.append(f"candidate {name or index} merged_adapter must include merge_sources")
         if check_paths and repo_root is not None:
             root = Path(repo_root)
             for key in ("adapter_path", "config_path"):
@@ -350,4 +460,3 @@ def registry_with_updated_candidate(
             item.update(updates)
             return clone
     raise KeyError(name)
-

@@ -10,11 +10,14 @@ from src.research.artifact_manifest import build_cloud_artifact_manifest
 from src.research.candidate_registry import (
     DEFAULT_BASELINE_NAME,
     build_default_registry,
+    registry_with_updated_candidate,
     validate_registry,
 )
+from src.research.lb_correlation import append_correlation_entry
 from src.research.prompt_profiles import materialize_prompt_profile_row
 from src.research.solver_finalizer import apply_solver_assisted_finalizer
 from src.research.weak_family_data import build_research_rescue_data
+from scripts.rank_research_candidates import _enrich_rows
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -61,9 +64,30 @@ def test_default_candidate_registry_is_official_balanced_gated() -> None:
         "eq_bit_rescue",
         "rank64_answer_only",
         "final_answer_weighted_loss",
+        "soup_answer_short",
+        "soup_eq_bit",
+        "soup_all_rescue",
+        "soup_official_answer_rescue",
     } <= names
     rank64 = next(candidate for candidate in registry["candidates"] if candidate["name"] == "rank64_answer_only")
     assert rank64["submission_safe"] is False
+    solver = next(candidate for candidate in registry["candidates"] if candidate["name"] == "official_balanced_solver_assisted")
+    prompt = next(candidate for candidate in registry["candidates"] if candidate["name"] == "official_balanced_prompt_ensemble")
+    assert solver["submission_safe"] is False
+    assert prompt["submission_safe"] is False
+    assert "adapter-only" in solver["research_only_reason"]
+
+
+def test_registry_rejects_non_adapter_only_submit_safe_candidates() -> None:
+    registry = registry_with_updated_candidate(
+        build_default_registry(),
+        "official_balanced_solver_assisted",
+        {"submission_safe": True},
+    )
+
+    errors = validate_registry(registry)
+
+    assert any("solver_assisted must be submission_safe=false" in error for error in errors)
 
 
 def test_research_ranking_auto_uses_official_balanced_and_blocks_unsafe(tmp_path: Path) -> None:
@@ -103,6 +127,43 @@ def test_research_ranking_auto_uses_official_balanced_and_blocks_unsafe(tmp_path
     assert payload["rows"][0]["pass_gate"] is False
     assert payload["rows"][0]["gate_reason"] == "candidate is marked submission_unsafe"
     assert next(row for row in payload["rows"] if row["submit_candidate"])["model"] == "answer_only_continuation"
+
+
+def test_research_ranking_blocks_solver_assisted_even_if_registry_is_wrong(tmp_path: Path) -> None:
+    registry = registry_with_updated_candidate(
+        build_default_registry(),
+        "official_balanced_solver_assisted",
+        {"submission_safe": True, "research_only_reason": "wrong on purpose"},
+    )
+    rows = _enrich_rows(
+        [
+            {
+                "rank": 1,
+                "model": "official_balanced_solver_assisted",
+                "pass_gate": True,
+                "gate_reason": "pass",
+                "official_verify_accuracy": 0.8,
+                "delta_vs_baseline": 0.2,
+                "boxed_valid_rate": 1.0,
+            },
+            {
+                "rank": 2,
+                "model": "soup_answer_short",
+                "pass_gate": True,
+                "gate_reason": "pass",
+                "official_verify_accuracy": 0.6,
+                "delta_vs_baseline": 0.03,
+                "boxed_valid_rate": 1.0,
+            },
+        ],
+        registry,
+    )
+
+    solver_row = next(row for row in rows if row["model"] == "official_balanced_solver_assisted")
+    assert solver_row["submission_class"] == "research_only"
+    assert solver_row["pass_gate"] is False
+    assert solver_row["gate_reason"] == "candidate type is research-only: solver_assisted"
+    assert next(row for row in rows if row["submit_candidate"])["model"] == "soup_answer_short"
 
 
 def test_prompt_profile_materializes_suffix_and_metadata() -> None:
@@ -200,12 +261,17 @@ def test_research_rescue_data_filters_weak_families_and_safe_short_trace(tmp_pat
 
     assert summary["recipes"]["equation_rescue"]["train_rows"] == 1
     assert summary["recipes"]["bit_rescue"]["train_rows"] == 2
+    assert "train_provenance" in summary["recipes"]["bit_rescue"]
+    assert Path(summary["recipes"]["bit_rescue"]["train_provenance"]).is_file()
     eq_bit_rows = [
         json.loads(line)
         for line in (tmp_path / "out" / "eq_bit_rescue_train.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert {row["id"] for row in eq_bit_rows} == {"eq", "bit"}
     assert all(row["research_recipe"] == "eq_bit_rescue" for row in eq_bit_rows)
+    assert all(row["research_provenance"]["answer_hash"] for row in eq_bit_rows)
+    bit_row = next(row for row in eq_bit_rows if row["id"] == "bit")
+    assert bit_row["metadata"]["extras"]["bit_operator_family"] == "unknown"
 
 
 def test_cloud_artifact_manifest_counts_prediction_lines_and_hashes_candidate(tmp_path: Path) -> None:
@@ -230,3 +296,26 @@ def test_cloud_artifact_manifest_counts_prediction_lines_and_hashes_candidate(tm
     assert manifest["candidates"][0]["weights"][0]["sha256"]
     assert manifest["prediction_line_counts"] == {"smoke": {"candidate": 2}}
 
+
+def test_lb_correlation_log_records_public_and_local_metrics(tmp_path: Path) -> None:
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    adapter.joinpath("adapter_config.json").write_text("{}", encoding="utf-8")
+    adapter.joinpath("adapter_model.safetensors").write_bytes(b"weights")
+    report = _report(tmp_path / "report.json", acc=0.61, boxed=0.9)
+
+    payload = append_correlation_entry(
+        log_path=tmp_path / "lb_log.json",
+        candidate="soup_answer_short",
+        public_score=0.58,
+        exact_report=report,
+        adapter_path=adapter,
+        training_recipe="adapter_soup",
+        merge_weights={"answer_only_continuation": 0.5, "short_trace_continuation": 0.5},
+    )
+
+    entry = payload["entries"][0]
+    assert entry["candidate"] == "soup_answer_short"
+    assert entry["public_score"] == 0.58
+    assert entry["adapter_hashes"]["adapter_model.safetensors"]
+    assert entry["exact_report"]["official_verify_accuracy"] == 0.61

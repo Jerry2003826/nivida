@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--short-valid", type=Path, default=Path("data/processed/stage2_short_trace_valid.jsonl"))
     parser.add_argument("--out-dir", type=Path, default=Path("data/processed/research_breakout"))
     parser.add_argument("--recipe", action="append", help="Optional recipe filter. Repeatable.")
+    parser.add_argument("--seed", type=int, default=20260427)
     args = parser.parse_args(argv)
 
     report = build_research_rescue_data(
@@ -29,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         short_valid=args.short_valid,
         out_dir=args.out_dir,
         recipes=args.recipe,
+        seed=int(args.seed),
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
@@ -36,4 +38,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

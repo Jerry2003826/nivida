@@ -188,6 +188,10 @@ else
   add_candidate bit_rescue artifacts/adapter_stage2_bit_rescue
   add_candidate eq_bit_rescue artifacts/adapter_stage2_eq_bit_rescue
   add_candidate final_answer_weighted artifacts/adapter_stage2_final_answer_weighted
+  add_candidate soup_answer_short artifacts/merged/soup_answer_short
+  add_candidate soup_eq_bit artifacts/merged/soup_eq_bit
+  add_candidate soup_all_rescue artifacts/merged/soup_all_rescue
+  add_candidate soup_official_answer_rescue artifacts/merged/soup_official_answer_rescue
   if [[ "${INCLUDE_SUBMISSION_UNSAFE:-0}" == "1" ]]; then
     add_candidate rank64_answer_only artifacts/adapter_stage2_rank64_answer_only
   fi

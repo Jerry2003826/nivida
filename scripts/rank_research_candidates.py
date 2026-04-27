@@ -15,6 +15,7 @@ from scripts.rank_exact_eval_reports import _build_rows, _load_json, _parse_repo
 from src.common.io import write_json  # noqa: E402
 from src.research.candidate_registry import (  # noqa: E402
     DEFAULT_BASELINE_NAME,
+    NON_ADAPTER_ONLY_CANDIDATE_TYPES,
     candidate_by_name,
     load_registry,
 )
@@ -51,22 +52,35 @@ def _enrich_rows(rows: list[dict[str, Any]], registry: dict[str, Any]) -> list[d
     for row in rows:
         metadata = candidates.get(str(row["model"]), {})
         candidate_type = str(metadata.get("type", "unregistered"))
-        submission_safe = bool(metadata.get("submission_safe", True))
+        registry_safe = bool(metadata.get("submission_safe", True))
+        type_safe = candidate_type not in NON_ADAPTER_ONLY_CANDIDATE_TYPES
+        submission_safe = registry_safe and type_safe
+        submission_class = (
+            "research_only"
+            if not type_safe
+            else "merged_adapter"
+            if candidate_type == "merged_adapter"
+            else "model_only"
+        )
         pass_gate = bool(row["pass_gate"]) and submission_safe
         gate_reason = row["gate_reason"]
-        if row["pass_gate"] and not submission_safe:
+        if row["pass_gate"] and not registry_safe:
             gate_reason = "candidate is marked submission_unsafe"
+        elif row["pass_gate"] and not type_safe:
+            gate_reason = f"candidate type is research-only: {candidate_type}"
         enriched.append(
             {
                 **row,
                 "pass_gate": pass_gate,
                 "submit_candidate": False,
                 "candidate_type": candidate_type,
+                "submission_class": submission_class,
                 "prompt_profile": metadata.get("prompt_profile", ""),
                 "data_recipe": metadata.get("data_recipe", ""),
                 "family_focus": ",".join(metadata.get("family_focus", [])),
                 "gpu_required": metadata.get("gpu_required", ""),
                 "submission_safe": submission_safe,
+                "research_only_reason": metadata.get("research_only_reason", ""),
                 "gate_reason": gate_reason,
             }
         )
@@ -87,12 +101,12 @@ def _write_markdown(path: Path, payload: dict[str, Any]) -> None:
         f"- baseline reason: `{payload['baseline_reason']}`",
         f"- public LB baseline: `{payload['baseline_public_score']}`",
         "",
-        "| rank | model | type | submit | gate | official_verify | delta | boxed_valid | family_focus | prompt | data | safe |",
-        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |",
+        "| rank | model | type | class | submit | gate | official_verify | delta | boxed_valid | family_focus | prompt | data | safe |",
+        "| ---: | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |",
     ]
     for row in payload["rows"]:
         lines.append(
-            "| {rank} | {model} | {candidate_type} | {submit_candidate} | {gate_reason} | "
+            "| {rank} | {model} | {candidate_type} | {submission_class} | {submit_candidate} | {gate_reason} | "
             "{official_verify_accuracy:.4f} | {delta_vs_baseline:.4f} | "
             "{boxed_valid_rate:.4f} | {family_focus} | {prompt_profile} | "
             "{data_recipe} | {submission_safe} |".format(**row)
@@ -148,4 +162,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
