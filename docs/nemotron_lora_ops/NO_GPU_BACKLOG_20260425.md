@@ -19,9 +19,10 @@ present.
 | Cross-platform answer-focused builder | done | `python scripts/build_stage2_answer_focused_data.py --dry-run` resolves parent data on Windows |
 | Stage2 teacher provenance rebuild | done | `python scripts/rebuild_stage2_teacher_inputs.py` rebuilds parent official tagged data, splits, stage2 subsets, and subset provenance |
 | No-GPU readiness gate | done | `make no-gpu-readiness` runs the full local pre-GPU gate and writes `data/processed/no_gpu_readiness_gate.json` |
-| Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10694 rows, bad `0` |
-| Fast local tests | done | `23 passed, 1 skipped` for diagnostic/cloud/shell/tokenizer tests |
-| Full local tests | done | `python -m pytest -q` -> `449 passed, 9 skipped` |
+| Cloud artifact preflight plan | done | `python scripts/check_cloud_eval_inputs.py --dry-run ...` is part of the readiness gate |
+| Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10664 rows, bad `0` |
+| Fast local tests | done | targeted diagnostic/cloud/shell/tokenizer tests are part of `make no-gpu-readiness` |
+| Full local tests | done | latest `python -m pytest -q` -> `465 passed, 9 skipped` |
 
 ## Tooling Changes Completed
 
@@ -46,19 +47,27 @@ present.
 - `scripts/rebuild_stage2_teacher_inputs.py` is the canonical CPU-only way to
   rebuild current-code stage2 teacher inputs before answer-focused data or
   teacher-gate parity audits.
+- `scripts/check_cloud_eval_inputs.py` is the canonical CPU-only preflight for
+  cloud exact-eval inputs and adapters. It checks ignored eval manifests,
+  duplicate ids, target labels, adapter weights/configs, config files, and
+  critical cloud scripts before vLLM is touched.
+- `scripts/run_cloud_vllm_exact_eval_v3.sh` and
+  `scripts/run_cloud_inference_only_v3.sh` now fail on missing explicit
+  adapters, repair missing checkpoint `adapter_config.json` from the B-thin
+  reference when possible, and write a cloud artifact preflight JSON report.
 
 ## Current Solver Read
 
 - `equation_template` remains the highest-value CPU target.
-  - Current ops can fit support+query target for `207 / 275` rows.
-  - Only `22` have an operator-template fit where the query key was seen in
+  - Current ops can fit support+query target for `182 / 235` rows.
+  - Only `21` have an operator-template fit where the query key was seen in
     support.
   - `unseen_key_template_miss` remains unsafe for strict trace training; keep
     it answer-only/silver only.
 - `bit_permutation` has bounded ranker upside but a larger operator gap.
-  - Low-risk top1 rows: `152`.
-  - Ranker-miss/oracle-hit rows: `40`.
-  - Operator-gap rows: `151`.
+  - Low-risk top1 rows: `146` across the three current diagnostic manifests.
+  - Ranker-miss/oracle-hit rows: `23`.
+  - Operator-gap rows: `170`.
   - The ranker misses are usually 1-bit top/oracle differences, so future
     changes should prefer verifier/ranker features over widening boolean search.
 
@@ -89,8 +98,10 @@ report drift are both hard failures.
 ```bash
 cd /workspace/nivida_h200_run
 git pull
-test -f artifacts/adapter_stage2_official_balanced_answer_only/adapter_model.safetensors
 bash scripts/check_cloud_vllm_env.sh
+python scripts/check_cloud_eval_inputs.py \
+  --eval-inputs smoke_6pf \
+  --candidate answer_final=artifacts/adapter_stage2_official_balanced_answer_only
 
 head -n 6 data/processed/local_eval_manifests/smoke_6pf.jsonl \
   > data/processed/local_eval_manifests/smoke_head6.jsonl

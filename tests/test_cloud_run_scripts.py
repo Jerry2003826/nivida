@@ -30,10 +30,14 @@ def test_cloud_inference_scripts_accept_venv_directory_or_activate_path() -> Non
 def test_vllm_exact_eval_script_runs_preflight_and_official_proxy() -> None:
     text = _script("run_cloud_vllm_exact_eval_v3.sh")
     assert "scripts/check_cloud_vllm_env.sh" in text
+    assert "scripts/check_cloud_eval_inputs.py" in text
+    assert "run_eval_artifact_preflight" in text
     assert "scripts/eval_official_vllm_proxy.py" in text
     assert "--write-raw-predictions" in text
     assert "--contract \"$CONTRACT\"" in text
     assert "add_candidate answer_final artifacts/adapter_stage2_official_balanced_answer_only" in text
+    assert "require_candidate" in text
+    assert "ensure_adapter_config" in text
 
 
 def test_vllm_raw_output_scorer_bridges_to_exact_ranking() -> None:
@@ -154,3 +158,11 @@ def test_vllm_preflight_checks_torch_abi_requirement() -> None:
     assert 'md.metadata(name).get_all("Requires-Dist")' in text
     assert "vLLM torch ABI mismatch" in text
     assert "nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu" in text
+
+
+def test_cloud_inference_script_runs_artifact_preflight() -> None:
+    text = _script("run_cloud_inference_only_v3.sh")
+    assert "scripts/check_cloud_eval_inputs.py" in text
+    assert "run_eval_artifact_preflight" in text
+    assert "require_candidate" in text
+    assert "ensure_adapter_config" in text

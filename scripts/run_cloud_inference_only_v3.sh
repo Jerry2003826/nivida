@@ -46,6 +46,7 @@ OUT_DIR="${OUT_DIR:-data/processed/local_eval_predictions_v3}"
 CONFIG="${CONFIG:-configs/train_stage2_thin.yaml}"
 EVAL_INPUTS="${EVAL_INPUTS:-combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-}"
+PREFLIGHT_OUTPUT="${PREFLIGHT_OUTPUT:-data/processed/cloud_inference_preflight.json}"
 mkdir -p "$OUT_DIR"
 
 log() {
@@ -76,6 +77,16 @@ add_candidate() {
   CANDIDATES+=("$(sanitize_name "$name")=$adapter")
 }
 
+require_candidate() {
+  local name="$1"
+  local adapter="$2"
+  if [[ ! -d "$adapter" ]]; then
+    echo "Missing explicit adapter candidate ${name}: ${adapter}" >&2
+    exit 1
+  fi
+  CANDIDATES+=("$(sanitize_name "$name")=$adapter")
+}
+
 discover_checkpoints() {
   local prefix="$1"
   local stage_dir="$2"
@@ -94,6 +105,16 @@ ensure_adapter_config() {
   if [[ ! -f "$adapter/adapter_config.json" && -f "$reference/adapter_config.json" ]]; then
     cp "$reference/adapter_config.json" "$adapter/adapter_config.json"
   fi
+}
+
+run_eval_artifact_preflight() {
+  local cmd=(python scripts/check_cloud_eval_inputs.py --eval-inputs "$EVAL_INPUTS" --config "$CONFIG" --output "$PREFLIGHT_OUTPUT")
+  local item
+  for item in "${CANDIDATES[@]}"; do
+    cmd+=(--candidate "$item")
+  done
+  log "cloud inference artifact preflight"
+  "${cmd[@]}"
 }
 
 run_adapter() {
@@ -127,7 +148,7 @@ if [[ -n "${ADAPTERS:-}" ]]; then
     [[ -n "$item" ]] || continue
     name="${item%%=*}"
     path="${item#*=}"
-    add_candidate "$name" "$path"
+    require_candidate "$name" "$path"
   done
 else
   add_candidate b_thin artifacts/adapter_stage2_thin
@@ -158,7 +179,7 @@ if [[ -n "${EXTRA_ADAPTERS:-}" ]]; then
     [[ -n "$item" ]] || continue
     name="${item%%=*}"
     path="${item#*=}"
-    add_candidate "$name" "$path"
+    require_candidate "$name" "$path"
   done
 fi
 
@@ -172,6 +193,8 @@ if [[ -d artifacts/adapter_stage2_thin ]]; then
     ensure_adapter_config "${item#*=}" artifacts/adapter_stage2_thin
   done
 fi
+
+run_eval_artifact_preflight
 
 IFS=',' read -ra EVAL_ITEMS <<< "$EVAL_INPUTS"
 for eval_item in "${EVAL_ITEMS[@]}"; do

@@ -29,6 +29,7 @@ TRACKED_REPORT_PATHS = (
     Path("docs/equation_template_diagnostic_latest.md"),
     Path("docs/bit_permutation_diagnostic_latest.md"),
 )
+CLOUD_EVAL_PREFLIGHT_PLAN = Path("data/processed/cloud_eval_preflight_plan.json")
 GENERATED_FILES = (
     REBUILD_STAGE2_TEACHER_INPUTS_SUMMARY,
     Path("../data/processed/official_train_tagged.jsonl"),
@@ -45,6 +46,7 @@ GENERATED_FILES = (
     Path("data/processed/bit_permutation_diagnostic.json"),
     Path("data/processed/bit_permutation_diagnostic.csv"),
     Path("data/processed/recheck_chat_template_sha16.json"),
+    CLOUD_EVAL_PREFLIGHT_PLAN,
     TEACHER_PARITY_OUTPUT,
     *ANSWER_FOCUSED_OUTPUTS,
     *TRACKED_REPORT_PATHS,
@@ -146,6 +148,19 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
 
     fast_steps = [
         GateStep(
+            "cloud_eval_preflight_plan",
+            _python(
+                "scripts/check_cloud_eval_inputs.py",
+                "--dry-run",
+                "--eval-inputs",
+                "smoke_6pf",
+                "--candidate",
+                "answer_final=artifacts/adapter_stage2_official_balanced_answer_only",
+                "--output",
+                _posix(CLOUD_EVAL_PREFLIGHT_PLAN),
+            ),
+        ),
+        GateStep(
             "answer_focused_data_dry_run",
             _python("scripts/build_stage2_answer_focused_data.py", "--dry-run"),
         ),
@@ -156,6 +171,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
                 "pytest",
                 "tests/test_equation_template_diagnostic.py",
                 "tests/test_bit_permutation_diagnostic.py",
+                "tests/test_cloud_eval_preflight.py",
                 "tests/test_cloud_run_scripts.py",
                 "tests/test_shell_syntax.py",
                 "tests/test_stage2_annotation_provenance.py",
@@ -194,6 +210,19 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
             ),
         ),
         GateStep(
+            "cloud_eval_preflight_plan",
+            _python(
+                "scripts/check_cloud_eval_inputs.py",
+                "--dry-run",
+                "--eval-inputs",
+                "smoke_6pf",
+                "--candidate",
+                "answer_final=artifacts/adapter_stage2_official_balanced_answer_only",
+                "--output",
+                _posix(CLOUD_EVAL_PREFLIGHT_PLAN),
+            ),
+        ),
+        GateStep(
             "check_prompt_suffix_alignment",
             [
                 "sh",
@@ -217,6 +246,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
                 "pytest",
                 "tests/test_equation_template_diagnostic.py",
                 "tests/test_bit_permutation_diagnostic.py",
+                "tests/test_cloud_eval_preflight.py",
                 "tests/test_cloud_run_scripts.py",
                 "tests/test_shell_syntax.py",
                 "tests/test_stage2_annotation_provenance.py",
