@@ -55,6 +55,10 @@ present.
   `scripts/run_cloud_inference_only_v3.sh` now fail on missing explicit
   adapters, repair missing checkpoint `adapter_config.json` from the B-thin
   reference when possible, and write a cloud artifact preflight JSON report.
+- `scripts/run_cloud_vllm_exact_eval_v3.sh` materializes
+  `data/processed/local_eval_manifests/smoke_head6.jsonl` from `smoke_6pf`
+  automatically when the smoke default is used, so the first GPU smoke does not
+  require a manual `head` command.
 
 ## Current Solver Read
 
@@ -100,11 +104,8 @@ cd /workspace/nivida_h200_run
 git pull
 bash scripts/check_cloud_vllm_env.sh
 python scripts/check_cloud_eval_inputs.py \
-  --eval-inputs smoke_6pf \
+  --eval-inputs smoke_head6 \
   --candidate answer_final=artifacts/adapter_stage2_official_balanced_answer_only
-
-head -n 6 data/processed/local_eval_manifests/smoke_6pf.jsonl \
-  > data/processed/local_eval_manifests/smoke_head6.jsonl
 
 EVAL_INPUTS=smoke_head6 \
 ADAPTERS="answer_final=artifacts/adapter_stage2_official_balanced_answer_only" \

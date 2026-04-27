@@ -68,6 +68,22 @@ resolve_eval_input() {
   printf '%s' "$item"
 }
 
+materialize_builtin_eval_inputs() {
+  if [[ ",${EVAL_INPUTS}," == *",smoke_head6,"* ]]; then
+    local source="data/processed/local_eval_manifests/smoke_6pf.jsonl"
+    local target="data/processed/local_eval_manifests/smoke_head6.jsonl"
+    if [[ ! -f "$target" ]]; then
+      if [[ ! -f "$source" ]]; then
+        echo "Missing source manifest for smoke_head6: $source" >&2
+        exit 1
+      fi
+      mkdir -p "$(dirname "$target")"
+      head -n 6 "$source" > "$target"
+      log "materialized ${target} from ${source}"
+    fi
+  fi
+}
+
 add_candidate() {
   local name="$1"
   local adapter="$2"
@@ -169,6 +185,7 @@ if [[ -d artifacts/adapter_stage2_thin ]]; then
   done
 fi
 
+materialize_builtin_eval_inputs
 run_eval_artifact_preflight
 run_preflight
 

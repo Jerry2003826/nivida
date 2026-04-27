@@ -32,6 +32,8 @@ def test_vllm_exact_eval_script_runs_preflight_and_official_proxy() -> None:
     assert "scripts/check_cloud_vllm_env.sh" in text
     assert "scripts/check_cloud_eval_inputs.py" in text
     assert "run_eval_artifact_preflight" in text
+    assert "materialize_builtin_eval_inputs" in text
+    assert "head -n 6 \"$source\" > \"$target\"" in text
     assert "scripts/eval_official_vllm_proxy.py" in text
     assert "--write-raw-predictions" in text
     assert "--contract \"$CONTRACT\"" in text
