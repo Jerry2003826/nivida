@@ -30,6 +30,8 @@ TRACKED_REPORT_PATHS = (
     Path("docs/bit_permutation_diagnostic_latest.md"),
 )
 CLOUD_EVAL_PREFLIGHT_PLAN = Path("data/processed/cloud_eval_preflight_plan.json")
+RESEARCH_REGISTRY = Path("configs/research_breakout_candidates.json")
+RESEARCH_BREAKOUT_DIR = Path("data/processed/research_breakout")
 GENERATED_FILES = (
     REBUILD_STAGE2_TEACHER_INPUTS_SUMMARY,
     Path("../data/processed/official_train_tagged.jsonl"),
@@ -49,6 +51,15 @@ GENERATED_FILES = (
     CLOUD_EVAL_PREFLIGHT_PLAN,
     TEACHER_PARITY_OUTPUT,
     *ANSWER_FOCUSED_OUTPUTS,
+    RESEARCH_BREAKOUT_DIR / "mixed_answer_short_train.jsonl",
+    RESEARCH_BREAKOUT_DIR / "mixed_answer_short_valid.jsonl",
+    RESEARCH_BREAKOUT_DIR / "equation_rescue_train.jsonl",
+    RESEARCH_BREAKOUT_DIR / "equation_rescue_valid.jsonl",
+    RESEARCH_BREAKOUT_DIR / "bit_rescue_train.jsonl",
+    RESEARCH_BREAKOUT_DIR / "bit_rescue_valid.jsonl",
+    RESEARCH_BREAKOUT_DIR / "eq_bit_rescue_train.jsonl",
+    RESEARCH_BREAKOUT_DIR / "eq_bit_rescue_valid.jsonl",
+    RESEARCH_BREAKOUT_DIR / "research_rescue_data_summary.json",
     *TRACKED_REPORT_PATHS,
 )
 
@@ -148,6 +159,15 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
 
     fast_steps = [
         GateStep(
+            "research_registry_check",
+            _python(
+                "scripts/build_research_candidate_registry.py",
+                "--check",
+                "--output",
+                _posix(RESEARCH_REGISTRY),
+            ),
+        ),
+        GateStep(
             "cloud_eval_preflight_plan",
             _python(
                 "scripts/check_cloud_eval_inputs.py",
@@ -169,6 +189,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
             _python(
                 "-m",
                 "pytest",
+                "tests/test_research_breakout.py",
                 "tests/test_equation_template_diagnostic.py",
                 "tests/test_bit_permutation_diagnostic.py",
                 "tests/test_cloud_eval_preflight.py",
@@ -199,8 +220,18 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
         GateStep("audit_solver_coverage", _python("scripts/audit_solver_coverage.py")),
         GateStep("diagnose_equation_template", _python("scripts/diagnose_equation_template.py")),
         GateStep("diagnose_bit_permutation", _python("scripts/diagnose_bit_permutation.py")),
+        GateStep(
+            "research_registry_check",
+            _python(
+                "scripts/build_research_candidate_registry.py",
+                "--check",
+                "--output",
+                _posix(RESEARCH_REGISTRY),
+            ),
+        ),
         GateStep("rebuild_stage2_teacher_inputs", _python("scripts/rebuild_stage2_teacher_inputs.py")),
         GateStep("build_stage2_answer_focused_data", _python("scripts/build_stage2_answer_focused_data.py")),
+        GateStep("build_research_rescue_data", _python("scripts/build_research_rescue_data.py")),
         GateStep(
             "recheck_chat_template_sha16",
             _python(
@@ -244,6 +275,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
             _python(
                 "-m",
                 "pytest",
+                "tests/test_research_breakout.py",
                 "tests/test_equation_template_diagnostic.py",
                 "tests/test_bit_permutation_diagnostic.py",
                 "tests/test_cloud_eval_preflight.py",

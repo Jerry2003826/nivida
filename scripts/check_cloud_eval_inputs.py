@@ -17,6 +17,7 @@ REQUIRED_REPO_FILES = (
     Path("scripts/eval_official_vllm_proxy.py"),
     Path("scripts/run_cloud_vllm_exact_eval_v3.sh"),
     Path("scripts/score_vllm_exact_eval_outputs.py"),
+    Path("scripts/write_cloud_artifact_manifest.py"),
 )
 
 

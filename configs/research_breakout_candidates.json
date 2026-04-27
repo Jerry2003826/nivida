@@ -1,0 +1,279 @@
+{
+  "schema_version": 1,
+  "baseline": "official_balanced",
+  "baseline_public_score": 0.57,
+  "submission_policy": {
+    "min_overall_delta": 0.0,
+    "max_family_regression_samples": 1.0,
+    "require_boxed_valid_not_below_baseline": true,
+    "max_kaggle_submissions_per_batch": 2
+  },
+  "stop_rules": [
+    "If two GPU batches improve local exact but not Kaggle, pause training and recalibrate eval.",
+    "If most gains come from solver override, prioritize inference-time pipeline over LoRA training.",
+    "Do not submit route/shared transplant candidates unless exact arena proves stable gain."
+  ],
+  "prompt_profiles": [
+    "chat_thinking",
+    "short_answer_biased",
+    "format_strict"
+  ],
+  "candidates": [
+    {
+      "name": "b_thin",
+      "type": "reference_adapter",
+      "adapter_path": "artifacts/adapter_stage2_thin",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "stage2_thin",
+      "family_focus": [
+        "all"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "eval-only",
+      "artifacts": [
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "Historical 0.54 baseline; never use as the primary ranking baseline."
+    },
+    {
+      "name": "official_balanced",
+      "type": "leaderboard_baseline",
+      "adapter_path": "artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "official_balanced",
+      "family_focus": [
+        "all"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "eval-only",
+      "artifacts": [
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "Current public LB baseline: 0.57."
+    },
+    {
+      "name": "answer_only_continuation",
+      "type": "train_variant",
+      "adapter_path": "artifacts/adapter_stage2_official_balanced_answer_only",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "answer_only",
+      "family_focus": [
+        "all"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "train+eval",
+      "artifacts": [
+        "adapter",
+        "checkpoints",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "",
+      "config_path": "configs/train_stage2_official_balanced_answer_only.yaml"
+    },
+    {
+      "name": "short_trace_continuation",
+      "type": "train_variant",
+      "adapter_path": "artifacts/adapter_stage2_official_balanced_short_trace",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "short_trace",
+      "family_focus": [
+        "all"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "train+eval",
+      "artifacts": [
+        "adapter",
+        "checkpoints",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "",
+      "config_path": "configs/train_stage2_official_balanced_short_trace.yaml"
+    },
+    {
+      "name": "mixed_answer_short",
+      "type": "train_variant",
+      "adapter_path": "artifacts/adapter_stage2_mixed_answer_short",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "mixed_answer_short",
+      "family_focus": [
+        "all"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "train+eval",
+      "artifacts": [
+        "adapter",
+        "checkpoints",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "",
+      "config_path": "configs/train_stage2_mixed_answer_short.yaml"
+    },
+    {
+      "name": "equation_rescue",
+      "type": "train_variant",
+      "adapter_path": "artifacts/adapter_stage2_equation_rescue",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "equation_rescue",
+      "family_focus": [
+        "equation"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "train+eval",
+      "artifacts": [
+        "adapter",
+        "checkpoints",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "",
+      "config_path": "configs/train_stage2_equation_rescue.yaml"
+    },
+    {
+      "name": "bit_rescue",
+      "type": "train_variant",
+      "adapter_path": "artifacts/adapter_stage2_bit_rescue",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "bit_rescue",
+      "family_focus": [
+        "bit"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "train+eval",
+      "artifacts": [
+        "adapter",
+        "checkpoints",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "",
+      "config_path": "configs/train_stage2_bit_rescue.yaml"
+    },
+    {
+      "name": "eq_bit_rescue",
+      "type": "train_variant",
+      "adapter_path": "artifacts/adapter_stage2_eq_bit_rescue",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "eq_bit_rescue",
+      "family_focus": [
+        "equation",
+        "bit"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "train+eval",
+      "artifacts": [
+        "adapter",
+        "checkpoints",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "",
+      "config_path": "configs/train_stage2_eq_bit_rescue.yaml"
+    },
+    {
+      "name": "rank64_answer_only",
+      "type": "train_variant",
+      "adapter_path": "artifacts/adapter_stage2_rank64_answer_only",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "answer_only",
+      "family_focus": [
+        "all"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "train+eval",
+      "artifacts": [
+        "adapter",
+        "checkpoints",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": false,
+      "notes": "Research-only unless Kaggle max_lora_rank changes above 32.",
+      "config_path": "configs/train_stage2_rank64_answer_only.yaml"
+    },
+    {
+      "name": "final_answer_weighted_loss",
+      "type": "train_variant",
+      "adapter_path": "artifacts/adapter_stage2_final_answer_weighted",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "mixed_answer_short",
+      "family_focus": [
+        "all"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "train+eval",
+      "artifacts": [
+        "adapter",
+        "checkpoints",
+        "raw_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "",
+      "config_path": "configs/train_stage2_final_answer_weighted.yaml"
+    },
+    {
+      "name": "official_balanced_solver_assisted",
+      "type": "solver_assisted",
+      "adapter_path": "artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "official_balanced",
+      "family_focus": [
+        "equation",
+        "bit"
+      ],
+      "gpu_required": false,
+      "expected_runtime": "postprocess-only",
+      "artifacts": [
+        "solver_finalized_predictions",
+        "exact_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "CPU postprocess candidate: override only when solver/verifier is high confidence."
+    },
+    {
+      "name": "official_balanced_prompt_ensemble",
+      "type": "prompt_ensemble",
+      "adapter_path": "artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z",
+      "prompt_profile": "short_answer_biased+format_strict",
+      "data_recipe": "official_balanced",
+      "family_focus": [
+        "equation",
+        "bit"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "eval-only",
+      "artifacts": [
+        "profiled_manifests",
+        "raw_predictions",
+        "ensemble_report"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "Small weak-family prompt ensemble; use only after deterministic smoke."
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+# Research Breakout 2026-04-27
+
+Current public baseline is `official-balanced = 0.57`. The next push is a
+portfolio, not a single LoRA guess: exact-eval calibration, weak-family
+solver/verifier work, answer-focused data recipes, training variants, prompt
+profiles, and solver-assisted inference all enter the same research arena.
+
+## Local Arena
+
+- Canonical registry: `configs/research_breakout_candidates.json`
+- Registry check: `python scripts/build_research_candidate_registry.py --check`
+- Unified ranking: `python scripts/rank_research_candidates.py --report official_balanced=... --report candidate=...`
+- Baseline policy: `baseline=auto` must resolve to `official_balanced`; `b_thin`
+  is only a historical reference.
+- Submission gate: overall official-verify must beat `official_balanced`, no
+  large family may regress by more than one sample, and submission-unsafe
+  candidates are never selected automatically.
+
+## Research Lines
+
+| line | implementation | decision rule |
+| --- | --- | --- |
+| Existing adapters | registry entries for `b_thin`, `official_balanced`, answer/short trace variants | eval-only sweep first |
+| Weak-family data | `scripts/build_research_rescue_data.py` writes mixed, equation, bit, and eq+bit recipes | train only after no-GPU gate passes |
+| Solver-assisted inference | `scripts/apply_solver_assisted_finalizer.py` overrides only high-confidence equation/bit rows | use only if exact arena improves without format regression |
+| Prompt profiles | `scripts/materialize_prompt_profile_manifest.py` builds `short_answer_biased` and `format_strict` manifests | weak-family prompt ensemble only after deterministic smoke |
+| Cloud manifest | `scripts/write_cloud_artifact_manifest.py` records git/runtime/adapter hashes and prediction counts | every paid GPU sweep must produce it |
+
+## First GPU Batch
+
+Run eval-only first. Do not train until the existing candidates plus
+solver-assisted variants have been scored locally.
+
+```bash
+cd /workspace/nivida_h200_run
+git pull
+bash scripts/check_cloud_vllm_env.sh
+
+EVAL_INPUTS=smoke_head6 \
+bash scripts/run_cloud_vllm_exact_eval_v3.sh
+
+EVAL_INPUTS=combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full \
+bash scripts/run_cloud_vllm_exact_eval_v3.sh
+```
+
+Pull back `data/processed/vllm_exact_eval_v3`, then score locally:
+
+```bash
+python scripts/score_vllm_exact_eval_outputs.py \
+  --predictions-root data/processed/vllm_exact_eval_v3 \
+  --output-root data/processed/eval/vllm_exact_eval_v3
+```
+
+## Training Batch
+
+Only start training if Batch 1 shows local exact-eval signal. The fixed first
+matrix is:
+
+```text
+answer_only_continuation
+short_trace_continuation
+mixed_answer_short
+equation_rescue
+bit_rescue
+eq_bit_rescue
+rank64_answer_only
+final_answer_weighted_loss
+```
+
+`rank64_answer_only` is intentionally marked `submission_safe=false` because
+the current Kaggle runtime contract has `max_lora_rank=32`; keep it research
+only unless that contract changes.
+
+## Stop Rules
+
+- If two GPU batches improve local exact but do not move Kaggle, pause training
+  and recalibrate local evaluation.
+- If gains mostly come from solver-assisted overrides, invest in inference-time
+  finalization rather than more LoRA epochs.
+- Route/shared transplant remains downgraded until exact-eval proves a stable
+  `norm ∩ no-public-route` gain.
+

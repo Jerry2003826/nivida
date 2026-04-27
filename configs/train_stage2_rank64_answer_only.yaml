@@ -10,21 +10,21 @@ environment:
   KAGGLEHUB_CACHE: /workspace/.cache/kagglehub
   HF_HOME: /workspace/.cache/huggingface
 lora:
-  rank: 32
-  alpha: 32
+  rank: 64
+  alpha: 64
   dropout: 0.05
   target_modules: '.*\.mixer\.(?:out_proj|q_proj|k_proj|v_proj|o_proj|shared_experts\.up_proj|shared_experts\.down_proj)$'
   bias: none
 training:
-  output_dir: artifacts/adapter_stage2_official_balanced_short_trace
-  dataset_path: data/processed/stage2_short_trace_train.jsonl
-  eval_path: data/processed/stage2_short_trace_valid.jsonl
+  output_dir: artifacts/adapter_stage2_rank64_answer_only
+  dataset_path: data/processed/stage2_answer_only_train.jsonl
+  eval_path: data/processed/stage2_answer_only_valid.jsonl
   init_adapter_dir: artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z
   num_train_epochs: 1
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 16
   gradient_checkpointing: true
-  learning_rate: 5.0e-6
+  learning_rate: 3.0e-6
   warmup_ratio: 0.03
   lr_scheduler_type: cosine
   max_grad_norm: 1.0
@@ -43,10 +43,6 @@ training:
   greater_is_better: false
   report_to: []
   dataloader_pin_memory: false
-  final_answer_loss:
-    enabled: true
-    multiplier: 3.0
-    min_supervised_tokens: 1
   resume_from_checkpoint:
   dry_run: false
 inference:
@@ -57,3 +53,4 @@ inference:
   top_p: 1.0
   repetition_penalty: 1.0
   save_raw_generations: true
+

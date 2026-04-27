@@ -158,6 +158,17 @@ run_adapter() {
     --contract "$CONTRACT"
 }
 
+write_artifact_manifest() {
+  local manifest_output="${OUT_DIR}/artifact_manifest.json"
+  local cmd=(python scripts/write_cloud_artifact_manifest.py --out-dir "$OUT_DIR" --eval-inputs "$EVAL_INPUTS" --preflight "$PREFLIGHT_OUTPUT" --output "$manifest_output")
+  local item
+  for item in "${CANDIDATES[@]}"; do
+    cmd+=(--candidate "$item")
+  done
+  log "write cloud artifact manifest ${manifest_output}"
+  "${cmd[@]}"
+}
+
 log "vLLM exact-eval v3 start"
 
 CANDIDATES=()
@@ -171,7 +182,22 @@ else
   add_candidate b_thin artifacts/adapter_stage2_thin
   add_candidate official_balanced artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z
   add_candidate answer_final artifacts/adapter_stage2_official_balanced_answer_only
+  add_candidate short_trace_final artifacts/adapter_stage2_official_balanced_short_trace
+  add_candidate mixed_answer_short artifacts/adapter_stage2_mixed_answer_short
+  add_candidate equation_rescue artifacts/adapter_stage2_equation_rescue
+  add_candidate bit_rescue artifacts/adapter_stage2_bit_rescue
+  add_candidate eq_bit_rescue artifacts/adapter_stage2_eq_bit_rescue
+  add_candidate final_answer_weighted artifacts/adapter_stage2_final_answer_weighted
+  if [[ "${INCLUDE_SUBMISSION_UNSAFE:-0}" == "1" ]]; then
+    add_candidate rank64_answer_only artifacts/adapter_stage2_rank64_answer_only
+  fi
   discover_checkpoints answer artifacts/adapter_stage2_official_balanced_answer_only
+  discover_checkpoints short_trace artifacts/adapter_stage2_official_balanced_short_trace
+  discover_checkpoints mixed artifacts/adapter_stage2_mixed_answer_short
+  discover_checkpoints equation artifacts/adapter_stage2_equation_rescue
+  discover_checkpoints bit artifacts/adapter_stage2_bit_rescue
+  discover_checkpoints eq_bit artifacts/adapter_stage2_eq_bit_rescue
+  discover_checkpoints weighted artifacts/adapter_stage2_final_answer_weighted
 fi
 
 if [[ "${#CANDIDATES[@]}" -eq 0 ]]; then
@@ -203,4 +229,5 @@ for eval_item in "${EVAL_ITEMS[@]}"; do
   done
 done
 
+write_artifact_manifest
 log "vLLM exact-eval v3 done"

@@ -120,14 +120,16 @@ def _rank_eval(
     reports: dict[str, Path],
     baseline: str,
     output_root: Path,
+    research_registry: Path | None,
 ) -> dict[str, str] | None:
     if not reports:
         return None
     baseline_name, baseline_reason = _select_baseline(reports, baseline)
     output_dir = output_root / eval_name
+    rank_script = "scripts/rank_exact_eval_reports.py"
     cmd = [
         sys.executable,
-        "scripts/rank_exact_eval_reports.py",
+        rank_script,
         "--baseline",
         baseline_name,
         "--output-json",
@@ -137,12 +139,29 @@ def _rank_eval(
         "--output-md",
         str(output_dir / "ranking.md"),
     ]
+    if research_registry is not None and research_registry.exists():
+        rank_script = "scripts/rank_research_candidates.py"
+        cmd = [
+            sys.executable,
+            rank_script,
+            "--registry",
+            str(research_registry),
+            "--baseline",
+            baseline_name,
+            "--output-json",
+            str(output_dir / "ranking.json"),
+            "--output-csv",
+            str(output_dir / "ranking.csv"),
+            "--output-md",
+            str(output_dir / "ranking.md"),
+        ]
     for model, report_path in sorted(reports.items()):
         cmd.extend(["--report", f"{model}={report_path}"])
     _run(cmd)
     return {
         "baseline": baseline_name,
         "baseline_reason": baseline_reason,
+        "rank_script": rank_script,
         "ranking": str(output_dir / "ranking.json"),
     }
 
@@ -160,10 +179,21 @@ def main() -> None:
         default="auto",
         help="Baseline model name, or 'auto' to prefer official-balanced final then b_thin.",
     )
+    parser.add_argument(
+        "--research-registry",
+        type=Path,
+        default=Path("configs/research_breakout_candidates.json"),
+        help="Optional registry for research-arena ranking. Falls back to exact ranking if missing.",
+    )
     parser.add_argument("--prediction-key", default="generation")
     args = parser.parse_args()
 
     eval_filter = None if not args.eval_name else set(args.eval_name)
+    research_registry = (
+        args.research_registry
+        if args.research_registry.is_absolute()
+        else REPO_ROOT / args.research_registry
+    )
     label_paths = dict(args.label)
     discovered = _discover_raw_predictions(args.predictions_root, eval_filter)
     if not discovered:
@@ -190,6 +220,7 @@ def main() -> None:
             reports=reports,
             baseline=args.baseline,
             output_root=args.output_root,
+            research_registry=research_registry,
         )
         ranking_path = None if ranking_info is None else Path(ranking_info["ranking"])
         ranking = None if ranking_path is None else _load_json(ranking_path)
@@ -205,6 +236,7 @@ def main() -> None:
             "ranking": None if ranking_path is None else str(ranking_path),
             "baseline": None if ranking_info is None else ranking_info["baseline"],
             "baseline_reason": None if ranking_info is None else ranking_info["baseline_reason"],
+            "rank_script": None if ranking_info is None else ranking_info["rank_script"],
             "submit_candidate": submit_candidate,
         }
 

@@ -27,13 +27,15 @@ def test_full_mode_plans_required_command_order() -> None:
         "python scripts/audit_solver_coverage.py",
         "python scripts/diagnose_equation_template.py",
         "python scripts/diagnose_bit_permutation.py",
+        "python scripts/build_research_candidate_registry.py --check --output configs/research_breakout_candidates.json",
         "python scripts/rebuild_stage2_teacher_inputs.py",
         "python scripts/build_stage2_answer_focused_data.py",
+        "python scripts/build_research_rescue_data.py",
         "python scripts/recheck_chat_template_sha16.py --output data/processed/recheck_chat_template_sha16.json",
         "python scripts/check_cloud_eval_inputs.py --dry-run --eval-inputs smoke_head6 --candidate answer_final=artifacts/adapter_stage2_official_balanced_answer_only --output data/processed/cloud_eval_preflight_plan.json",
         "sh scripts/check_prompt_suffix_alignment.sh data/processed/stage2_answer_only_train.jsonl data/processed/stage2_answer_only_valid.jsonl data/processed/stage2_short_trace_train.jsonl data/processed/stage2_short_trace_valid.jsonl",
         "python scripts/audit_teacher_gate_extractor_parity.py --train-jsonl ../data/processed/stage2_official_train_no_hard_valid.jsonl --allow-rerun-chain-search",
-        "python -m pytest tests/test_equation_template_diagnostic.py tests/test_bit_permutation_diagnostic.py tests/test_cloud_eval_preflight.py tests/test_cloud_run_scripts.py tests/test_shell_syntax.py tests/test_stage2_annotation_provenance.py tests/test_stage2_answer_focused_builder.py -q",
+        "python -m pytest tests/test_research_breakout.py tests/test_equation_template_diagnostic.py tests/test_bit_permutation_diagnostic.py tests/test_cloud_eval_preflight.py tests/test_cloud_run_scripts.py tests/test_shell_syntax.py tests/test_stage2_annotation_provenance.py tests/test_stage2_answer_focused_builder.py -q",
         "python -m pytest -q",
         "git diff --check",
         "git diff --name-only -- docs/solver_coverage_audit_latest.md docs/equation_template_diagnostic_latest.md docs/bit_permutation_diagnostic_latest.md",
@@ -133,3 +135,5 @@ def test_makefile_has_no_gpu_readiness_target() -> None:
 
     assert "no-gpu-readiness:" in text
     assert "$(PYTHON) scripts/run_no_gpu_readiness_gate.py --mode full" in text
+    assert "research-registry:" in text
+    assert "research-rescue-data:" in text

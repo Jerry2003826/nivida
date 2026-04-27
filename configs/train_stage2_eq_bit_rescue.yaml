@@ -16,9 +16,9 @@ lora:
   target_modules: '.*\.mixer\.(?:out_proj|q_proj|k_proj|v_proj|o_proj|shared_experts\.up_proj|shared_experts\.down_proj)$'
   bias: none
 training:
-  output_dir: artifacts/adapter_stage2_official_balanced_short_trace
-  dataset_path: data/processed/stage2_short_trace_train.jsonl
-  eval_path: data/processed/stage2_short_trace_valid.jsonl
+  output_dir: artifacts/adapter_stage2_eq_bit_rescue
+  dataset_path: data/processed/research_breakout/eq_bit_rescue_train.jsonl
+  eval_path: data/processed/research_breakout/eq_bit_rescue_valid.jsonl
   init_adapter_dir: artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z
   num_train_epochs: 1
   per_device_train_batch_size: 1
@@ -57,3 +57,4 @@ inference:
   top_p: 1.0
   repetition_penalty: 1.0
   save_raw_generations: true
+

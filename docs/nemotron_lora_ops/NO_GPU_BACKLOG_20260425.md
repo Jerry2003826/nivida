@@ -20,6 +20,8 @@ present.
 | Stage2 teacher provenance rebuild | done | `python scripts/rebuild_stage2_teacher_inputs.py` rebuilds parent official tagged data, splits, stage2 subsets, and subset provenance |
 | No-GPU readiness gate | done | `make no-gpu-readiness` runs the full local pre-GPU gate and writes `data/processed/no_gpu_readiness_gate.json` |
 | Cloud artifact preflight plan | done | `python scripts/check_cloud_eval_inputs.py --dry-run ...` is part of the readiness gate |
+| Research breakout registry | done | `python scripts/build_research_candidate_registry.py --check` keeps `official_balanced` as the default arena baseline |
+| Research weak-family data recipes | done | `python scripts/build_research_rescue_data.py` prepares mixed, equation, bit, and eq+bit SFT recipes |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10664 rows, bad `0` |
 | Fast local tests | done | targeted diagnostic/cloud/shell/tokenizer tests are part of `make no-gpu-readiness` |
 | Full local tests | done | latest `python -m pytest -q` -> `465 passed, 9 skipped` |
@@ -51,6 +53,22 @@ present.
   cloud exact-eval inputs and adapters. It checks ignored eval manifests,
   duplicate ids, target labels, adapter weights/configs, config files, and
   critical cloud scripts before vLLM is touched.
+- `configs/research_breakout_candidates.json` is the canonical candidate
+  registry for the aggressive research matrix. It records adapter paths, prompt
+  profiles, data recipes, family focus, GPU need, expected runtime, and
+  submission-safety.
+- `scripts/rank_research_candidates.py` is the registry-aware exact arena
+  ranker. It defaults to `official_balanced` and refuses to auto-select
+  submission-unsafe candidates such as the rank-64 research arm.
+- `scripts/apply_solver_assisted_finalizer.py` creates solver-assisted raw
+  predictions while preserving the original model generation for audit.
+- `scripts/materialize_prompt_profile_manifest.py` prepares profiled eval
+  manifests for `short_answer_biased` and `format_strict` prompt sweeps.
+- `scripts/build_research_rescue_data.py` builds weak-family train/valid
+  recipes from answer-only plus safe short-trace rows.
+- `scripts/write_cloud_artifact_manifest.py` writes cloud run manifests with
+  git/runtime versions, adapter hashes, preflight hash, and raw prediction
+  line counts.
 - `scripts/run_cloud_vllm_exact_eval_v3.sh` and
   `scripts/run_cloud_inference_only_v3.sh` now fail on missing explicit
   adapters, repair missing checkpoint `adapter_config.json` from the B-thin
@@ -99,6 +117,13 @@ Proceed only when `status` is `pass`, `ready_for_gpu` is `true`, and
 `known_blockers` is empty. Teacher parity `insufficient_evidence` and tracked
 report drift are both hard failures.
 
+For the research breakout path, also review:
+
+```bash
+python scripts/build_research_candidate_registry.py --check
+python scripts/build_research_rescue_data.py
+```
+
 ```bash
 cd /workspace/nivida_h200_run
 git pull
@@ -112,7 +137,6 @@ ADAPTERS="answer_final=artifacts/adapter_stage2_official_balanced_answer_only" \
 bash scripts/run_cloud_vllm_exact_eval_v3.sh
 
 EVAL_INPUTS=combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full \
-ADAPTERS="b_thin=artifacts/adapter_stage2_thin,official_balanced=artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z,answer_final=artifacts/adapter_stage2_official_balanced_answer_only,answer_ckpt_100=artifacts/adapter_stage2_official_balanced_answer_only/checkpoint-100,answer_ckpt_200=artifacts/adapter_stage2_official_balanced_answer_only/checkpoint-200,answer_ckpt_294=artifacts/adapter_stage2_official_balanced_answer_only/checkpoint-294" \
 bash scripts/run_cloud_vllm_exact_eval_v3.sh
 ```
 
@@ -127,3 +151,11 @@ python scripts/score_vllm_exact_eval_outputs.py \
 
 Submit only if the top candidate beats `official_balanced` overall and has no
 large-family regression worse than one sample.
+
+Research arena ranking can be run explicitly with:
+
+```bash
+python scripts/rank_research_candidates.py \
+  --report official_balanced=data/processed/eval/vllm_exact_eval_v3/combined_balanced_48pf/official_balanced/report.json \
+  --report answer_only_continuation=data/processed/eval/vllm_exact_eval_v3/combined_balanced_48pf/answer_final/report.json
+```

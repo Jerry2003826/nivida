@@ -38,14 +38,20 @@ def test_vllm_exact_eval_script_runs_preflight_and_official_proxy() -> None:
     assert "--write-raw-predictions" in text
     assert "--contract \"$CONTRACT\"" in text
     assert "add_candidate answer_final artifacts/adapter_stage2_official_balanced_answer_only" in text
+    assert "add_candidate equation_rescue artifacts/adapter_stage2_equation_rescue" in text
+    assert "INCLUDE_SUBMISSION_UNSAFE" in text
     assert "require_candidate" in text
     assert "ensure_adapter_config" in text
+    assert "write_cloud_artifact_manifest.py" in text
+    assert "artifact_manifest.json" in text
 
 
 def test_vllm_raw_output_scorer_bridges_to_exact_ranking() -> None:
     text = _script("score_vllm_exact_eval_outputs.py")
     assert "scripts/evaluate_predictions_exact.py" in text
     assert "scripts/rank_exact_eval_reports.py" in text
+    assert "scripts/rank_research_candidates.py" in text
+    assert "--research-registry" in text
     assert "--prediction-key" in text
     assert "repeat_0.jsonl" in text
 
@@ -98,6 +104,7 @@ def test_score_vllm_exact_eval_outputs_smoke(tmp_path: Path) -> None:
 
     manifest = json.loads((output_root / "score_manifest.json").read_text(encoding="utf-8"))
     assert manifest["evals"]["smoke"]["submit_candidate"] == "answer_final"
+    assert manifest["evals"]["smoke"]["rank_script"] == "scripts/rank_research_candidates.py"
     ranking = json.loads((output_root / "smoke" / "ranking.json").read_text(encoding="utf-8"))
     assert ranking["rows"][0]["model"] == "answer_final"
 

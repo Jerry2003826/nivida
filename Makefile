@@ -1,6 +1,6 @@
 PYTHON ?= python
 
-.PHONY: test prepare baseline family-report dry-train probe-submission-size probe-submission-size-trained final-acceptance no-gpu-readiness
+.PHONY: test prepare baseline family-report dry-train probe-submission-size probe-submission-size-trained final-acceptance no-gpu-readiness research-registry research-rescue-data
 
 test:
 	$(PYTHON) -m pytest -q
@@ -37,3 +37,9 @@ final-acceptance:
 
 no-gpu-readiness:
 	$(PYTHON) scripts/run_no_gpu_readiness_gate.py --mode full
+
+research-registry:
+	$(PYTHON) scripts/build_research_candidate_registry.py --check --output configs/research_breakout_candidates.json
+
+research-rescue-data:
+	$(PYTHON) scripts/build_research_rescue_data.py

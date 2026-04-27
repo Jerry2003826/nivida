@@ -23,6 +23,7 @@ def _write_required_repo_files(root: Path) -> None:
         "scripts/eval_official_vllm_proxy.py",
         "scripts/run_cloud_vllm_exact_eval_v3.sh",
         "scripts/score_vllm_exact_eval_outputs.py",
+        "scripts/write_cloud_artifact_manifest.py",
         "configs/train_stage2_official_balanced_answer_only.yaml",
     ]:
         target = root / rel
