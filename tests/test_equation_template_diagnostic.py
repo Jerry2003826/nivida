@@ -3,6 +3,7 @@ from __future__ import annotations
 from scripts.diagnose_equation_template import (
     classify_template_risk,
     filter_diagnostics,
+    support_only_ranker_features,
     target_expressibility,
     target_char_provenance,
 )
@@ -98,6 +99,22 @@ def test_target_expressibility_detects_template_fit_with_query_target() -> None:
     assert expressibility["any"]
     assert expressibility["operator_template"]
     assert expressibility["operator_template_seen_query_key"]
+
+
+def test_support_only_ranker_features_do_not_need_target() -> None:
+    features = support_only_ranker_features(
+        support_inputs=["ab+c", "ad+c"],
+        support_outputs=["ab", "ad"],
+        query="az+c",
+        ambiguity_count=2,
+    )
+
+    assert features["query_key_seen_any"] is True
+    assert features["query_key_seen"] is False
+    assert 0.0 < features["support_key_coverage"] < 1.0
+    assert features["operator_consistency"] is True
+    assert features["literal_reuse_risk"] is False
+    assert features["ambiguity_count"] == 2
 
 
 def test_filter_diagnostics_filters_risk_subtype_and_limit() -> None:

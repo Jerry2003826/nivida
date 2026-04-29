@@ -24,10 +24,13 @@ ANSWER_FOCUSED_OUTPUTS = (
     Path("data/processed/stage2_short_trace_train.jsonl"),
     Path("data/processed/stage2_short_trace_valid.jsonl"),
 )
+SOLVER_BREAKOUT_V2_DIR = Path("data/processed/solver_breakout_v2")
+SOLVER_BREAKOUT_V2_MD = Path("docs/solver_breakout_v2_latest.md")
 TRACKED_REPORT_PATHS = (
     Path("docs/solver_coverage_audit_latest.md"),
     Path("docs/equation_template_diagnostic_latest.md"),
     Path("docs/bit_permutation_diagnostic_latest.md"),
+    SOLVER_BREAKOUT_V2_MD,
 )
 CLOUD_EVAL_PREFLIGHT_PLAN = Path("data/processed/cloud_eval_preflight_plan.json")
 RESEARCH_REGISTRY = Path("configs/research_breakout_candidates.json")
@@ -47,6 +50,9 @@ GENERATED_FILES = (
     Path("data/processed/equation_template_diagnostic.csv"),
     Path("data/processed/bit_permutation_diagnostic.json"),
     Path("data/processed/bit_permutation_diagnostic.csv"),
+    SOLVER_BREAKOUT_V2_DIR / "summary.json",
+    SOLVER_BREAKOUT_V2_DIR / "equation_template_rows.json",
+    SOLVER_BREAKOUT_V2_DIR / "bit_permutation_rows.json",
     Path("data/processed/recheck_chat_template_sha16.json"),
     CLOUD_EVAL_PREFLIGHT_PLAN,
     TEACHER_PARITY_OUTPUT,
@@ -67,6 +73,18 @@ GENERATED_FILES = (
     RESEARCH_BREAKOUT_DIR / "eq_bit_rescue_train.jsonl.provenance.json",
     RESEARCH_BREAKOUT_DIR / "eq_bit_rescue_valid.jsonl",
     RESEARCH_BREAKOUT_DIR / "eq_bit_rescue_valid.jsonl.provenance.json",
+    RESEARCH_BREAKOUT_DIR / "equation_rescue_v2_train.jsonl",
+    RESEARCH_BREAKOUT_DIR / "equation_rescue_v2_train.jsonl.provenance.json",
+    RESEARCH_BREAKOUT_DIR / "equation_rescue_v2_valid.jsonl",
+    RESEARCH_BREAKOUT_DIR / "equation_rescue_v2_valid.jsonl.provenance.json",
+    RESEARCH_BREAKOUT_DIR / "bit_rescue_v2_train.jsonl",
+    RESEARCH_BREAKOUT_DIR / "bit_rescue_v2_train.jsonl.provenance.json",
+    RESEARCH_BREAKOUT_DIR / "bit_rescue_v2_valid.jsonl",
+    RESEARCH_BREAKOUT_DIR / "bit_rescue_v2_valid.jsonl.provenance.json",
+    RESEARCH_BREAKOUT_DIR / "eq_bit_rescue_v2_train.jsonl",
+    RESEARCH_BREAKOUT_DIR / "eq_bit_rescue_v2_train.jsonl.provenance.json",
+    RESEARCH_BREAKOUT_DIR / "eq_bit_rescue_v2_valid.jsonl",
+    RESEARCH_BREAKOUT_DIR / "eq_bit_rescue_v2_valid.jsonl.provenance.json",
     RESEARCH_BREAKOUT_DIR / "research_rescue_data_summary.json",
     *TRACKED_REPORT_PATHS,
 )
@@ -201,6 +219,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
                 "tests/test_research_breakout.py",
                 "tests/test_equation_template_diagnostic.py",
                 "tests/test_bit_permutation_diagnostic.py",
+                "tests/test_solver_breakout_v2.py",
                 "tests/test_cloud_eval_preflight.py",
                 "tests/test_cloud_run_scripts.py",
                 "tests/test_shell_syntax.py",
@@ -229,6 +248,18 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
         GateStep("audit_solver_coverage", _python("scripts/audit_solver_coverage.py")),
         GateStep("diagnose_equation_template", _python("scripts/diagnose_equation_template.py")),
         GateStep("diagnose_bit_permutation", _python("scripts/diagnose_bit_permutation.py")),
+        GateStep(
+            "solver_breakout_v2_smoke",
+            _python(
+                "scripts/run_solver_breakout_v2.py",
+                "--limit",
+                "64",
+                "--output-dir",
+                _posix(SOLVER_BREAKOUT_V2_DIR),
+                "--output-md",
+                _posix(SOLVER_BREAKOUT_V2_MD),
+            ),
+        ),
         GateStep(
             "research_registry_check",
             _python(
@@ -288,6 +319,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
                 "tests/test_research_breakout.py",
                 "tests/test_equation_template_diagnostic.py",
                 "tests/test_bit_permutation_diagnostic.py",
+                "tests/test_solver_breakout_v2.py",
                 "tests/test_cloud_eval_preflight.py",
                 "tests/test_cloud_run_scripts.py",
                 "tests/test_shell_syntax.py",

@@ -15,6 +15,9 @@ RECIPE_FAMILIES: dict[str, set[str] | None] = {
     "equation_rescue": {"equation"},
     "bit_rescue": {"bit"},
     "eq_bit_rescue": {"equation", "bit"},
+    "equation_rescue_v2": {"equation"},
+    "bit_rescue_v2": {"bit"},
+    "eq_bit_rescue_v2": {"equation", "bit"},
 }
 
 
@@ -72,7 +75,16 @@ def _equation_risk_features(row: dict[str, Any], extras: dict[str, Any]) -> dict
     }
 
 
-def _bit_operator_family(row: dict[str, Any]) -> str:
+def _bit_operator_family(row: dict[str, Any], extras: dict[str, Any] | None = None) -> str:
+    extras = extras or {}
+    explicit = str(
+        extras.get("bit_operator_family")
+        or row.get("top_operator_family")
+        or row.get("oracle_operator_family")
+        or ""
+    )
+    if explicit:
+        return explicit
     subtype = str(row.get("subtype", "")).lower()
     if "affine" in subtype or "xor" in subtype:
         return "affine_gf2"
@@ -83,7 +95,7 @@ def _bit_operator_family(row: dict[str, Any]) -> str:
     if "nibble" in subtype or "byte" in subtype:
         return "nibble_byte_transform"
     if "permutation" in subtype or "permute" in subtype:
-        return "permutation"
+        return "plain_permutation"
     if "boolean" in subtype or "expr" in subtype:
         return "boolean_template"
     return subtype or "unknown"
@@ -95,7 +107,7 @@ def _bit_risk_features(row: dict[str, Any], extras: dict[str, Any]) -> dict[str,
         extras.get("leave_one_out_stable", extras.get("solver_verifiable", False) and support_coverage >= 1.0)
     )
     return {
-        "bit_operator_family": _bit_operator_family(row),
+        "bit_operator_family": _bit_operator_family(row, extras),
         "bit_leave_one_out_stable": leave_one_out,
         "bit_support_coverage": support_coverage,
         "bit_expression_complexity": extras.get("expression_complexity", extras.get("solver_complexity", "")),

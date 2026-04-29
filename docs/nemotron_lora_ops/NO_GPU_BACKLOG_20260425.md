@@ -13,6 +13,7 @@ present.
 | Solver coverage audit | done | `python scripts/audit_solver_coverage.py` wrote 1349 records |
 | Equation-template diagnostic | done | `python scripts/diagnose_equation_template.py` wrote 275 rows |
 | Bit-permutation diagnostic | done | `python scripts/diagnose_bit_permutation.py` wrote 345 rows |
+| Solver breakout v2 smoke | done | `python scripts/run_solver_breakout_v2.py --limit 64` wrote 37 equation rows and 41 bit rows |
 | Tokenizer-only probe | done | chat template SHA16 `ab7813c3abdd9cb6`, first public sample length 275 |
 | Chat-template SHA recheck | done | `python scripts/recheck_chat_template_sha16.py --output data/processed/recheck_chat_template_sha16.json` |
 | Answer-focused datasets | done | answer-only train/valid rows `4674/658`; short-trace train/valid rows `4674/658` |
@@ -21,7 +22,7 @@ present.
 | No-GPU readiness gate | done | `make no-gpu-readiness` runs the full local pre-GPU gate and writes `data/processed/no_gpu_readiness_gate.json` |
 | Cloud artifact preflight plan | done | `python scripts/check_cloud_eval_inputs.py --dry-run ...` is part of the readiness gate |
 | Research breakout registry | done | `python scripts/build_research_candidate_registry.py --check` keeps `official_balanced` as the default arena baseline |
-| Research weak-family data recipes | done | `python scripts/build_research_rescue_data.py` prepares mixed, equation, bit, and eq+bit SFT recipes with provenance |
+| Research weak-family data recipes | done | `python scripts/build_research_rescue_data.py` prepares mixed, equation, bit, eq+bit, and v2 weak-family SFT recipes with provenance |
 | Submit-safe adapter soup tooling | done | `python scripts/merge_lora_adapters.py --method linear ...` merges adapter-only LoRA candidates and writes `merge_manifest.json` |
 | Public/local correlation log | done | `python scripts/update_lb_correlation_log.py ...` records Kaggle public score beside local exact metrics and adapter hashes |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10664 rows, bad `0` |
@@ -32,10 +33,17 @@ present.
 
 - `scripts/diagnose_equation_template.py` now supports `--failure-class`,
   `--subtype`, and `--limit`, and exports support inputs/outputs alongside
-  query, target, top prediction, risk class, and target expressibility.
+  query, target, top prediction, risk class, target expressibility, and
+  support-only ranker features such as query-key coverage and literal reuse
+  risk.
 - `scripts/diagnose_bit_permutation.py` now supports the same filters and
   exports ranker-miss features: top/oracle Hamming distance, oracle prediction,
-  expression op sequence, and expression complexity.
+  expression op sequence, expression complexity, operator-family bucket,
+  oracle-rank bucket, and support stability bucket.
+- `scripts/run_solver_breakout_v2.py` is the CPU-only weak-family upper-bound
+  report. It summarizes top1, oracle@k, safe override count, ranker
+  miss/oracle-hit rows, operator gaps, and theoretical gain ceiling for
+  `equation_template` and `bit_permutation`.
 - `scripts/check_prompt_suffix_alignment.sh` now has a Python fallback when
   `jq` is unavailable and accepts both raw guarded prompts and chat-template
   prompts that contain the official guard inside the rendered user turn.
@@ -77,7 +85,10 @@ present.
 - `scripts/build_research_rescue_data.py` builds weak-family train/valid
   recipes from answer-only plus safe short-trace rows. Each output JSONL now
   has a `.provenance.json` sidecar and each row records risk class, source hash,
-  answer hash, and weak-family diagnostic features.
+  answer hash, and weak-family diagnostic features. The v2 recipes
+  `equation_rescue_v2`, `bit_rescue_v2`, and `eq_bit_rescue_v2` are registered
+  as training-data candidates but remain submission-unsafe until GPU training
+  produces a ranked adapter.
 - `scripts/update_lb_correlation_log.py` appends public leaderboard feedback to
   `data/processed/eval/lb_correlation_log.json` so local exact metrics can be
   audited against Kaggle movement over time.
@@ -95,6 +106,14 @@ present.
 
 ## Current Solver Read
 
+- Solver breakout v2 smoke (`--limit 64`) reports `equation_template` top1
+  `0.1622`, oracle@k `0.1622`, safe override `1 / 37`, and no ranker-miss
+  ceiling on that slice. This points more toward operator/generator backlog
+  than a simple rerank fix.
+- The same smoke reports `bit_permutation` top1 `0.3902`, oracle@k `0.4146`,
+  one ranker-miss/oracle-hit row, and 23 operator-gap rows. Bit has a small
+  immediate rerank ceiling, but many misses still require better operator
+  families or training data rather than wider blind search.
 - `equation_template` remains the highest-value CPU target.
   - Current ops can fit support+query target for `182 / 235` rows.
   - Only `21` have an operator-template fit where the query key was seen in
@@ -137,6 +156,7 @@ For the research breakout path, also review:
 ```bash
 python scripts/build_research_candidate_registry.py --check
 python scripts/build_research_rescue_data.py
+python scripts/run_solver_breakout_v2.py --limit 64
 ```
 
 Solver-assisted and prompt-ensemble rows are diagnostics only. The submit-safe

@@ -82,6 +82,56 @@ def _candidate_expression_features(candidate: Any) -> dict[str, Any]:
     return boolean_expression_features([])
 
 
+def bit_operator_family_from_steps(*, steps: str, expression_ops: str = "") -> str:
+    signature = f"{steps},{expression_ops}".lower()
+    expression_tokens = {
+        token.strip()
+        for token in expression_ops.lower().replace(">", ",").split(",")
+        if token.strip()
+    }
+    if "binary_boolean_expr" in signature or bool(
+        expression_tokens & {"xor", "and", "or", "not", "choice"}
+    ):
+        return "boolean_template"
+    if "binary_affine_transform" in signature or "affine" in signature or "gf2" in signature:
+        return "affine_gf2"
+    if "rotate" in signature or "rotation" in signature:
+        return "rotation"
+    if "reverse_bits" in signature or "reversal" in signature:
+        return "reversal"
+    if "swap_nibbles" in signature or "nibble" in signature or "byte" in signature:
+        return "nibble_byte_transform"
+    if "binary_permutation" in signature or "permutation" in signature:
+        return "plain_permutation"
+    return "unknown"
+
+
+def oracle_rank_bucket(oracle_rank: int | None) -> str:
+    if oracle_rank is None:
+        return "miss"
+    if oracle_rank == 1:
+        return "top1"
+    if oracle_rank <= 3:
+        return "rank2_3"
+    return "rank4_plus"
+
+
+def support_leave_one_out_stability(
+    *,
+    top_support_full: bool,
+    support_full_candidate_count: int,
+    top_complexity_penalty: float,
+    top_expression_complexity_total: int,
+) -> str:
+    if not top_support_full:
+        return "unstable_support"
+    if support_full_candidate_count <= 1:
+        return "unique_support_fit"
+    if top_complexity_penalty <= 0.35 and top_expression_complexity_total <= 8:
+        return "stable_low_complexity"
+    return "ambiguous_support_fit"
+
+
 def filter_diagnostics(
     rows: list[dict[str, Any]],
     *,
@@ -143,6 +193,10 @@ def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: i
                 **_candidate_expression_features(candidate),
             }
         )
+        candidate_rows[-1]["operator_family"] = bit_operator_family_from_steps(
+            steps=str(candidate_rows[-1]["steps"]),
+            expression_ops=str(candidate_rows[-1]["expression_ops"]),
+        )
 
     top = candidate_rows[0] if candidate_rows else None
     oracle = candidate_rows[oracle_rank - 1] if oracle_rank is not None and oracle_rank <= len(candidate_rows) else None
@@ -155,6 +209,12 @@ def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: i
         oracle_rank=oracle_rank,
         top_support_full=top_support_full,
     )
+    stability_bucket = support_leave_one_out_stability(
+        top_support_full=top_support_full,
+        support_full_candidate_count=support_full_count,
+        top_complexity_penalty=0.0 if top is None else float(top["complexity_penalty"]),
+        top_expression_complexity_total=0 if top is None else int(top["expression_complexity_total"]),
+    )
     return {
         "id": example.id,
         "family": example.metadata.official_family,
@@ -164,11 +224,14 @@ def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: i
         "num_pairs": len(example.parsed_examples),
         "top_prediction": top_prediction,
         "top_steps": "" if top is None else str(top["steps"]),
+        "top_operator_family": "unknown" if top is None else str(top["operator_family"]),
         "top_hamming_to_target": "" if top is None else top["hamming_to_target"],
         "top_expression_ops": "" if top is None else top["expression_ops"],
         "top_expression_complexity_total": 0 if top is None else top["expression_complexity_total"],
+        "top_complexity_penalty": 0.0 if top is None else top["complexity_penalty"],
         "oracle_prediction": oracle_prediction,
         "oracle_steps": "" if oracle is None else str(oracle["steps"]),
+        "oracle_operator_family": "unknown" if oracle is None else str(oracle["operator_family"]),
         "oracle_hamming_to_target": "" if oracle is None else oracle["hamming_to_target"],
         "oracle_expression_ops": "" if oracle is None else oracle["expression_ops"],
         "oracle_expression_complexity_total": 0 if oracle is None else oracle["expression_complexity_total"],
@@ -176,7 +239,10 @@ def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: i
         "top_query_correct": top_correct,
         "top_support_full": top_support_full,
         "oracle_rank": oracle_rank,
+        "oracle_rank_bucket": oracle_rank_bucket(oracle_rank),
         "support_full_candidate_count": support_full_count,
+        "support_leave_one_out_stability": stability_bucket,
+        "support_leave_one_out_stable": stability_bucket in {"unique_support_fit", "stable_low_complexity"},
         "risk_class": risk_class,
         "candidates": candidate_rows,
     }

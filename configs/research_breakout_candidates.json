@@ -191,6 +191,79 @@
       "config_path": "configs/train_stage2_eq_bit_rescue.yaml"
     },
     {
+      "name": "equation_rescue_v2",
+      "type": "train_variant",
+      "adapter_path": "artifacts/adapter_stage2_equation_rescue_v2",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "equation_rescue_v2",
+      "family_focus": [
+        "equation"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "train+eval",
+      "artifacts": [
+        "adapter",
+        "checkpoints",
+        "raw_predictions",
+        "exact_report",
+        "solver_breakout_v2"
+      ],
+      "enabled": true,
+      "submission_safe": false,
+      "notes": "Equation-focused answer-only/safe-short recipe backed by solver breakout v2 diagnostics.",
+      "config_path": "configs/train_stage2_equation_rescue_v2.yaml",
+      "research_only_reason": "Weak-family v2 data recipe is a training candidate only until a submit-safe adapter is trained and ranked."
+    },
+    {
+      "name": "bit_rescue_v2",
+      "type": "train_variant",
+      "adapter_path": "artifacts/adapter_stage2_bit_rescue_v2",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "bit_rescue_v2",
+      "family_focus": [
+        "bit"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "train+eval",
+      "artifacts": [
+        "adapter",
+        "checkpoints",
+        "raw_predictions",
+        "exact_report",
+        "solver_breakout_v2"
+      ],
+      "enabled": true,
+      "submission_safe": false,
+      "notes": "Bit-focused answer-only/safe-short recipe backed by solver breakout v2 diagnostics.",
+      "config_path": "configs/train_stage2_bit_rescue_v2.yaml",
+      "research_only_reason": "Weak-family v2 data recipe is a training candidate only until a submit-safe adapter is trained and ranked."
+    },
+    {
+      "name": "eq_bit_rescue_v2",
+      "type": "train_variant",
+      "adapter_path": "artifacts/adapter_stage2_eq_bit_rescue_v2",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "eq_bit_rescue_v2",
+      "family_focus": [
+        "equation",
+        "bit"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "train+eval",
+      "artifacts": [
+        "adapter",
+        "checkpoints",
+        "raw_predictions",
+        "exact_report",
+        "solver_breakout_v2"
+      ],
+      "enabled": true,
+      "submission_safe": false,
+      "notes": "Combined equation+bit v2 recipe for specialist training and later adapter soup.",
+      "config_path": "configs/train_stage2_eq_bit_rescue_v2.yaml",
+      "research_only_reason": "Weak-family v2 data recipe is a training candidate only until a submit-safe adapter is trained and ranked."
+    },
+    {
       "name": "rank64_answer_only",
       "type": "train_variant",
       "adapter_path": "artifacts/adapter_stage2_rank64_answer_only",

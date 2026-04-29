@@ -62,6 +62,9 @@ def test_default_candidate_registry_is_official_balanced_gated() -> None:
         "equation_rescue",
         "bit_rescue",
         "eq_bit_rescue",
+        "equation_rescue_v2",
+        "bit_rescue_v2",
+        "eq_bit_rescue_v2",
         "rank64_answer_only",
         "final_answer_weighted_loss",
         "soup_answer_short",
@@ -71,6 +74,9 @@ def test_default_candidate_registry_is_official_balanced_gated() -> None:
     } <= names
     rank64 = next(candidate for candidate in registry["candidates"] if candidate["name"] == "rank64_answer_only")
     assert rank64["submission_safe"] is False
+    rescue_v2 = next(candidate for candidate in registry["candidates"] if candidate["name"] == "eq_bit_rescue_v2")
+    assert rescue_v2["submission_safe"] is False
+    assert "solver_breakout_v2" in rescue_v2["artifacts"]
     solver = next(candidate for candidate in registry["candidates"] if candidate["name"] == "official_balanced_solver_assisted")
     prompt = next(candidate for candidate in registry["candidates"] if candidate["name"] == "official_balanced_prompt_ensemble")
     assert solver["submission_safe"] is False
@@ -256,7 +262,7 @@ def test_research_rescue_data_filters_weak_families_and_safe_short_trace(tmp_pat
         short_train=short_train,
         short_valid=short_valid,
         out_dir=tmp_path / "out",
-        recipes=["equation_rescue", "bit_rescue", "eq_bit_rescue"],
+        recipes=["equation_rescue", "bit_rescue", "eq_bit_rescue", "eq_bit_rescue_v2"],
     )
 
     assert summary["recipes"]["equation_rescue"]["train_rows"] == 1
@@ -272,6 +278,12 @@ def test_research_rescue_data_filters_weak_families_and_safe_short_trace(tmp_pat
     assert all(row["research_provenance"]["answer_hash"] for row in eq_bit_rows)
     bit_row = next(row for row in eq_bit_rows if row["id"] == "bit")
     assert bit_row["metadata"]["extras"]["bit_operator_family"] == "unknown"
+    eq_bit_v2_rows = [
+        json.loads(line)
+        for line in (tmp_path / "out" / "eq_bit_rescue_v2_train.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert {row["id"] for row in eq_bit_v2_rows} == {"eq", "bit"}
+    assert all(row["research_recipe"] == "eq_bit_rescue_v2" for row in eq_bit_v2_rows)
 
 
 def test_cloud_artifact_manifest_counts_prediction_lines_and_hashes_candidate(tmp_path: Path) -> None:

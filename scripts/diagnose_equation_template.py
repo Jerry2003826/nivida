@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +143,54 @@ def target_expressibility(
     }
 
 
+def support_only_ranker_features(
+    *,
+    support_inputs: list[str],
+    support_outputs: list[str],
+    query: str,
+    ambiguity_count: int,
+) -> dict[str, Any]:
+    """Summarize support-only signals that are safe for ranker debugging.
+
+    These features intentionally avoid the target answer. They are not a full
+    reranker yet; they expose whether a template-like candidate is relying on
+    query characters or output literals that were poorly covered by support.
+    """
+
+    max_width = min(len(query), max((len(value) for value in support_inputs), default=0))
+    seen_positions = 0
+    covered_positions = 0
+    for position in range(max_width):
+        support_chars = {
+            value[position]
+            for value in support_inputs
+            if position < len(value)
+        }
+        if not support_chars:
+            continue
+        covered_positions += 1
+        if query[position] in support_chars:
+            seen_positions += 1
+
+    support_chars_all = set("".join(support_inputs)) | set(query)
+    output_literal_chars = set("".join(support_outputs))
+    unseen_output_literals = sorted(output_literal_chars - support_chars_all)
+    output_lengths = Counter(len(value) for value in support_outputs)
+    query_key_seen_ratio = seen_positions / covered_positions if covered_positions else 0.0
+    operator_consistency = len(output_lengths) <= 1 and bool(support_outputs)
+
+    return {
+        "query_key_seen": bool(covered_positions and seen_positions == covered_positions),
+        "query_key_seen_any": bool(seen_positions),
+        "query_key_seen_positions": seen_positions,
+        "support_key_coverage": query_key_seen_ratio,
+        "operator_consistency": operator_consistency,
+        "literal_reuse_risk": bool(unseen_output_literals),
+        "unseen_output_literals": "".join(unseen_output_literals),
+        "ambiguity_count": int(ambiguity_count),
+    }
+
+
 def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: int) -> dict[str, Any] | None:
     example = PuzzleExample.from_dict(row)
     apply_family_tags([example])
@@ -197,6 +246,12 @@ def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: i
         target_expressible=expressibility["any"],
         target_uses_unseen_query_key=expressibility["operator_template_unseen_query_key"],
     )
+    ranker_features = support_only_ranker_features(
+        support_inputs=[pair.input for pair in example.parsed_examples],
+        support_outputs=[pair.output for pair in example.parsed_examples],
+        query=example.query,
+        ambiguity_count=support_full_count,
+    )
     return {
         "id": example.id,
         "family": example.metadata.official_family,
@@ -222,6 +277,8 @@ def diagnose_example(engine: ChainSearchEngine, row: dict[str, Any], *, top_k: i
             "operator_template_unseen_query_key"
         ],
         "target_expressible_position_transducer": expressibility["position_transducer"],
+        "support_ranker_features": ranker_features,
+        **{f"ranker_{key}": value for key, value in ranker_features.items()},
         **{f"provenance_{key}": value for key, value in provenance.items()},
         "candidates": candidate_rows,
     }
