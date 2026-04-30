@@ -11,9 +11,10 @@ present.
 | --- | --- | --- |
 | Local eval manifests | done | `python scripts/build_local_eval_manifests.py` wrote 8 manifests |
 | Solver coverage audit | done | `python scripts/audit_solver_coverage.py` wrote 1349 records |
-| Equation-template diagnostic | done | `python scripts/diagnose_equation_template.py` wrote 275 rows |
+| Equation-template diagnostic | done | `python scripts/diagnose_equation_template.py` wrote 235 rows |
 | Bit-permutation diagnostic | done | `python scripts/diagnose_bit_permutation.py` wrote 345 rows |
 | Solver breakout v2 smoke | done | `python scripts/run_solver_breakout_v2.py --limit 64` wrote 37 equation rows and 41 bit rows |
+| Solver breakout v2 full | done | `python scripts/run_solver_breakout_v2.py --output-dir data/processed/solver_breakout_v2_full --output-md docs/solver_breakout_v2_full_latest.md` wrote 235 equation rows and 345 bit rows |
 | Tokenizer-only probe | done | chat template SHA16 `ab7813c3abdd9cb6`, first public sample length 275 |
 | Chat-template SHA recheck | done | `python scripts/recheck_chat_template_sha16.py --output data/processed/recheck_chat_template_sha16.json` |
 | Answer-focused datasets | done | answer-only train/valid rows `4674/658`; short-trace train/valid rows `4674/658` |
@@ -27,7 +28,7 @@ present.
 | Public/local correlation log | done | `python scripts/update_lb_correlation_log.py ...` records Kaggle public score beside local exact metrics and adapter hashes |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10664 rows, bad `0` |
 | Fast local tests | done | targeted diagnostic/cloud/shell/tokenizer tests are part of `make no-gpu-readiness` |
-| Full local tests | done | latest `python -m pytest -q` -> `482 passed, 9 skipped` |
+| Full local tests | done | latest `python -m pytest -q` -> see readiness gate report; current branch target is full pytest clean |
 
 ## Tooling Changes Completed
 
@@ -42,8 +43,8 @@ present.
   oracle-rank bucket, and support stability bucket.
 - `scripts/run_solver_breakout_v2.py` is the CPU-only weak-family upper-bound
   report. It summarizes top1, oracle@k, safe override count, ranker
-  miss/oracle-hit rows, operator gaps, and theoretical gain ceiling for
-  `equation_template` and `bit_permutation`.
+  miss/oracle-hit rows, operator gaps, theoretical gain ceiling, and operator
+  gap clusters for `equation_template` and `bit_permutation`.
 - `scripts/check_prompt_suffix_alignment.sh` now has a Python fallback when
   `jq` is unavailable and accepts both raw guarded prompts and chat-template
   prompts that contain the official guard inside the rendered user turn.
@@ -89,6 +90,11 @@ present.
   `equation_rescue_v2`, `bit_rescue_v2`, and `eq_bit_rescue_v2` are registered
   as training-data candidates but remain submission-unsafe until GPU training
   produces a ranked adapter.
+- `configs/train_stage2_equation_rescue_v2.yaml`,
+  `configs/train_stage2_bit_rescue_v2.yaml`, and
+  `configs/train_stage2_eq_bit_rescue_v2.yaml` are ready for the next GPU
+  training batch. They warm-start from the `official_balanced` adapter and use
+  final-answer weighted loss on the v2 rescue datasets.
 - `scripts/update_lb_correlation_log.py` appends public leaderboard feedback to
   `data/processed/eval/lb_correlation_log.json` so local exact metrics can be
   audited against Kaggle movement over time.
@@ -114,6 +120,16 @@ present.
   one ranker-miss/oracle-hit row, and 23 operator-gap rows. Bit has a small
   immediate rerank ceiling, but many misses still require better operator
   families or training data rather than wider blind search.
+- Full solver breakout v2 reports `equation_template` top1 `0.0936`,
+  oracle@k `0.0979`, safe override `6 / 235`, and only one ranker-miss
+  ceiling row. The 45 operator-gap rows have target literals seen and seen
+  query keys, but `target_not_expressible` under current operators, so the next
+  useful local move is operator/generator work, not ranker tweaking.
+- Full `bit_permutation` reports top1 `0.4203`, oracle@k `0.5159`,
+  `33` ranker-miss/oracle-hit rows, and `161` operator-gap rows. The gap
+  clusters are mostly `boolean_template` (`124`) and `affine_gf2` (`33`), with
+  156/161 top predictions within three bits of target; that makes bit the
+  better low-risk rerank/verifier target.
 - `equation_template` remains the highest-value CPU target.
   - Current ops can fit support+query target for `182 / 235` rows.
   - Only `21` have an operator-template fit where the query key was seen in
@@ -157,6 +173,9 @@ For the research breakout path, also review:
 python scripts/build_research_candidate_registry.py --check
 python scripts/build_research_rescue_data.py
 python scripts/run_solver_breakout_v2.py --limit 64
+python scripts/run_solver_breakout_v2.py \
+  --output-dir data/processed/solver_breakout_v2_full \
+  --output-md docs/solver_breakout_v2_full_latest.md
 ```
 
 Solver-assisted and prompt-ensemble rows are diagnostics only. The submit-safe

@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from src.common.io import read_json, write_json, write_jsonl
+from src.common.io import read_json, read_yaml, write_json, write_jsonl
 from src.research.artifact_manifest import build_cloud_artifact_manifest
 from src.research.candidate_registry import (
     DEFAULT_BASELINE_NAME,
@@ -82,6 +82,21 @@ def test_default_candidate_registry_is_official_balanced_gated() -> None:
     assert solver["submission_safe"] is False
     assert prompt["submission_safe"] is False
     assert "adapter-only" in solver["research_only_reason"]
+
+
+def test_v2_rescue_registry_configs_point_to_v2_data() -> None:
+    registry = build_default_registry()
+    by_name = {candidate["name"]: candidate for candidate in registry["candidates"]}
+
+    for name in ("equation_rescue_v2", "bit_rescue_v2", "eq_bit_rescue_v2"):
+        candidate = by_name[name]
+        config_path = REPO_ROOT / candidate["config_path"]
+        config = read_yaml(config_path)
+
+        assert config["training"]["output_dir"] == candidate["adapter_path"]
+        assert config["training"]["dataset_path"].endswith(f"{candidate['data_recipe']}_train.jsonl")
+        assert config["training"]["eval_path"].endswith(f"{candidate['data_recipe']}_valid.jsonl")
+        assert config["training"]["final_answer_loss"]["enabled"] is True
 
 
 def test_registry_rejects_non_adapter_only_submit_safe_candidates() -> None:

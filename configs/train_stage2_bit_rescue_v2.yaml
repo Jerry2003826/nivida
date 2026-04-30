@@ -1,0 +1,59 @@
+seed: 42
+base_model: nvidia/Nemotron-3-Nano-30B
+model_source: kagglehub
+model_handle: metric/nemotron-3-nano-30b-a3b-bf16/transformers/default
+tokenizer_path: artifacts/_tokenizer_cache/metric_nemotron-3-nano-30b-a3b-bf16_transformers_default
+trust_remote_code: true
+device_map: auto
+torch_dtype: bfloat16
+environment:
+  KAGGLEHUB_CACHE: /workspace/.cache/kagglehub
+  HF_HOME: /workspace/.cache/huggingface
+lora:
+  rank: 32
+  alpha: 32
+  dropout: 0.05
+  target_modules: '.*\.mixer\.(?:out_proj|q_proj|k_proj|v_proj|o_proj|shared_experts\.up_proj|shared_experts\.down_proj)$'
+  bias: none
+training:
+  output_dir: artifacts/adapter_stage2_bit_rescue_v2
+  dataset_path: data/processed/research_breakout/bit_rescue_v2_train.jsonl
+  eval_path: data/processed/research_breakout/bit_rescue_v2_valid.jsonl
+  init_adapter_dir: artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 16
+  gradient_checkpointing: true
+  learning_rate: 5.0e-6
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  max_grad_norm: 1.0
+  max_seq_length: auto
+  auto_floor_seq_length: 1024
+  auto_min_seq_length_above_floor: 1536
+  auto_max_seq_length_cap: 2048
+  logging_steps: 25
+  save_steps: 100
+  eval_steps: 100
+  strict_divergence_after_step: 100
+  strict_divergence_after_warmup_multiplier: 2.0
+  save_total_limit: 6
+  load_best_model_at_end: false
+  metric_for_best_model: eval_loss
+  greater_is_better: false
+  report_to: []
+  dataloader_pin_memory: false
+  final_answer_loss:
+    enabled: true
+    multiplier: 3.0
+    min_supervised_tokens: 1
+  resume_from_checkpoint:
+  dry_run: false
+inference:
+  prompt_mode: chat_thinking
+  max_new_tokens: 2048
+  do_sample: false
+  temperature: 1.0
+  top_p: 1.0
+  repetition_penalty: 1.0
+  save_raw_generations: true

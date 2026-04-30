@@ -14,6 +14,7 @@ submission contract changes.
 - Registry check: `python scripts/build_research_candidate_registry.py --check`
 - Unified ranking: `python scripts/rank_research_candidates.py --report official_balanced=... --report candidate=...`
 - Weak-family upper bound: `python scripts/run_solver_breakout_v2.py --limit 64`
+- Full weak-family upper bound: `python scripts/run_solver_breakout_v2.py --output-dir data/processed/solver_breakout_v2_full --output-md docs/solver_breakout_v2_full_latest.md`
 - Baseline policy: `baseline=auto` must resolve to `official_balanced`; `b_thin`
   is only a historical reference.
 - Submission gate: overall official-verify must beat `official_balanced`, no
@@ -30,7 +31,7 @@ submission contract changes.
 | Adapter soup | `scripts/merge_lora_adapters.py` writes submit-safe merged adapters plus `merge_manifest.json` | evaluate merged adapters before submitting any specialist |
 | Weak-family data | `scripts/build_research_rescue_data.py` writes mixed, equation, bit, eq+bit, and v2 rescue recipes plus per-output provenance | train only after no-GPU gate passes and solver breakout v2 has been reviewed |
 | Solver-assisted inference | `scripts/apply_solver_assisted_finalizer.py` overrides only high-confidence equation/bit rows | research-only upper bound; use its wins to make training data |
-| Solver breakout v2 | `scripts/run_solver_breakout_v2.py` reports top1, oracle@k, ranker miss, operator gap, safe override count, and gain ceiling | decide whether the next GPU batch should train weak-family specialists or return to CPU operator work |
+| Solver breakout v2 | `scripts/run_solver_breakout_v2.py` reports top1, oracle@k, ranker miss, operator gap, safe override count, gain ceiling, and operator-gap clusters | decide whether the next GPU batch should train weak-family specialists or return to CPU operator work |
 | Prompt profiles | `scripts/materialize_prompt_profile_manifest.py` builds `short_answer_biased` and `format_strict` manifests | research-only unless prompts become part of a model-only adapter recipe |
 | Cloud manifest | `scripts/write_cloud_artifact_manifest.py` records git/runtime/adapter hashes and prediction counts | every paid GPU sweep must produce it |
 | Public/local correlation | `scripts/update_lb_correlation_log.py` appends Kaggle public score, local exact metrics, adapter hashes, and merge weights | pause training after two local wins without public movement |
@@ -82,6 +83,28 @@ final_answer_weighted_loss
 The v2 rescue entries are submission-unsafe data/training candidates until a
 real adapter is trained, evaluated in the exact arena, and passes the
 `official_balanced` gate.
+
+The v2 config files are prebuilt:
+
+```text
+configs/train_stage2_equation_rescue_v2.yaml
+configs/train_stage2_bit_rescue_v2.yaml
+configs/train_stage2_eq_bit_rescue_v2.yaml
+```
+
+All three warm-start from the `official_balanced` adapter, use rank-32 LoRA,
+and keep final-answer weighted loss enabled.
+
+Full local solver breakout currently suggests:
+
+```text
+equation_template: top1 0.0936, oracle@k 0.0979, ranker miss 1, operator gap 45
+bit_permutation:   top1 0.4203, oracle@k 0.5159, ranker miss 33, operator gap 161
+```
+
+This makes `bit_rescue_v2` and `eq_bit_rescue_v2` the more plausible immediate
+GPU training candidates. Equation still needs CPU operator/generator work
+because the current top-k barely contains the answer.
 
 `rank64_answer_only` is intentionally marked `submission_safe=false` because
 the current Kaggle runtime contract has `max_lora_rank=32`; keep it research

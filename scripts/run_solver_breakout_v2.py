@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -104,7 +105,128 @@ def summarize_rows(family: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
             for row in rows
             if str(row.get("risk_class")) == "operator_gap_oracle_miss"
         ][:20],
+        "operator_gap_clusters": operator_gap_clusters(family, rows),
     }
+
+
+def operator_gap_clusters(family: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    gap_rows = [row for row in rows if str(row.get("risk_class")) == "operator_gap_oracle_miss"]
+    if family == "equation_template":
+        return _equation_gap_clusters(gap_rows)
+    if family == "bit_permutation":
+        return _bit_gap_clusters(gap_rows)
+    return {"n": len(gap_rows)}
+
+
+def _equation_gap_clusters(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    support_coverage = Counter(
+        _coverage_bucket(row.get("ranker_support_key_coverage"))
+        for row in rows
+    )
+    provenance = Counter(
+        "unseen_target_literal" if int(row.get("provenance_unseen") or 0) > 0 else "target_literals_seen"
+        for row in rows
+    )
+    expressibility = Counter(
+        "target_expressible" if bool(row.get("target_expressible")) else "target_not_expressible"
+        for row in rows
+    )
+    query_key = Counter(
+        "seen_query_key" if bool(row.get("ranker_query_key_seen_any")) else "unseen_query_key"
+        for row in rows
+    )
+    literal_reuse = Counter(
+        "literal_reuse_risk" if bool(row.get("ranker_literal_reuse_risk")) else "no_literal_reuse_risk"
+        for row in rows
+    )
+    return {
+        "n": len(rows),
+        "support_key_coverage": dict(sorted(support_coverage.items())),
+        "target_literal_provenance": dict(sorted(provenance.items())),
+        "target_expressibility": dict(sorted(expressibility.items())),
+        "query_key_seen": dict(sorted(query_key.items())),
+        "literal_reuse": dict(sorted(literal_reuse.items())),
+    }
+
+
+def _bit_gap_clusters(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "n": len(rows),
+        "top_operator_family": _counter_dict(row.get("top_operator_family", "unknown") for row in rows),
+        "oracle_operator_family": _counter_dict(row.get("oracle_operator_family", "unknown") for row in rows),
+        "oracle_rank_bucket": _counter_dict(row.get("oracle_rank_bucket", "miss") for row in rows),
+        "support_stability": _counter_dict(row.get("support_leave_one_out_stability", "unknown") for row in rows),
+        "top_hamming_to_target": _counter_dict(_hamming_bucket(row.get("top_hamming_to_target")) for row in rows),
+        "top_oracle_hamming": _counter_dict(_hamming_bucket(row.get("top_oracle_hamming")) for row in rows),
+        "top_complexity_penalty": _counter_dict(_penalty_bucket(row.get("top_complexity_penalty")) for row in rows),
+        "top_expression_complexity": _counter_dict(
+            _complexity_bucket(row.get("top_expression_complexity_total")) for row in rows
+        ),
+    }
+
+
+def _counter_dict(values: Any) -> dict[str, int]:
+    return dict(sorted(Counter(str(value) for value in values).items()))
+
+
+def _coverage_bucket(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if numeric >= 0.99:
+        return "1.00"
+    if numeric >= 0.75:
+        return "0.75-0.99"
+    if numeric >= 0.50:
+        return "0.50-0.75"
+    if numeric > 0.0:
+        return "0.01-0.50"
+    return "0"
+
+
+def _hamming_bucket(value: Any) -> str:
+    if value in ("", None):
+        return "unknown"
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if numeric == 0:
+        return "0"
+    if numeric == 1:
+        return "1"
+    if numeric <= 3:
+        return "2-3"
+    return "4+"
+
+
+def _penalty_bucket(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if numeric <= 0.1:
+        return "0-0.10"
+    if numeric <= 0.35:
+        return "0.10-0.35"
+    if numeric <= 0.75:
+        return "0.35-0.75"
+    return "0.75+"
+
+
+def _complexity_bucket(value: Any) -> str:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if numeric <= 0:
+        return "0"
+    if numeric <= 4:
+        return "1-4"
+    if numeric <= 8:
+        return "5-8"
+    return "9+"
 
 
 def _example_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -254,6 +376,15 @@ def _markdown(report: dict[str, Any]) -> str:
                 f"top={_md_literal(row['top_prediction'])} "
                 f"risk=`{row['risk_class']}`"
             )
+        clusters = report[family].get("operator_gap_clusters", {})
+        lines.extend(["", "### Operator Gap Clusters", ""])
+        if not clusters or int(clusters.get("n", 0) or 0) == 0:
+            lines.append("- no operator-gap rows")
+        else:
+            for key, value in clusters.items():
+                if key == "n":
+                    continue
+                lines.append(f"- `{key}`: `{json.dumps(value, ensure_ascii=False, sort_keys=True)}`")
     return "\n".join(lines) + "\n"
 
 

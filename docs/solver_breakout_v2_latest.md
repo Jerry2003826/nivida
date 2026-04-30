@@ -26,6 +26,14 @@ CPU-only upper-bound and ranker-gap report for weak families.
 - `0625f633` target="@@//" top="($" risk=`operator_gap_oracle_miss`
 - `0e2d6796` target="|)]" top=")!!'" risk=`operator_gap_oracle_miss`
 
+### Operator Gap Clusters
+
+- `support_key_coverage`: `{"0.01-0.50": 2, "0.50-0.75": 3, "0.75-0.99": 2}`
+- `target_literal_provenance`: `{"target_literals_seen": 7}`
+- `target_expressibility`: `{"target_not_expressible": 7}`
+- `query_key_seen`: `{"seen_query_key": 7}`
+- `literal_reuse`: `{"literal_reuse_risk": 4, "no_literal_reuse_risk": 3}`
+
 ## bit_permutation
 
 - `data\processed\local_eval_manifests\combined_balanced_48pf.jsonl`: n=`8`, top1=`0.2500`, oracle@k=`0.2500`, gain_ceiling=`0.0000`
@@ -48,3 +56,14 @@ CPU-only upper-bound and ranker-gap report for weak families.
 - `1298c980` target="00011010" top="10011010" risk=`operator_gap_oracle_miss`
 - `00fdc0be` target="11111111" top="10111111" risk=`operator_gap_oracle_miss`
 - `01248b76` target="11000101" top="10000101" risk=`operator_gap_oracle_miss`
+
+### Operator Gap Clusters
+
+- `top_operator_family`: `{"affine_gf2": 1, "boolean_template": 20, "rotation": 2}`
+- `oracle_operator_family`: `{"unknown": 23}`
+- `oracle_rank_bucket`: `{"miss": 23}`
+- `support_stability`: `{"ambiguous_support_fit": 17, "stable_low_complexity": 6}`
+- `top_hamming_to_target`: `{"1": 11, "2-3": 12}`
+- `top_oracle_hamming`: `{"unknown": 23}`
+- `top_complexity_penalty`: `{"0-0.10": 23}`
+- `top_expression_complexity`: `{"0": 3, "1-4": 1, "5-8": 2, "9+": 17}`
