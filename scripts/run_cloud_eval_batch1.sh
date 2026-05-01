@@ -83,11 +83,14 @@ Pull back this directory and score locally:
 
   ${OUT_DIR}
 
-Local scoring command:
+Local scoring/gate command:
 
-  python scripts/score_vllm_exact_eval_outputs.py \\
+  python scripts/finalize_cloud_eval_batch1.py \\
     --predictions-root ${OUT_DIR} \\
     --output-root data/processed/eval/vllm_exact_eval_v3_batch1
+
+The finalizer calls scripts/score_vllm_exact_eval_outputs.py and writes
+batch1_gate_summary.json with ready_to_submit=true/false.
 
 No Kaggle submission was attempted by this script.
 EOF

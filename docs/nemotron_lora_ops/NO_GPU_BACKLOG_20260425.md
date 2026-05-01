@@ -28,6 +28,7 @@ present.
 | Submit-safe adapter soup tooling | done | `python scripts/merge_lora_adapters.py --method linear ...` merges adapter-only LoRA candidates and writes `merge_manifest.json` |
 | Cloud vLLM bootstrap | done | `bash scripts/bootstrap_cloud_vllm_env.sh` creates a vLLM `>=0.14.0` env and runs the cheap preflight before generation |
 | Cloud batch1 eval entrypoint | done | `bash scripts/run_cloud_eval_batch1.sh` runs the submit-safe smoke sweep; `RUN_FULL=1` extends it to the full exact arena |
+| Cloud batch1 local finalizer | done | `python scripts/finalize_cloud_eval_batch1.py` scores pulled raw predictions and writes `batch1_gate_summary.json` |
 | Stage2 support cache hydrator | done | `python scripts/hydrate_stage2_support_cache.py --input-jsonl ../data/processed/stage2_official_train_no_hard_valid.jsonl` hydrated `7533 / 7533` cached support rows |
 | Public/local correlation log | done | `python scripts/update_lb_correlation_log.py ...` records Kaggle public score beside local exact metrics and adapter hashes |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10664 rows, bad `0` |
@@ -135,6 +136,9 @@ present.
   candidates, runs smoke by default, runs the full exact arena only with
   `RUN_FULL=1`, supports `RUN_SMOKE=0` after a completed smoke, and never
   submits to Kaggle.
+- `scripts/finalize_cloud_eval_batch1.py` is the matching local-only
+  postprocess step. It runs the exact scorer, enforces `official_balanced` as
+  the gate baseline, and writes `batch1_gate_summary.json`.
 
 ## Current Solver Read
 
@@ -227,10 +231,12 @@ Pull back only `data/processed/vllm_exact_eval_v3_batch1`, shut the GPU down, th
 score locally:
 
 ```bash
-python scripts/score_vllm_exact_eval_outputs.py \
+python scripts/finalize_cloud_eval_batch1.py \
   --predictions-root data/processed/vllm_exact_eval_v3_batch1 \
   --output-root data/processed/eval/vllm_exact_eval_v3_batch1
 ```
+
+Review `data/processed/eval/vllm_exact_eval_v3_batch1/batch1_gate_summary.json`.
 
 Submit only if the top candidate beats `official_balanced` overall and has no
 large-family regression worse than one sample.

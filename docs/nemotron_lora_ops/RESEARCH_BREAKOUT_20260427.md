@@ -60,10 +60,14 @@ RUN_SMOKE=0 RUN_FULL=1 bash scripts/run_cloud_eval_batch1.sh
 Pull back `data/processed/vllm_exact_eval_v3_batch1`, then score locally:
 
 ```bash
-python scripts/score_vllm_exact_eval_outputs.py \
+python scripts/finalize_cloud_eval_batch1.py \
   --predictions-root data/processed/vllm_exact_eval_v3_batch1 \
   --output-root data/processed/eval/vllm_exact_eval_v3_batch1
 ```
+
+Only package a Kaggle adapter if
+`data/processed/eval/vllm_exact_eval_v3_batch1/batch1_gate_summary.json` says
+`ready_to_submit=true`.
 
 ## Training Batch
 

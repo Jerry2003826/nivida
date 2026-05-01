@@ -58,6 +58,16 @@ def test_vllm_raw_output_scorer_bridges_to_exact_ranking() -> None:
     assert "repeat_0.jsonl" in text
 
 
+def test_batch1_finalizer_scores_and_enforces_official_baseline() -> None:
+    text = _script("finalize_cloud_eval_batch1.py")
+    assert "scripts/score_vllm_exact_eval_outputs.py" in text
+    assert "DEFAULT_PREDICTIONS_ROOT = Path(\"data/processed/vllm_exact_eval_v3_batch1\")" in text
+    assert "DEFAULT_OUTPUT_ROOT = Path(\"data/processed/eval/vllm_exact_eval_v3_batch1\")" in text
+    assert "REQUIRED_BASELINE = \"official_balanced\"" in text
+    assert "batch1_gate_summary.json" in text
+    assert "--skip-scoring" in text
+
+
 def test_score_vllm_exact_eval_outputs_smoke(tmp_path: Path) -> None:
     predictions_root = tmp_path / "vllm"
     label_path = tmp_path / "labels.jsonl"
