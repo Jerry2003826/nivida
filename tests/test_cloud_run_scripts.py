@@ -37,7 +37,7 @@ def test_vllm_exact_eval_script_runs_preflight_and_official_proxy() -> None:
     assert "scripts/eval_official_vllm_proxy.py" in text
     assert "--write-raw-predictions" in text
     assert "--contract \"$CONTRACT\"" in text
-    assert "add_candidate answer_final artifacts/adapter_stage2_official_balanced_answer_only" in text
+    assert "add_candidate answer_only_continuation artifacts/adapter_stage2_official_balanced_answer_only" in text
     assert "add_candidate equation_rescue artifacts/adapter_stage2_equation_rescue" in text
     assert "add_candidate bit_rescue_v2_20260430_trained artifacts/adapter_stage2_bit_rescue_v2" in text
     assert "add_candidate soup_answer_short artifacts/merged/soup_answer_short" in text
@@ -211,8 +211,8 @@ def test_cloud_eval_batch1_smokes_submit_safe_candidates_without_submission() ->
         "official_balanced=artifacts/"
         "adapter_stage2_thin_official_balanced_20260424_161110Z"
     ) in text
-    assert "answer_final=artifacts/adapter_stage2_official_balanced_answer_only" in text
-    assert "short_trace_final=artifacts/adapter_stage2_official_balanced_short_trace" in text
+    assert "answer_only_continuation=artifacts/adapter_stage2_official_balanced_answer_only" in text
+    assert "short_trace_continuation=artifacts/adapter_stage2_official_balanced_short_trace" in text
     assert "bit_rescue_v2_20260430_trained=artifacts/adapter_stage2_bit_rescue_v2" in text
     assert "scripts/check_cloud_eval_inputs.py" in text
     assert "scripts/run_cloud_vllm_exact_eval_v3.sh" in text

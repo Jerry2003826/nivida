@@ -76,7 +76,8 @@ present.
   cloud exact-eval inputs and adapters. It checks ignored eval manifests,
   duplicate ids, target labels, adapter weights/configs, config files, and
   critical cloud scripts before vLLM is touched. The readiness gate now checks
-  both `answer_final` and `bit_rescue_v2_20260430_trained` in dry-run mode.
+  both `answer_only_continuation` and `bit_rescue_v2_20260430_trained` in
+  dry-run mode.
 - `configs/research_breakout_candidates.json` is the canonical candidate
   registry for the aggressive research matrix. It records adapter paths, prompt
   profiles, data recipes, family focus, GPU need, expected runtime, and
@@ -246,5 +247,5 @@ Research arena ranking can be run explicitly with:
 ```bash
 python scripts/rank_research_candidates.py \
   --report official_balanced=data/processed/eval/vllm_exact_eval_v3_batch1/combined_balanced_48pf/official_balanced/report.json \
-  --report answer_only_continuation=data/processed/eval/vllm_exact_eval_v3_batch1/combined_balanced_48pf/answer_final/report.json
+  --report answer_only_continuation=data/processed/eval/vllm_exact_eval_v3_batch1/combined_balanced_48pf/answer_only_continuation/report.json
 ```

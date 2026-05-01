@@ -25,7 +25,7 @@ SMOKE_EVAL_INPUTS="${SMOKE_EVAL_INPUTS:-smoke_head6}"
 FULL_EVAL_INPUTS="${FULL_EVAL_INPUTS:-combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full}"
 PREFLIGHT_OUTPUT="${PREFLIGHT_OUTPUT:-data/processed/cloud_eval_batch1_preflight.json}"
 
-SUBMIT_SAFE_ADAPTERS="${ADAPTERS:-official_balanced=artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z,answer_final=artifacts/adapter_stage2_official_balanced_answer_only,short_trace_final=artifacts/adapter_stage2_official_balanced_short_trace,bit_rescue_v2_20260430_trained=artifacts/adapter_stage2_bit_rescue_v2}"
+SUBMIT_SAFE_ADAPTERS="${ADAPTERS:-official_balanced=artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z,answer_only_continuation=artifacts/adapter_stage2_official_balanced_answer_only,short_trace_continuation=artifacts/adapter_stage2_official_balanced_short_trace,bit_rescue_v2_20260430_trained=artifacts/adapter_stage2_bit_rescue_v2}"
 PREFLIGHT_CANDIDATE_ARGS=()
 IFS=',' read -ra CANDIDATE_ITEMS <<< "$SUBMIT_SAFE_ADAPTERS"
 for item in "${CANDIDATE_ITEMS[@]}"; do

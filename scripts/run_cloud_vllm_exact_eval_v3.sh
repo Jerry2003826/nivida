@@ -181,8 +181,8 @@ if [[ -n "${ADAPTERS:-}" ]]; then
 else
   add_candidate b_thin artifacts/adapter_stage2_thin
   add_candidate official_balanced artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z
-  add_candidate answer_final artifacts/adapter_stage2_official_balanced_answer_only
-  add_candidate short_trace_final artifacts/adapter_stage2_official_balanced_short_trace
+  add_candidate answer_only_continuation artifacts/adapter_stage2_official_balanced_answer_only
+  add_candidate short_trace_continuation artifacts/adapter_stage2_official_balanced_short_trace
   add_candidate mixed_answer_short artifacts/adapter_stage2_mixed_answer_short
   add_candidate equation_rescue artifacts/adapter_stage2_equation_rescue
   add_candidate bit_rescue artifacts/adapter_stage2_bit_rescue
