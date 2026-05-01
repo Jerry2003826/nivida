@@ -186,6 +186,30 @@ def test_cloud_vllm_bootstrap_installs_new_vllm_and_runs_preflight() -> None:
     assert "DRY_RUN" in text
 
 
+def test_cloud_eval_batch1_smokes_submit_safe_candidates_without_submission() -> None:
+    text = _script("run_cloud_eval_batch1.sh")
+    assert "scripts/bootstrap_cloud_vllm_env.sh" in text
+    assert "BOOTSTRAP_VLLM" in text
+    assert "RUN_SMOKE" in text
+    assert "RUN_FULL" in text
+    assert "SMOKE_EVAL_INPUTS=\"${SMOKE_EVAL_INPUTS:-smoke_head6}\"" in text
+    assert (
+        "FULL_EVAL_INPUTS=\"${FULL_EVAL_INPUTS:-"
+        "combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full}\""
+    ) in text
+    assert (
+        "official_balanced=artifacts/"
+        "adapter_stage2_thin_official_balanced_20260424_161110Z"
+    ) in text
+    assert "answer_final=artifacts/adapter_stage2_official_balanced_answer_only" in text
+    assert "short_trace_final=artifacts/adapter_stage2_official_balanced_short_trace" in text
+    assert "bit_rescue_v2_20260430_trained=artifacts/adapter_stage2_bit_rescue_v2" in text
+    assert "scripts/check_cloud_eval_inputs.py" in text
+    assert "scripts/run_cloud_vllm_exact_eval_v3.sh" in text
+    assert "scripts/score_vllm_exact_eval_outputs.py" in text
+    assert "kaggle competitions submit" not in text
+
+
 def test_cloud_inference_script_runs_artifact_preflight() -> None:
     text = _script("run_cloud_inference_only_v3.sh")
     assert "scripts/check_cloud_eval_inputs.py" in text

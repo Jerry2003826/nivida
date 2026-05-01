@@ -27,6 +27,9 @@ submission contract changes.
   `get_expert_mapping` implementation.
 - Use `scripts/bootstrap_cloud_vllm_env.sh` on a fresh GPU pod to create the
   vLLM environment and immediately run the cheap version/ABI preflight.
+- Use `scripts/run_cloud_eval_batch1.sh` as the first paid-GPU entrypoint; it
+  wraps bootstrap/preflight, submit-safe smoke eval, optional full eval, and
+  leaves scoring/submission decisions local.
 
 ## Research Lines
 
@@ -48,24 +51,18 @@ solver-assisted variants have been scored locally.
 
 ```bash
 cd /workspace/nivida_h200_run
-git pull
-# Build or reuse a vLLM >= 0.14.0 environment. The preflight hard-fails older
-# builds before any paid generation starts.
-bash scripts/bootstrap_cloud_vllm_env.sh
+RUN_FULL=0 bash scripts/run_cloud_eval_batch1.sh
 
-EVAL_INPUTS=smoke_head6 \
-bash scripts/run_cloud_vllm_exact_eval_v3.sh
-
-EVAL_INPUTS=combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full \
-bash scripts/run_cloud_vllm_exact_eval_v3.sh
+# Only if smoke is healthy and the budget allows the full arena:
+RUN_SMOKE=0 RUN_FULL=1 bash scripts/run_cloud_eval_batch1.sh
 ```
 
-Pull back `data/processed/vllm_exact_eval_v3`, then score locally:
+Pull back `data/processed/vllm_exact_eval_v3_batch1`, then score locally:
 
 ```bash
 python scripts/score_vllm_exact_eval_outputs.py \
-  --predictions-root data/processed/vllm_exact_eval_v3 \
-  --output-root data/processed/eval/vllm_exact_eval_v3
+  --predictions-root data/processed/vllm_exact_eval_v3_batch1 \
+  --output-root data/processed/eval/vllm_exact_eval_v3_batch1
 ```
 
 ## Training Batch

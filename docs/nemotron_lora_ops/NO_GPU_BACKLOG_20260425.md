@@ -27,6 +27,7 @@ present.
 | Trained bit rescue v2 candidate | done | `bit_rescue_v2_20260430_trained` is registered as a submit-safe eval candidate; smoke tied `official_balanced` at `2 / 6` |
 | Submit-safe adapter soup tooling | done | `python scripts/merge_lora_adapters.py --method linear ...` merges adapter-only LoRA candidates and writes `merge_manifest.json` |
 | Cloud vLLM bootstrap | done | `bash scripts/bootstrap_cloud_vllm_env.sh` creates a vLLM `>=0.14.0` env and runs the cheap preflight before generation |
+| Cloud batch1 eval entrypoint | done | `bash scripts/run_cloud_eval_batch1.sh` runs the submit-safe smoke sweep; `RUN_FULL=1` extends it to the full exact arena |
 | Stage2 support cache hydrator | done | `python scripts/hydrate_stage2_support_cache.py --input-jsonl ../data/processed/stage2_official_train_no_hard_valid.jsonl` hydrated `7533 / 7533` cached support rows |
 | Public/local correlation log | done | `python scripts/update_lb_correlation_log.py ...` records Kaggle public score beside local exact metrics and adapter hashes |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10664 rows, bad `0` |
@@ -129,6 +130,11 @@ present.
   `data/processed/local_eval_manifests/smoke_head6.jsonl` from `smoke_6pf`
   automatically when the smoke default is used, so the first GPU smoke does not
   require a manual `head` command.
+- `scripts/run_cloud_eval_batch1.sh` is the preferred paid-GPU entrypoint. It
+  pulls the branch, bootstraps/rechecks vLLM, evaluates only submit-safe adapter
+  candidates, runs smoke by default, runs the full exact arena only with
+  `RUN_FULL=1`, supports `RUN_SMOKE=0` after a completed smoke, and never
+  submits to Kaggle.
 
 ## Current Solver Read
 
@@ -211,29 +217,19 @@ research path is model-only adapters plus merged adapters from
 
 ```bash
 cd /workspace/nivida_h200_run
-git pull
-# Build or reuse a vLLM >= 0.14.0 environment, then run the cheap preflight.
-bash scripts/bootstrap_cloud_vllm_env.sh
-python scripts/check_cloud_eval_inputs.py \
-  --eval-inputs smoke_head6 \
-  --candidate answer_final=artifacts/adapter_stage2_official_balanced_answer_only \
-  --candidate bit_rescue_v2_20260430_trained=artifacts/adapter_stage2_bit_rescue_v2
+RUN_FULL=0 bash scripts/run_cloud_eval_batch1.sh
 
-EVAL_INPUTS=smoke_head6 \
-ADAPTERS="answer_final=artifacts/adapter_stage2_official_balanced_answer_only,bit_rescue_v2_20260430_trained=artifacts/adapter_stage2_bit_rescue_v2" \
-bash scripts/run_cloud_vllm_exact_eval_v3.sh
-
-EVAL_INPUTS=combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full \
-bash scripts/run_cloud_vllm_exact_eval_v3.sh
+# Only if smoke looks healthy and the budget allows the full arena:
+RUN_SMOKE=0 RUN_FULL=1 bash scripts/run_cloud_eval_batch1.sh
 ```
 
-Pull back only `data/processed/vllm_exact_eval_v3`, shut the GPU down, then
+Pull back only `data/processed/vllm_exact_eval_v3_batch1`, shut the GPU down, then
 score locally:
 
 ```bash
 python scripts/score_vllm_exact_eval_outputs.py \
-  --predictions-root data/processed/vllm_exact_eval_v3 \
-  --output-root data/processed/eval/vllm_exact_eval_v3
+  --predictions-root data/processed/vllm_exact_eval_v3_batch1 \
+  --output-root data/processed/eval/vllm_exact_eval_v3_batch1
 ```
 
 Submit only if the top candidate beats `official_balanced` overall and has no
@@ -243,6 +239,6 @@ Research arena ranking can be run explicitly with:
 
 ```bash
 python scripts/rank_research_candidates.py \
-  --report official_balanced=data/processed/eval/vllm_exact_eval_v3/combined_balanced_48pf/official_balanced/report.json \
-  --report answer_only_continuation=data/processed/eval/vllm_exact_eval_v3/combined_balanced_48pf/answer_final/report.json
+  --report official_balanced=data/processed/eval/vllm_exact_eval_v3_batch1/combined_balanced_48pf/official_balanced/report.json \
+  --report answer_only_continuation=data/processed/eval/vllm_exact_eval_v3_batch1/combined_balanced_48pf/answer_final/report.json
 ```
