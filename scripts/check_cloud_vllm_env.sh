@@ -30,14 +30,17 @@ export LD_LIBRARY_PATH="${VENV_ROOT}/lib/python3.12/site-packages/nvidia/cuspars
 export KAGGLEHUB_CACHE="${KAGGLEHUB_CACHE:-/workspace/.cache/kagglehub}"
 export HF_HOME="${HF_HOME:-/workspace/.cache/huggingface}"
 export TOKENIZERS_PARALLELISM=false
+export VLLM_MIN_VERSION="${VLLM_MIN_VERSION:-0.14.0}"
 
 python - <<'PY'
 from __future__ import annotations
 
 import importlib.metadata as md
+import os
 import re
 import sys
 
+from packaging.version import InvalidVersion, Version
 import torch
 import transformers
 import vllm
@@ -60,9 +63,24 @@ if match:
 print(f"torch={torch.__version__} cuda={torch.version.cuda} file={torch.__file__}")
 print(f"transformers={transformers.__version__}")
 print(f"vllm={vllm.__version__} requires={torch_req or 'unknown'}")
+print(f"vllm_min_version={os.environ.get('VLLM_MIN_VERSION', '')}")
 print(f"cuda_available={torch.cuda.is_available()}")
 if torch.cuda.is_available():
     print(f"gpu={torch.cuda.get_device_name(0)}")
+
+min_version_raw = os.environ.get("VLLM_MIN_VERSION", "0.14.0").strip()
+if min_version_raw and min_version_raw.lower() not in {"0", "none", "skip"}:
+    try:
+        imported_vllm = Version(vllm.__version__)
+        required_vllm = Version(min_version_raw)
+    except InvalidVersion as exc:
+        raise SystemExit(f"Invalid VLLM_MIN_VERSION={min_version_raw!r}: {exc}") from exc
+    if imported_vllm < required_vllm:
+        raise SystemExit(
+            "vLLM version too old for NemotronH MoE LoRA exact-eval: "
+            f"imported {vllm.__version__}, need >= {min_version_raw}. "
+            "vLLM 0.11.2 fails with missing get_expert_mapping."
+        )
 
 if expected and torch_version != expected:
     raise SystemExit(

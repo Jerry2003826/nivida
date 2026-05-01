@@ -64,6 +64,7 @@ def test_default_candidate_registry_is_official_balanced_gated() -> None:
         "eq_bit_rescue",
         "equation_rescue_v2",
         "bit_rescue_v2",
+        "bit_rescue_v2_20260430_trained",
         "eq_bit_rescue_v2",
         "rank64_answer_only",
         "final_answer_weighted_loss",
@@ -77,6 +78,16 @@ def test_default_candidate_registry_is_official_balanced_gated() -> None:
     rescue_v2 = next(candidate for candidate in registry["candidates"] if candidate["name"] == "eq_bit_rescue_v2")
     assert rescue_v2["submission_safe"] is False
     assert "solver_breakout_v2" in rescue_v2["artifacts"]
+    trained_bit_v2 = next(
+        candidate for candidate in registry["candidates"] if candidate["name"] == "bit_rescue_v2_20260430_trained"
+    )
+    assert trained_bit_v2["type"] == "trained_adapter"
+    assert trained_bit_v2["submission_safe"] is True
+    assert trained_bit_v2["expected_runtime"] == "eval-only"
+    assert trained_bit_v2["adapter_path"] == "artifacts/adapter_stage2_bit_rescue_v2"
+    assert "submission_zip" in trained_bit_v2["artifacts"]
+    assert trained_bit_v2["adapter_sha256"] == "beb50cb8589b96b41353ff2a544825e30c046e37781a113e5d0d92e7772b0d81"
+    assert trained_bit_v2["submission_zip_sha256"] == "d8bbe1a5eac4b054f344b2d2663b470fba5cbe0f0798a612803e0434a6b43533"
     solver = next(candidate for candidate in registry["candidates"] if candidate["name"] == "official_balanced_solver_assisted")
     prompt = next(candidate for candidate in registry["candidates"] if candidate["name"] == "official_balanced_prompt_ensemble")
     assert solver["submission_safe"] is False

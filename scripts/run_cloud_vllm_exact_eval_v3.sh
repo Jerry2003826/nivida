@@ -186,6 +186,7 @@ else
   add_candidate mixed_answer_short artifacts/adapter_stage2_mixed_answer_short
   add_candidate equation_rescue artifacts/adapter_stage2_equation_rescue
   add_candidate bit_rescue artifacts/adapter_stage2_bit_rescue
+  add_candidate bit_rescue_v2_20260430_trained artifacts/adapter_stage2_bit_rescue_v2
   add_candidate eq_bit_rescue artifacts/adapter_stage2_eq_bit_rescue
   add_candidate final_answer_weighted artifacts/adapter_stage2_final_answer_weighted
   add_candidate soup_answer_short artifacts/merged/soup_answer_short

@@ -24,6 +24,7 @@ present.
 | Cloud artifact preflight plan | done | `python scripts/check_cloud_eval_inputs.py --dry-run ...` is part of the readiness gate |
 | Research breakout registry | done | `python scripts/build_research_candidate_registry.py --check` keeps `official_balanced` as the default arena baseline |
 | Research weak-family data recipes | done | `python scripts/build_research_rescue_data.py` prepares mixed, equation, bit, eq+bit, and v2 weak-family SFT recipes with provenance |
+| Trained bit rescue v2 candidate | done | `bit_rescue_v2_20260430_trained` is registered as a submit-safe eval candidate; smoke tied `official_balanced` at `2 / 6` |
 | Submit-safe adapter soup tooling | done | `python scripts/merge_lora_adapters.py --method linear ...` merges adapter-only LoRA candidates and writes `merge_manifest.json` |
 | Public/local correlation log | done | `python scripts/update_lb_correlation_log.py ...` records Kaggle public score beside local exact metrics and adapter hashes |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10664 rows, bad `0` |
@@ -67,7 +68,8 @@ present.
 - `configs/research_breakout_candidates.json` is the canonical candidate
   registry for the aggressive research matrix. It records adapter paths, prompt
   profiles, data recipes, family focus, GPU need, expected runtime, and
-  submission-safety.
+  submission-safety. It now separates the research-only `bit_rescue_v2` data
+  recipe from the trained submit-safe `bit_rescue_v2_20260430_trained` adapter.
 - `scripts/rank_research_candidates.py` is the registry-aware exact arena
   ranker. It defaults to `official_balanced` and refuses to auto-select
   submission-unsafe candidates such as the rank-64 research arm. It also treats
@@ -89,7 +91,8 @@ present.
   answer hash, and weak-family diagnostic features. The v2 recipes
   `equation_rescue_v2`, `bit_rescue_v2`, and `eq_bit_rescue_v2` are registered
   as training-data candidates but remain submission-unsafe until GPU training
-  produces a ranked adapter.
+  produces a ranked adapter. The 2026-04-30 `bit_rescue_v2` training run is
+  registered separately as `bit_rescue_v2_20260430_trained`.
 - `configs/train_stage2_equation_rescue_v2.yaml`,
   `configs/train_stage2_bit_rescue_v2.yaml`, and
   `configs/train_stage2_eq_bit_rescue_v2.yaml` are ready for the next GPU
@@ -101,6 +104,9 @@ present.
 - `scripts/write_cloud_artifact_manifest.py` writes cloud run manifests with
   git/runtime versions, adapter hashes, preflight hash, and raw prediction
   line counts.
+- `scripts/check_cloud_vllm_env.sh` now hard-fails vLLM builds older than
+  `VLLM_MIN_VERSION` (default `0.14.0`) because `vllm==0.11.2` cannot load
+  NemotronH MoE LoRA adapters due to missing expert mapping support.
 - `scripts/run_cloud_vllm_exact_eval_v3.sh` and
   `scripts/run_cloud_inference_only_v3.sh` now fail on missing explicit
   adapters, repair missing checkpoint `adapter_config.json` from the B-thin
@@ -185,13 +191,16 @@ research path is model-only adapters plus merged adapters from
 ```bash
 cd /workspace/nivida_h200_run
 git pull
+# Point VENV at an environment with vLLM >= 0.14.0. The preflight blocks known
+# bad 0.11.x builds before any paid generation starts.
 bash scripts/check_cloud_vllm_env.sh
 python scripts/check_cloud_eval_inputs.py \
   --eval-inputs smoke_head6 \
-  --candidate answer_final=artifacts/adapter_stage2_official_balanced_answer_only
+  --candidate answer_final=artifacts/adapter_stage2_official_balanced_answer_only \
+  --candidate bit_rescue_v2_20260430_trained=artifacts/adapter_stage2_bit_rescue_v2
 
 EVAL_INPUTS=smoke_head6 \
-ADAPTERS="answer_final=artifacts/adapter_stage2_official_balanced_answer_only" \
+ADAPTERS="answer_final=artifacts/adapter_stage2_official_balanced_answer_only,bit_rescue_v2_20260430_trained=artifacts/adapter_stage2_bit_rescue_v2" \
 bash scripts/run_cloud_vllm_exact_eval_v3.sh
 
 EVAL_INPUTS=combined_balanced_48pf,proxy_all_balanced_64pf,hard_triad_full \

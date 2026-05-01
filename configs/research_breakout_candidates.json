@@ -239,6 +239,43 @@
       "research_only_reason": "Weak-family v2 data recipe is a training candidate only until a submit-safe adapter is trained and ranked."
     },
     {
+      "name": "bit_rescue_v2_20260430_trained",
+      "type": "trained_adapter",
+      "adapter_path": "artifacts/adapter_stage2_bit_rescue_v2",
+      "prompt_profile": "chat_thinking",
+      "data_recipe": "bit_rescue_v2",
+      "family_focus": [
+        "bit"
+      ],
+      "gpu_required": true,
+      "expected_runtime": "eval-only",
+      "artifacts": [
+        "adapter",
+        "cloud_artifact_manifest",
+        "raw_predictions",
+        "exact_report",
+        "submission_zip"
+      ],
+      "enabled": true,
+      "submission_safe": true,
+      "notes": "Submit-safe bit_rescue_v2 adapter trained on 2026-04-30. Transformers smoke tied official_balanced at 2/6; full vLLM exact eval is pending a vLLM build with NemotronH MoE LoRA support.",
+      "trained_from": "official_balanced",
+      "cloud_run_id": "20260430_223110Z",
+      "adapter_sha256": "beb50cb8589b96b41353ff2a544825e30c046e37781a113e5d0d92e7772b0d81",
+      "submission_zip_sha256": "d8bbe1a5eac4b054f344b2d2663b470fba5cbe0f0798a612803e0434a6b43533",
+      "local_artifact_dir": "../remote_artifacts/bit_rescue_v2_20260430_223110Z",
+      "cloud_artifact_manifest": "../remote_artifacts/bit_rescue_v2_20260430_223110Z/cloud_artifact_manifest_20260430_223110Z.json",
+      "submission_zip": "../remote_artifacts/bit_rescue_v2_20260430_223110Z/submission_bit_rescue_v2_20260430_223110Z.zip",
+      "smoke_eval": {
+        "manifest": "smoke_6pf",
+        "official_balanced_correct": 2,
+        "bit_rescue_v2_correct": 2,
+        "num_examples": 6,
+        "boxed_valid_rate": 1.0
+      },
+      "blocked_eval_reason": "vLLM 0.11.2 lacks NemotronH get_expert_mapping for MoE LoRA; use scripts/check_cloud_vllm_env.sh with VLLM_MIN_VERSION>=0.14.0 before sweeping."
+    },
+    {
       "name": "eq_bit_rescue_v2",
       "type": "train_variant",
       "adapter_path": "artifacts/adapter_stage2_eq_bit_rescue_v2",

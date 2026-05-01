@@ -20,8 +20,11 @@ submission contract changes.
 - Submission gate: overall official-verify must beat `official_balanced`, no
   large family may regress by more than one sample, and submission-unsafe
   candidates are never selected automatically.
-- Submit-safe classes: `model_only` and `merged_adapter`.
+- Submit-safe classes: `model_only`/`trained_adapter` and `merged_adapter`.
 - Research-only classes: `solver_assisted` and `prompt_ensemble`.
+- Cloud vLLM preflight defaults to `VLLM_MIN_VERSION=0.14.0` because
+  `vllm==0.11.2` fails NemotronH MoE LoRA loading with a missing
+  `get_expert_mapping` implementation.
 
 ## Research Lines
 
@@ -44,6 +47,8 @@ solver-assisted variants have been scored locally.
 ```bash
 cd /workspace/nivida_h200_run
 git pull
+# Set VENV to an environment with vLLM >= 0.14.0. The preflight hard-fails
+# older builds before any paid generation starts.
 bash scripts/check_cloud_vllm_env.sh
 
 EVAL_INPUTS=smoke_head6 \
@@ -75,14 +80,17 @@ bit_rescue
 eq_bit_rescue
 equation_rescue_v2
 bit_rescue_v2
+bit_rescue_v2_20260430_trained
 eq_bit_rescue_v2
 rank64_answer_only
 final_answer_weighted_loss
 ```
 
-The v2 rescue entries are submission-unsafe data/training candidates until a
-real adapter is trained, evaluated in the exact arena, and passes the
-`official_balanced` gate.
+The v2 rescue data/training entries are submission-unsafe until a real adapter
+is trained, evaluated in the exact arena, and passes the `official_balanced`
+gate. `bit_rescue_v2_20260430_trained` is the first trained submit-safe v2
+adapter; its smoke eval tied `official_balanced` at `2 / 6`, so it still needs
+a full vLLM exact sweep before any Kaggle submission decision.
 
 The v2 config files are prebuilt:
 
@@ -102,9 +110,11 @@ equation_template: top1 0.0936, oracle@k 0.0979, ranker miss 1, operator gap 45
 bit_permutation:   top1 0.4203, oracle@k 0.5159, ranker miss 33, operator gap 161
 ```
 
-This makes `bit_rescue_v2` and `eq_bit_rescue_v2` the more plausible immediate
-GPU training candidates. Equation still needs CPU operator/generator work
-because the current top-k barely contains the answer.
+This made `bit_rescue_v2` and `eq_bit_rescue_v2` the more plausible immediate
+GPU training candidates. The first `bit_rescue_v2` adapter has been trained and
+registered as `bit_rescue_v2_20260430_trained`; the next paid step is exact
+eval, not another blind training run. Equation still needs CPU
+operator/generator work because the current top-k barely contains the answer.
 
 `rank64_answer_only` is intentionally marked `submission_safe=false` because
 the current Kaggle runtime contract has `max_lora_rank=32`; keep it research
