@@ -94,6 +94,7 @@ GENERATED_FILES = (
 class GateStep:
     name: str
     command: list[str]
+    timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -104,7 +105,7 @@ class CommandOutcome:
     stderr: str
 
 
-Runner = Callable[[list[str]], CommandOutcome]
+Runner = Callable[[list[str], int | None], CommandOutcome]
 
 
 def _utc_now() -> str:
@@ -140,15 +141,31 @@ def _read_json_if_exists(path: str | Path) -> Any | None:
     return json.loads(target.read_text(encoding="utf-8"))
 
 
-def _default_runner(command: list[str], *, cwd: Path) -> CommandOutcome:
+def _default_runner(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout_seconds: int | None = None,
+) -> CommandOutcome:
     actual = [sys.executable, *command[1:]] if command and command[0] == "python" else command
-    completed = subprocess.run(
-        actual,
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            actual,
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        stderr = f"{stderr}\ncommand timed out after {timeout_seconds}s".strip()
+        return CommandOutcome(command=command, returncode=124, stdout=stdout, stderr=stderr)
     return CommandOutcome(
         command=command,
         returncode=int(completed.returncode),
@@ -161,11 +178,15 @@ def _wrap_runner(
     runner: Callable[..., CommandOutcome] | None,
     *,
     repo_root: Path,
-) -> Callable[[list[str]], CommandOutcome]:
+) -> Runner:
     if runner is None:
-        return lambda command: _default_runner(command, cwd=repo_root)
+        return lambda command, timeout_seconds=None: _default_runner(
+            command,
+            cwd=repo_root,
+            timeout_seconds=timeout_seconds,
+        )
 
-    def _wrapped(command: list[str]) -> CommandOutcome:
+    def _wrapped(command: list[str], timeout_seconds: int | None = None) -> CommandOutcome:
         return runner(command, cwd=repo_root)
 
     return _wrapped
@@ -179,9 +200,49 @@ def _posix(path: str | Path) -> str:
     return Path(path).as_posix()
 
 
-def planned_steps(mode: str = "full") -> list[GateStep]:
+def _cloud_preflight_command() -> list[str]:
+    return _python(
+        "scripts/check_cloud_eval_inputs.py",
+        "--dry-run",
+        "--eval-inputs",
+        "smoke_head6",
+        "--candidate",
+        "answer_final=artifacts/adapter_stage2_official_balanced_answer_only",
+        "--candidate",
+        "bit_rescue_v2_20260430_trained=artifacts/adapter_stage2_bit_rescue_v2",
+        "--output",
+        _posix(CLOUD_EVAL_PREFLIGHT_PLAN),
+    )
+
+
+def _teacher_parity_step(
+    *,
+    mode: str,
+    timeout_seconds: int,
+) -> GateStep:
+    if mode not in {"cached", "rerun"}:
+        raise ValueError(f"Unsupported teacher parity mode: {mode}")
+    command = _python(
+        "scripts/audit_teacher_gate_extractor_parity.py",
+        "--train-jsonl",
+        _posix(TEACHER_PARITY_TRAIN_JSONL),
+    )
+    if mode == "rerun":
+        command.append("--allow-rerun-chain-search")
+    return GateStep("teacher_gate_extractor_parity", command, timeout_seconds=timeout_seconds)
+
+
+def planned_steps(
+    mode: str = "full",
+    *,
+    teacher_parity_mode: str = "cached",
+    teacher_parity_timeout_seconds: int = 600,
+    refresh_derived_data: bool = False,
+) -> list[GateStep]:
     if mode not in {"full", "fast"}:
         raise ValueError(f"Unsupported mode: {mode}")
+    if teacher_parity_mode not in {"cached", "rerun"}:
+        raise ValueError(f"Unsupported teacher parity mode: {teacher_parity_mode}")
 
     fast_steps = [
         GateStep(
@@ -195,16 +256,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
         ),
         GateStep(
             "cloud_eval_preflight_plan",
-            _python(
-                "scripts/check_cloud_eval_inputs.py",
-                "--dry-run",
-                "--eval-inputs",
-                "smoke_head6",
-                "--candidate",
-                "answer_final=artifacts/adapter_stage2_official_balanced_answer_only",
-                "--output",
-                _posix(CLOUD_EVAL_PREFLIGHT_PLAN),
-            ),
+            _cloud_preflight_command(),
         ),
         GateStep(
             "answer_focused_data_dry_run",
@@ -243,7 +295,11 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
     if mode == "fast":
         return fast_steps
 
-    return [
+    answer_focused_command = _python("scripts/build_stage2_answer_focused_data.py")
+    if not refresh_derived_data:
+        answer_focused_command.append("--dry-run")
+
+    full_steps = [
         GateStep("build_local_eval_manifests", _python("scripts/build_local_eval_manifests.py")),
         GateStep("audit_solver_coverage", _python("scripts/audit_solver_coverage.py")),
         GateStep("diagnose_equation_template", _python("scripts/diagnose_equation_template.py")),
@@ -269,8 +325,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
                 _posix(RESEARCH_REGISTRY),
             ),
         ),
-        GateStep("rebuild_stage2_teacher_inputs", _python("scripts/rebuild_stage2_teacher_inputs.py")),
-        GateStep("build_stage2_answer_focused_data", _python("scripts/build_stage2_answer_focused_data.py")),
+        GateStep("build_stage2_answer_focused_data", answer_focused_command),
         GateStep("build_research_rescue_data", _python("scripts/build_research_rescue_data.py")),
         GateStep(
             "recheck_chat_template_sha16",
@@ -282,16 +337,7 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
         ),
         GateStep(
             "cloud_eval_preflight_plan",
-            _python(
-                "scripts/check_cloud_eval_inputs.py",
-                "--dry-run",
-                "--eval-inputs",
-                "smoke_head6",
-                "--candidate",
-                "answer_final=artifacts/adapter_stage2_official_balanced_answer_only",
-                "--output",
-                _posix(CLOUD_EVAL_PREFLIGHT_PLAN),
-            ),
+            _cloud_preflight_command(),
         ),
         GateStep(
             "check_prompt_suffix_alignment",
@@ -301,14 +347,9 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
                 *(_posix(path) for path in ANSWER_FOCUSED_OUTPUTS),
             ],
         ),
-        GateStep(
-            "teacher_gate_extractor_parity",
-            _python(
-                "scripts/audit_teacher_gate_extractor_parity.py",
-                "--train-jsonl",
-                _posix(TEACHER_PARITY_TRAIN_JSONL),
-                "--allow-rerun-chain-search",
-            ),
+        _teacher_parity_step(
+            mode=teacher_parity_mode,
+            timeout_seconds=teacher_parity_timeout_seconds,
         ),
         GateStep(
             "targeted_pytest",
@@ -341,6 +382,12 @@ def planned_steps(mode: str = "full") -> list[GateStep]:
             ],
         ),
     ]
+    if refresh_derived_data:
+        full_steps.insert(
+            6,
+            GateStep("rebuild_stage2_teacher_inputs", _python("scripts/rebuild_stage2_teacher_inputs.py")),
+        )
+    return full_steps
 
 
 def _step_payload(
@@ -356,6 +403,8 @@ def _step_payload(
         "command": step.command,
         "status": status,
     }
+    if step.timeout_seconds is not None:
+        payload["timeout_seconds"] = step.timeout_seconds
     if duration_seconds is not None:
         payload["duration_seconds"] = round(duration_seconds, 3)
     if outcome is not None:
@@ -392,14 +441,14 @@ def _teacher_parity_failure(repo_root: Path) -> dict[str, str] | None:
 
 
 def _clean_tracked_worktree(
-    run: Callable[[list[str]], CommandOutcome],
+    run: Runner,
 ) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
     for command, label in [
         (["git", "diff", "--quiet"], "unstaged tracked changes"),
         (["git", "diff", "--cached", "--quiet"], "staged tracked changes"),
     ]:
-        outcome = run(command)
+        outcome = run(command, None)
         if outcome.returncode != 0:
             failures.append(
                 {
@@ -418,13 +467,21 @@ def run_gate(
     output_path: str | Path = DEFAULT_OUTPUT,
     allow_dirty: bool = False,
     dry_run: bool = False,
+    teacher_parity_mode: str = "cached",
+    teacher_parity_timeout_seconds: int = 600,
+    refresh_derived_data: bool = False,
     runner: Callable[..., CommandOutcome] | None = None,
 ) -> dict[str, Any]:
     root = Path(repo_root)
     output = Path(output_path)
     if not output.is_absolute():
         output = root / output
-    steps = planned_steps(mode)
+    steps = planned_steps(
+        mode,
+        teacher_parity_mode=teacher_parity_mode,
+        teacher_parity_timeout_seconds=teacher_parity_timeout_seconds,
+        refresh_derived_data=refresh_derived_data,
+    )
     run = _wrap_runner(runner, repo_root=root)
 
     step_results: list[dict[str, Any]] = []
@@ -437,6 +494,8 @@ def run_gate(
             "ready_for_gpu": False,
             "mode": mode,
             "dry_run": True,
+            "teacher_parity_mode": teacher_parity_mode,
+            "refresh_derived_data": refresh_derived_data,
             "timestamp_utc": _utc_now(),
             "known_blockers": [],
             "failures": [],
@@ -454,6 +513,8 @@ def run_gate(
                 "ready_for_gpu": False,
                 "mode": mode,
                 "dry_run": False,
+                "teacher_parity_mode": teacher_parity_mode,
+                "refresh_derived_data": refresh_derived_data,
                 "timestamp_utc": _utc_now(),
                 "known_blockers": [],
                 "failures": failures,
@@ -465,9 +526,47 @@ def run_gate(
 
     for step in steps:
         started = perf_counter()
-        outcome = run(step.command)
+        outcome = run(step.command, step.timeout_seconds)
         duration = perf_counter() - started
         if outcome.returncode != 0:
+            if (
+                step.name == "teacher_gate_extractor_parity"
+                and "Missing support_pairs/query_prediction" in outcome.stderr
+            ):
+                step_results.append(
+                    _step_payload(
+                        step,
+                        status="fail",
+                        duration_seconds=duration,
+                        outcome=outcome,
+                        message="Cached stage2 teacher inputs lack support pairs; rerun chain search explicitly.",
+                    )
+                )
+                failures.append(
+                    {
+                        "step": step.name,
+                        "reason": "cached support pairs missing",
+                        "next_step": "rerun with --teacher-parity-mode rerun",
+                    }
+                )
+                break
+            if outcome.returncode == 124 and step.timeout_seconds is not None:
+                step_results.append(
+                    _step_payload(
+                        step,
+                        status="timeout",
+                        duration_seconds=duration,
+                        outcome=outcome,
+                    )
+                )
+                failures.append(
+                    {
+                        "step": step.name,
+                        "reason": "command timed out",
+                        "timeout_seconds": step.timeout_seconds,
+                    }
+                )
+                break
             step_results.append(
                 _step_payload(
                     step,
@@ -539,6 +638,8 @@ def run_gate(
         "ready_for_gpu": not failures,
         "mode": mode,
         "dry_run": False,
+        "teacher_parity_mode": teacher_parity_mode,
+        "refresh_derived_data": refresh_derived_data,
         "timestamp_utc": _utc_now(),
         "known_blockers": known_blockers,
         "failures": failures,
@@ -555,6 +656,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--teacher-parity-mode",
+        choices=["cached", "rerun"],
+        default="cached",
+        help="Use cached stage2 support pairs by default; rerun chain search only when explicitly needed.",
+    )
+    parser.add_argument("--teacher-parity-timeout-seconds", type=int, default=600)
+    parser.add_argument(
+        "--refresh-derived-data",
+        action="store_true",
+        help="Regenerate answer-focused data instead of only validating the planned build commands.",
+    )
     args = parser.parse_args(argv)
 
     report = run_gate(
@@ -562,6 +675,9 @@ def main(argv: list[str] | None = None) -> int:
         output_path=args.output,
         allow_dirty=bool(args.allow_dirty),
         dry_run=bool(args.dry_run),
+        teacher_parity_mode=args.teacher_parity_mode,
+        teacher_parity_timeout_seconds=max(1, int(args.teacher_parity_timeout_seconds)),
+        refresh_derived_data=bool(args.refresh_derived_data),
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 1 if report["status"] == "fail" else 0

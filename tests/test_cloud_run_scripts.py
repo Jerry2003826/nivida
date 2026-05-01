@@ -175,6 +175,17 @@ def test_vllm_preflight_checks_torch_abi_requirement() -> None:
     assert "nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu" in text
 
 
+def test_cloud_vllm_bootstrap_installs_new_vllm_and_runs_preflight() -> None:
+    text = _script("bootstrap_cloud_vllm_env.sh")
+    assert "VLLM_VERSION=\"${VLLM_VERSION:-0.14.0}\"" in text
+    assert "VLLM_MIN_VERSION=\"${VLLM_MIN_VERSION:-0.14.0}\"" in text
+    assert "python -m venv \"$VENV_ROOT\"" in text
+    assert "vllm==${VLLM_VERSION}" in text
+    assert "kagglehub" in text
+    assert "scripts/check_cloud_vllm_env.sh" in text
+    assert "DRY_RUN" in text
+
+
 def test_cloud_inference_script_runs_artifact_preflight() -> None:
     text = _script("run_cloud_inference_only_v3.sh")
     assert "scripts/check_cloud_eval_inputs.py" in text

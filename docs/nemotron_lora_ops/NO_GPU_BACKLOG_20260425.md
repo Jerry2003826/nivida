@@ -26,6 +26,7 @@ present.
 | Research weak-family data recipes | done | `python scripts/build_research_rescue_data.py` prepares mixed, equation, bit, eq+bit, and v2 weak-family SFT recipes with provenance |
 | Trained bit rescue v2 candidate | done | `bit_rescue_v2_20260430_trained` is registered as a submit-safe eval candidate; smoke tied `official_balanced` at `2 / 6` |
 | Submit-safe adapter soup tooling | done | `python scripts/merge_lora_adapters.py --method linear ...` merges adapter-only LoRA candidates and writes `merge_manifest.json` |
+| Cloud vLLM bootstrap | done | `bash scripts/bootstrap_cloud_vllm_env.sh` creates a vLLM `>=0.14.0` env and runs the cheap preflight before generation |
 | Public/local correlation log | done | `python scripts/update_lb_correlation_log.py ...` records Kaggle public score beside local exact metrics and adapter hashes |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10664 rows, bad `0` |
 | Fast local tests | done | targeted diagnostic/cloud/shell/tokenizer tests are part of `make no-gpu-readiness` |
@@ -55,16 +56,20 @@ present.
   cross-platform entrypoint for answer-only and short-trace data preparation.
   The `.sh` file remains a thin Linux wrapper.
 - `scripts/run_no_gpu_readiness_gate.py` is now the canonical pre-GPU local
-  gate. It regenerates canonical reports and stage2 teacher provenance, runs
-  local checks and tests, and fails if teacher parity lacks provenance or if
-  tracked reports drift.
+  gate. It regenerates canonical reports, validates derived-data build plans,
+  runs local checks and tests, and fails if teacher parity lacks provenance or
+  if tracked reports drift. The default teacher parity mode is cached-only to
+  avoid unbounded CPU chain-search reruns; use
+  `--refresh-derived-data --teacher-parity-mode rerun --teacher-parity-timeout-seconds 600`
+  only when explicitly refreshing the stage2 inputs and full parity audit.
 - `scripts/rebuild_stage2_teacher_inputs.py` is the canonical CPU-only way to
   rebuild current-code stage2 teacher inputs before answer-focused data or
   teacher-gate parity audits.
 - `scripts/check_cloud_eval_inputs.py` is the canonical CPU-only preflight for
   cloud exact-eval inputs and adapters. It checks ignored eval manifests,
   duplicate ids, target labels, adapter weights/configs, config files, and
-  critical cloud scripts before vLLM is touched.
+  critical cloud scripts before vLLM is touched. The readiness gate now checks
+  both `answer_final` and `bit_rescue_v2_20260430_trained` in dry-run mode.
 - `configs/research_breakout_candidates.json` is the canonical candidate
   registry for the aggressive research matrix. It records adapter paths, prompt
   profiles, data recipes, family focus, GPU need, expected runtime, and
@@ -107,6 +112,10 @@ present.
 - `scripts/check_cloud_vllm_env.sh` now hard-fails vLLM builds older than
   `VLLM_MIN_VERSION` (default `0.14.0`) because `vllm==0.11.2` cannot load
   NemotronH MoE LoRA adapters due to missing expert mapping support.
+- `scripts/bootstrap_cloud_vllm_env.sh` creates or reuses an isolated
+  `/workspace/venvs/nemotron_vllm_0_14_0` style environment, installs
+  `vllm==${VLLM_VERSION}` plus Kaggle/HF helpers, and then runs
+  `scripts/check_cloud_vllm_env.sh`. Set `DRY_RUN=1` to preview commands.
 - `scripts/run_cloud_vllm_exact_eval_v3.sh` and
   `scripts/run_cloud_inference_only_v3.sh` now fail on missing explicit
   adapters, repair missing checkpoint `adapter_config.json` from the B-thin
@@ -155,8 +164,9 @@ present.
   `scripts/rebuild_stage2_teacher_inputs.py` rebuilds
   `../data/processed/stage2_official_train_no_hard_valid.jsonl` and its
   `.provenance.json`; `scripts/audit_teacher_gate_extractor_parity.py` now
-  checks the provenance output hash against the actual JSONL before rerunning
-  chain search.
+  checks the provenance output hash against the actual JSONL. The readiness
+  gate defaults to cached support-pair audit; full chain-search rerun is an
+  explicit, timeout-protected mode.
 
 ## Next GPU Boot
 
@@ -191,9 +201,8 @@ research path is model-only adapters plus merged adapters from
 ```bash
 cd /workspace/nivida_h200_run
 git pull
-# Point VENV at an environment with vLLM >= 0.14.0. The preflight blocks known
-# bad 0.11.x builds before any paid generation starts.
-bash scripts/check_cloud_vllm_env.sh
+# Build or reuse a vLLM >= 0.14.0 environment, then run the cheap preflight.
+bash scripts/bootstrap_cloud_vllm_env.sh
 python scripts/check_cloud_eval_inputs.py \
   --eval-inputs smoke_head6 \
   --candidate answer_final=artifacts/adapter_stage2_official_balanced_answer_only \

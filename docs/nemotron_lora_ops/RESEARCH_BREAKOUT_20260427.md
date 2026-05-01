@@ -25,6 +25,8 @@ submission contract changes.
 - Cloud vLLM preflight defaults to `VLLM_MIN_VERSION=0.14.0` because
   `vllm==0.11.2` fails NemotronH MoE LoRA loading with a missing
   `get_expert_mapping` implementation.
+- Use `scripts/bootstrap_cloud_vllm_env.sh` on a fresh GPU pod to create the
+  vLLM environment and immediately run the cheap version/ABI preflight.
 
 ## Research Lines
 
@@ -47,9 +49,9 @@ solver-assisted variants have been scored locally.
 ```bash
 cd /workspace/nivida_h200_run
 git pull
-# Set VENV to an environment with vLLM >= 0.14.0. The preflight hard-fails
-# older builds before any paid generation starts.
-bash scripts/check_cloud_vllm_env.sh
+# Build or reuse a vLLM >= 0.14.0 environment. The preflight hard-fails older
+# builds before any paid generation starts.
+bash scripts/bootstrap_cloud_vllm_env.sh
 
 EVAL_INPUTS=smoke_head6 \
 bash scripts/run_cloud_vllm_exact_eval_v3.sh
