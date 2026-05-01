@@ -180,6 +180,19 @@ def annotate_example_from_candidates(example: PuzzleExample, candidates: list[An
     if query_prediction is not None and example.target_answer not in (None, ""):
         query_solver_correct = competition_correct(str(query_prediction), str(example.target_answer))
 
+    support_pairs: list[dict[str, str]] = []
+    if top is not None:
+        predictions = list(getattr(top, "predictions", []) or [])
+        for index, pair in enumerate(example.parsed_examples):
+            prediction = predictions[index] if index < len(predictions) else ""
+            support_pairs.append(
+                {
+                    "input": str(pair.input),
+                    "target": str(pair.output),
+                    "prediction": str(prediction),
+                }
+            )
+
     template_rank_features = []
     if top is not None:
         template_rank_features = getattr(top, "debug", {}).get("template_rank_features", [])
@@ -202,6 +215,8 @@ def annotate_example_from_candidates(example: PuzzleExample, candidates: list[An
         "support_coverage": 0.0 if not example.parsed_examples else support_matches / len(example.parsed_examples),
         "top1_top2_margin": top_margin,
         "solver_verifiable": solver_verifiable,
+        "support_pairs": support_pairs,
+        "support_pair_cache_version": 1,
         "query_prediction": None if query_prediction is None else str(query_prediction),
         "query_solver_correct": query_solver_correct,
         "template_ranker_features": template_rank_features,

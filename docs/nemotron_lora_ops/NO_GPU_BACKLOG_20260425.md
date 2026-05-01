@@ -27,6 +27,7 @@ present.
 | Trained bit rescue v2 candidate | done | `bit_rescue_v2_20260430_trained` is registered as a submit-safe eval candidate; smoke tied `official_balanced` at `2 / 6` |
 | Submit-safe adapter soup tooling | done | `python scripts/merge_lora_adapters.py --method linear ...` merges adapter-only LoRA candidates and writes `merge_manifest.json` |
 | Cloud vLLM bootstrap | done | `bash scripts/bootstrap_cloud_vllm_env.sh` creates a vLLM `>=0.14.0` env and runs the cheap preflight before generation |
+| Stage2 support cache hydrator | done | `python scripts/hydrate_stage2_support_cache.py --input-jsonl ../data/processed/stage2_official_train_no_hard_valid.jsonl` hydrated `7533 / 7533` cached support rows |
 | Public/local correlation log | done | `python scripts/update_lb_correlation_log.py ...` records Kaggle public score beside local exact metrics and adapter hashes |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10664 rows, bad `0` |
 | Fast local tests | done | targeted diagnostic/cloud/shell/tokenizer tests are part of `make no-gpu-readiness` |
@@ -65,6 +66,10 @@ present.
 - `scripts/rebuild_stage2_teacher_inputs.py` is the canonical CPU-only way to
   rebuild current-code stage2 teacher inputs before answer-focused data or
   teacher-gate parity audits.
+- `scripts/hydrate_stage2_support_cache.py` is the cheaper CPU-only way to
+  repair existing stage2 subset JSONL files that have current provenance but
+  lack cached `support_pairs` / `query_prediction` in `metadata.extras`. It
+  updates the sidecar provenance output hash after hydration.
 - `scripts/check_cloud_eval_inputs.py` is the canonical CPU-only preflight for
   cloud exact-eval inputs and adapters. It checks ignored eval manifests,
   duplicate ids, target labels, adapter weights/configs, config files, and
@@ -167,6 +172,12 @@ present.
   checks the provenance output hash against the actual JSONL. The readiness
   gate defaults to cached support-pair audit; full chain-search rerun is an
   explicit, timeout-protected mode.
+- `../data/processed/stage2_official_train_no_hard_valid.jsonl` was hydrated
+  on 2026-05-01: `7533 / 7533` rows now carry cached support pairs, and the
+  sidecar provenance output hash was updated.
+- Latest full readiness gate after hydration:
+  `python scripts/run_no_gpu_readiness_gate.py --mode full --allow-dirty` ->
+  `status=pass`, `ready_for_gpu=true`; teacher parity ran cached in `1.110s`.
 
 ## Next GPU Boot
 

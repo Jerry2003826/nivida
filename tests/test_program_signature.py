@@ -99,6 +99,31 @@ def test_annotation_records_query_solver_correctness() -> None:
     assert example.metadata.extras["query_solver_correct"] is False
 
 
+def test_annotation_caches_support_pairs_for_teacher_parity_audit() -> None:
+    example = PuzzleExample(
+        id="support-cache",
+        raw_prompt="",
+        official_instruction="",
+        parsed_examples=[
+            PuzzlePair(input="a", output="b"),
+            PuzzlePair(input="c", output="d"),
+        ],
+        query="q",
+        target_answer="gold",
+        metadata=PuzzleMetadata(official_family="equation", subtype="equation_position"),
+    )
+    candidate = _solving_candidate("gold")
+    candidate.predictions = ["b", "oops"]
+
+    annotate_example_from_candidates(example, [candidate])
+
+    assert example.metadata.extras["support_pairs"] == [
+        {"input": "a", "target": "b", "prediction": "b"},
+        {"input": "c", "target": "d", "prediction": "oops"},
+    ]
+    assert example.metadata.extras["support_pair_cache_version"] == 1
+
+
 def test_annotation_records_template_ranker_features() -> None:
     example = PuzzleExample(
         id="template-features",
