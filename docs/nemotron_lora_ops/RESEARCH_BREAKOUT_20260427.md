@@ -43,6 +43,7 @@ submission contract changes.
 | Prompt profiles | `scripts/materialize_prompt_profile_manifest.py` builds `short_answer_biased` and `format_strict` manifests | research-only unless prompts become part of a model-only adapter recipe |
 | Cloud manifest | `scripts/write_cloud_artifact_manifest.py` records git/runtime/adapter hashes and prediction counts | every paid GPU sweep must produce it |
 | Public/local correlation | `scripts/update_lb_correlation_log.py` appends Kaggle public score, local exact metrics, adapter hashes, and merge weights | pause training after two local wins without public movement |
+| Next-step planner | `scripts/plan_research_next_steps.py` reads readiness, batch gate, solver breakout, and public/local correlation artifacts | converts the current state into a primary action plus CPU/GPU exploration tracks |
 
 ## First GPU Batch
 
@@ -68,6 +69,14 @@ python scripts/finalize_cloud_eval_batch1.py \
 Only package a Kaggle adapter if
 `data/processed/eval/vllm_exact_eval_v3_batch1/batch1_gate_summary.json` says
 `ready_to_submit=true`.
+
+After scoring or after any Kaggle feedback, refresh the research router:
+
+```bash
+python scripts/plan_research_next_steps.py
+```
+
+The current generated plan is `docs/research_next_step_plan_latest.md`.
 
 ## Training Batch
 

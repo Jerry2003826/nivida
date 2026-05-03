@@ -29,6 +29,7 @@ present.
 | Cloud vLLM bootstrap | done | `bash scripts/bootstrap_cloud_vllm_env.sh` creates a vLLM `>=0.14.0` env and runs the cheap preflight before generation |
 | Cloud batch1 eval entrypoint | done | `bash scripts/run_cloud_eval_batch1.sh` runs the submit-safe smoke sweep; `RUN_FULL=1` extends it to the full exact arena |
 | Cloud batch1 local finalizer | done | `python scripts/finalize_cloud_eval_batch1.py` scores pulled raw predictions and writes `batch1_gate_summary.json` |
+| Research next-step planner | done | `python scripts/plan_research_next_steps.py` reads readiness, batch gate, solver breakout, and LB correlation artifacts to choose the next CPU/GPU action |
 | Stage2 support cache hydrator | done | `python scripts/hydrate_stage2_support_cache.py --input-jsonl ../data/processed/stage2_official_train_no_hard_valid.jsonl` hydrated `7533 / 7533` cached support rows |
 | Public/local correlation log | done | `python scripts/update_lb_correlation_log.py ...` records Kaggle public score beside local exact metrics and adapter hashes |
 | Prompt/boxed guard check | done | `sh scripts/check_prompt_suffix_alignment.sh ...` checked 10664 rows, bad `0` |
@@ -140,6 +141,10 @@ present.
 - `scripts/finalize_cloud_eval_batch1.py` is the matching local-only
   postprocess step. It runs the exact scorer, enforces `official_balanced` as
   the gate baseline, and writes `batch1_gate_summary.json`.
+- `scripts/plan_research_next_steps.py` is the current exploration router. It
+  emits `data/processed/research_next_step_plan.json` and
+  `docs/research_next_step_plan_latest.md` with a primary action, allowed GPU
+  state, concrete commands, and prioritized CPU research tracks.
 
 ## Current Solver Read
 
@@ -214,6 +219,7 @@ python scripts/run_solver_breakout_v2.py --limit 64
 python scripts/run_solver_breakout_v2.py \
   --output-dir data/processed/solver_breakout_v2_full \
   --output-md docs/solver_breakout_v2_full_latest.md
+python scripts/plan_research_next_steps.py
 ```
 
 Solver-assisted and prompt-ensemble rows are diagnostics only. The submit-safe
