@@ -128,6 +128,12 @@ def _is_safe_short_trace(row: dict[str, Any]) -> bool:
     return True
 
 
+def _recipe_allows_short_trace(*, recipe: str, row: dict[str, Any]) -> bool:
+    if recipe.endswith("_v2") and _family(row) == "equation":
+        return False
+    return _is_safe_short_trace(row)
+
+
 def _annotate_row(
     row: dict[str, Any],
     *,
@@ -141,7 +147,7 @@ def _annotate_row(
     extras = dict(metadata.get("extras") or {})
     family = _family(row)
     risk_class = str(extras.get("template_risk_class") or output.get("risk_class") or "")
-    short_trace_allowed = _is_safe_short_trace(row)
+    short_trace_allowed = _recipe_allows_short_trace(recipe=recipe, row=row)
     if family == "equation":
         extras.update(_equation_risk_features(row, extras))
     if family == "bit":
@@ -204,7 +210,7 @@ def _select_rows(
                 )
             )
     for row in short_rows:
-        if (families is None or _family(row) in families) and _is_safe_short_trace(row):
+        if (families is None or _family(row) in families) and _recipe_allows_short_trace(recipe=recipe, row=row):
             selected.append(
                 _annotate_row(
                     row,

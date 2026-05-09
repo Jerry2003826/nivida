@@ -275,6 +275,7 @@ def test_research_rescue_data_filters_weak_families_and_safe_short_trace(tmp_pat
     ]
     short_rows = [
         {"id": "eq", "trace_style": "short_trace", "official_family": "equation", "subtype": "equation_template", "metadata": {"official_family": "equation", "extras": {"template_risk_class": "unseen_key_template_miss"}}},
+        {"id": "eq_safe", "trace_style": "short_trace", "official_family": "equation", "subtype": "equation_template", "metadata": {"official_family": "equation", "extras": {"template_risk_class": "low_risk_support_stable"}}},
         {"id": "bit", "trace_style": "short_trace", "official_family": "bit", "metadata": {"official_family": "bit", "extras": {"solver_verifiable": True, "support_coverage": 1.0}}},
     ]
     for path in (answer_train, answer_valid):
@@ -288,10 +289,11 @@ def test_research_rescue_data_filters_weak_families_and_safe_short_trace(tmp_pat
         short_train=short_train,
         short_valid=short_valid,
         out_dir=tmp_path / "out",
-        recipes=["equation_rescue", "bit_rescue", "eq_bit_rescue", "eq_bit_rescue_v2"],
+        recipes=["equation_rescue", "bit_rescue", "eq_bit_rescue", "equation_rescue_v2", "eq_bit_rescue_v2"],
     )
 
-    assert summary["recipes"]["equation_rescue"]["train_rows"] == 1
+    assert summary["recipes"]["equation_rescue"]["train_rows"] == 2
+    assert summary["recipes"]["equation_rescue_v2"]["train_rows"] == 1
     assert summary["recipes"]["bit_rescue"]["train_rows"] == 2
     assert "train_provenance" in summary["recipes"]["bit_rescue"]
     assert Path(summary["recipes"]["bit_rescue"]["train_provenance"]).is_file()
@@ -299,7 +301,7 @@ def test_research_rescue_data_filters_weak_families_and_safe_short_trace(tmp_pat
         json.loads(line)
         for line in (tmp_path / "out" / "eq_bit_rescue_train.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert {row["id"] for row in eq_bit_rows} == {"eq", "bit"}
+    assert {row["id"] for row in eq_bit_rows} == {"eq", "eq_safe", "bit"}
     assert all(row["research_recipe"] == "eq_bit_rescue" for row in eq_bit_rows)
     assert all(row["research_provenance"]["answer_hash"] for row in eq_bit_rows)
     bit_row = next(row for row in eq_bit_rows if row["id"] == "bit")
@@ -310,6 +312,14 @@ def test_research_rescue_data_filters_weak_families_and_safe_short_trace(tmp_pat
     ]
     assert {row["id"] for row in eq_bit_v2_rows} == {"eq", "bit"}
     assert all(row["research_recipe"] == "eq_bit_rescue_v2" for row in eq_bit_v2_rows)
+    assert not any(
+        row["official_family"] == "equation" and row["trace_style"] == "short_trace"
+        for row in eq_bit_v2_rows
+    )
+    assert any(
+        row["official_family"] == "bit" and row["trace_style"] == "short_trace"
+        for row in eq_bit_v2_rows
+    )
 
 
 def test_cloud_artifact_manifest_counts_prediction_lines_and_hashes_candidate(tmp_path: Path) -> None:

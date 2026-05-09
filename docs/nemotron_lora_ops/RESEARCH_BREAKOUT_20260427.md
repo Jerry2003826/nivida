@@ -128,6 +128,17 @@ registered as `bit_rescue_v2_20260430_trained`; the next paid step is exact
 eval, not another blind training run. Equation still needs CPU
 operator/generator work because the current top-k barely contains the answer.
 
+2026-05-09 Blackwell follow-up: `eq_bit_rescue_v2`, `bit_rescue_v2`, and three
+official/eq-bit soups were trained/evaluated on the bounded
+`combined_eq_bit_focus_24` arena. The best weak-family score was only
+`3 / 24 = 0.125`, tied between `eq_bit_rescue_v2`, `bit_rescue_v2`, and the
+best soups, while `bit_rescue_v2` boxed validity fell to `0.667`. Raw outputs
+showed repeated equation trace metadata such as `fam=equation|sub=...` instead
+of closed `\boxed{}` answers. That makes the trained adapters non-submit-worthy
+and identifies raw equation short-trace supervision as the next blocker.
+`equation_rescue_v2` and `eq_bit_rescue_v2` data now keep equation rows
+answer-only; bit rows may still use safe short traces.
+
 `rank64_answer_only` is intentionally marked `submission_safe=false` because
 the current Kaggle runtime contract has `max_lora_rank=32`; keep it research
 only unless that contract changes.
