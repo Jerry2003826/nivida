@@ -112,8 +112,13 @@ configs/train_stage2_bit_rescue_v2.yaml
 configs/train_stage2_eq_bit_rescue_v2.yaml
 ```
 
-All three warm-start from the `official_balanced` adapter, use rank-32 LoRA,
-and keep final-answer weighted loss enabled.
+All three v2 configs now warm-start from
+`artifacts/adapter_stage2_official_balanced_answer_only`, use rank-32 LoRA, and
+keep final-answer weighted loss enabled. This is intentional: the 2026-05-09
+clean-data experiment removed equation short traces but still leaked one
+`fam=equation|sub=...` generation, so future weak-family continuation should
+inherit the answer-only output prior rather than the raw official-balanced trace
+prior.
 
 Full local solver breakout currently suggests:
 

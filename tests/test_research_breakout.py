@@ -322,6 +322,18 @@ def test_research_rescue_data_filters_weak_families_and_safe_short_trace(tmp_pat
     )
 
 
+def test_v2_rescue_training_configs_warm_start_from_answer_only_adapter() -> None:
+    expected = "init_adapter_dir: artifacts/adapter_stage2_official_balanced_answer_only"
+    for config in [
+        "configs/train_stage2_equation_rescue_v2.yaml",
+        "configs/train_stage2_bit_rescue_v2.yaml",
+        "configs/train_stage2_eq_bit_rescue_v2.yaml",
+    ]:
+        text = (REPO_ROOT / config).read_text(encoding="utf-8")
+        assert expected in text
+        assert "init_adapter_dir: artifacts/adapter_stage2_thin_official_balanced_20260424_161110Z" not in text
+
+
 def test_cloud_artifact_manifest_counts_prediction_lines_and_hashes_candidate(tmp_path: Path) -> None:
     adapter = tmp_path / "artifacts" / "adapter"
     adapter.mkdir(parents=True)
